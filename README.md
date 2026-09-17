@@ -119,6 +119,10 @@ python3 parse_chart.py --backing --ezi song/ezi.ezi song/ez.ez
 > move notes between the player's lanes and the auto-played tracks. PUPA 5K HD and 5K NM
 > have identical note-event sets and render to byte-identical audio, and the `.ezi`
 > keysound index is byte-identical for every variant of a song.
+>
+> **The Lounge harvests charts without gameplay.** Watching a BGA in the in-game Lounge
+> goes through the same download flow and serves the song's **4K EZ** chart — so browse the
+> Lounge and `dump_song.py` collects each song's chart, which is all the renderer needs.
 
 ### Rendering a song
 

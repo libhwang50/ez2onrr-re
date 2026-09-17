@@ -193,16 +193,21 @@ response, so experiments need no restart.
   ever needs a fresh keysound set.
 * **The `.ez` chart differs by keymode and difficulty — but only in how notes are ASSIGNED,
   not in what sounds.** Comparing the multiset of `(position, keysound)` over *all* tracks:
-  * PUPA 5K HD vs 5K NM — **identical**, 4047 events each, none unique to either, and the
-    two render to **byte-identical audio**;
-  * Conflict 4K HD is a strict **subset** of 4K SHD (7 events dropped, 0 added);
+  * Conflict **4K EZ ⊂ 4K SHD** — 6386 events, none unique to EZ; SHD has 7 extra;
+  * Conflict 4K HD is likewise a strict **subset** of 4K SHD (7 dropped, 0 added);
+  * PUPA 5K HD vs 5K NM — **identical**, 4047 events each, and the two render to
+    **byte-identical audio**;
   * Hyper Magic 4K SHD vs 8K EZ differ by 3 events out of 2506.
 
-  Meanwhile the lanes for PUPA differ hugely (1297 vs 704 notes) and the auto-play tracks
-  differ by exactly the opposite amount (-593/+593). So difficulty moves notes between the
-  player's lanes and the auto-played tracks; the song is unchanged.
-  **Practical consequence: one chart per song is enough to render the full song.** Capturing
-  every difficulty is not needed for the audio.
+  Meanwhile the lane counts move enormously — Conflict's lanes hold 330 notes on EZ, 1304
+  on HD and 1814 on SHD, while the total stays ~6390. So difficulty moves notes between the
+  player's lanes and the auto-played tracks; the *song* is essentially unchanged.
+  **Practical consequence: one chart per song is enough to render the full song.**
+* **The Lounge is a chart-harvesting route.** The in-game Lounge (watch a BGA with the song
+  playing) goes through the same `c2s_get_pattern_file` flow and serves the song's **4K EZ**
+  chart — confirmed by capture: the Lounge chart for Conflict was `4-ez` with an `.ezi`
+  byte-identical to Conflict's. So charts can be collected by browsing BGAs, with no
+  gameplay, and per the point above those 4K EZ charts suffice to render each song.
 * **The `.ez` per-track counts differ by keymode and difficulty** (Conflict SHD vs HD differs
   in the lanes *and* in nearly every track 23–63, while the track-22 `MR` note is the same).
   It is the track *assignment* that moves, per the point above.

@@ -126,12 +126,17 @@ def song_name(snap):
     return "song_" + (m.group(1) if m else str(int(time.time())))
 
 
-def settle(sc, timeout=15.0, interval=0.4):
+def settle(sc, timeout=15.0, interval=1.0):
     """Poll until the game has finished parsing the chart it just fetched.
 
     `ident()` is first readable as soon as the CDN URLs appear, which is before the
     chart is parsed — so an immediate snapshot reports lanes=[0,0,0,0] and dic=0.
     Returns the snapshot with the most parse progress seen before the timeout.
+
+    Deliberately slow (1 Hz): the game has crashed twice during song load while this
+    watcher was polling, and AGENTS.md warns about high-frequency in-process polling.
+    The chart and keysounds are already on disk by this point, so this is only for the
+    cross-check against the game's own parse.
     """
     deadline = time.time() + timeout
     best, best_score = None, -1
