@@ -6,8 +6,19 @@ sum of the keysounds whose notes are firing. This draws that as an overlay on th
 BGA — or on a plain background — and muxes it with the rendered audio.
 
     python3 visualize_song.py extracted_charts/changa2
+    python3 visualize_song.py extracted_charts/ultimatum     # bulk: 4K/5K/6K/8K, EZ/NM/SHD
+    python3 visualize_song.py --all --skip-existing          # every chart under extracted_charts/
     python3 visualize_song.py <song> --mode keysound --no-bga
     python3 visualize_song.py <song> --offset 0.03          # nudge the overlay later
+
+Bulk rendering
+--------------
+Pointing at a song directory (one that holds <keymode>/<difficulty> subdirectories rather
+than an `ez.ez`) renders every chart under it, or use `--all` to sweep `--charts` for every
+capture. Output goes to `visualizations/<song>_<keymode>_<difficulty>.mp4`, so the 4K/5K/6K/8K
+variants of one song do not collide. `--skip-existing` leaves charts whose mp4 is already
+there alone; `--force` re-renders them. A chart that cannot be rendered is reported and the
+run continues.
 
 Modes
 -----
@@ -22,6 +33,11 @@ The keysound display lists what is *currently sounding*, each in a fixed slot wi
 bar showing how far through its sample it is. A playing keysound keeps its row until it
 finishes and new ones fill the gaps, so nothing shifts around under the reader. Sample
 lengths come from the keysound files themselves.
+
+Keysound rows are coloured by whether the player plays them: the chart's lanes (tracks 3
+upward, `lane_count` of them) are bright white for a tap and bright yellow for a long note,
+while auto-played notes — the track-22 MR backing layer and the 23+ instrument layers — are
+dimmed grey / dim amber. `--no-auto-dim` colours every row alike.
 
 If a BGA is used, the overlay adopts its resolution and frame rate (1280x720 at 60 fps for
 Changa 2) so the BGA is passed through untouched; --size and --fps override that.
@@ -54,6 +70,15 @@ LANE_TRACK = range(3, 22)  # tracks that can be a playable lane
 UNKNOWN_SAMPLE = 0.40  # assumed length when a keysound file is missing
 
 SHADOW = (0, 0, 0, 180)  # outline colour behind every label
+
+# Keysound-row label colours. A note is "auto" when its track lies outside the chart's
+# playable lanes (the MR backing track 22, and the instrument layers 23+); those rows are
+# dimmed so a render reads at a glance as "the player plays these, the game plays those".
+# Long notes keep the brighter yellow on both, so the hold cue survives the dimming.
+PLAYER_NORMAL = (232, 238, 248, 250)
+PLAYER_LONG = (250, 215, 130, 250)
+AUTO_NORMAL = (150, 163, 184, 190)
+AUTO_LONG = (196, 170, 104, 200)
 MAX_COLS = 4  # keysound display columns, used when one column cannot fit the chart
 
 
@@ -115,7 +140,8 @@ def chart_label(song_dir):
 
 
 def build_events(song_dir, assets_root="extracted_assets"):
-    """(chart, events, names, durations); events are (start, end, track, ks, filename, long)."""
+    """(chart, events, names, durations); events are
+    (start, end, track, ks, filename, long, hold, is_auto)."""
     ch = parse_ez(load(os.path.join(song_dir, "ez.ez"))[0])
     insts = parse_ezi(load(os.path.join(song_dir, "ezi.ezi"))[0])
     names = {i.index: i.filename for i in insts}
@@ -150,6 +176,10 @@ def build_events(song_dir, assets_root="extracted_assets"):
     # hold ends at or before the next note in its own lane (43/43 and 83/83 across the two
     # captures), while at 2x most of them would overlap the next note, which a lane cannot do.
     # That makes the hold's length in seconds computable.
+    # Tracks 3..(3+lane_count-1) are the player's lanes; everything else (track 22's MR
+    # backing layer, the 23+ instrument layers) is auto-played. Verified: on all 12 captured
+    # charts the tracks carrying keysounds from 3 upward are exactly that contiguous run.
+    lanes_hi = 3 + max(0, ch.lane_count)
     events = []
     for sec, track, n in ch.note_seconds():
         hold = 0.0
@@ -165,6 +195,7 @@ def build_events(song_dir, assets_root="extracted_assets"):
                 names.get(n.keysound, ""),
                 n.is_long,
                 hold,
+                not (3 <= track < lanes_hi),
             )
         )
     events.sort(key=lambda e: e[0])
@@ -264,7 +295,7 @@ def draw_frame(img, dr, st):
                     (x + bw / 2, y0 + bh / 2),
                     str(i + 1),
                     st["f_small"],
-                    (8, 14, 10, 255),
+                    (255, 255, 255, 255),
                     st,
                     anchor="mm",
                 )
@@ -274,7 +305,7 @@ def draw_frame(img, dr, st):
     for i, ev in enumerate(st["slots"]):
         if ev is None:
             continue
-        start, end, track, ks, fname, is_long, _hold, _until = ev
+        start, end, track, ks, fname, is_long, _hold, is_auto, _until = ev
         # column-major: newer keysounds fill the first column before spilling right
         c, r = divmod(i, st["rows_per_col"])
         x0 = st["pad"] + c * st["colw"]
@@ -311,151 +342,59 @@ def draw_frame(img, dr, st):
         name = fname or "(unknown)"
         if len(name) > st["name_chars"]:
             name = name[: max(1, st["name_chars"] - 2)] + ".."
+        # Auto rows are dimmed: long keeps amber, normal goes grey. Player rows stay white /
+        # bright yellow. `--no-auto-dim` restores the old single palette.
+        if st["dim_auto"] and is_auto:
+            col = AUTO_LONG if is_long else AUTO_NORMAL
+        else:
+            col = PLAYER_LONG if is_long else PLAYER_NORMAL
         txt(
             dr,
             (x0 + st["off_name"], yy),
             name,
             st["f_mono"],
-            (250, 215, 130, 250) if is_long else (232, 238, 248, 250),
+            col,
             st,
         )
 
 
-def main():
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    ap.add_argument("song_dir", help="capture directory holding ez.ez and ezi.ezi")
-    ap.add_argument(
-        "-o", "--out", help="output mp4 (default visualizations/<song>.mp4)"
-    )
-    ap.add_argument(
-        "--mode",
-        choices=("default", "keysound"),
-        default="default",
-        help="default: mode/difficulty + lanes + keysounds; keysound: keysounds only",
-    )
-    ap.add_argument(
-        "--size", type=parse_size, help="output WxH (default: the BGA's, else 1280x720)"
-    )
-    ap.add_argument(
-        "--fps", type=float, help="output frame rate (default: the BGA's, else 30)"
-    )
-    ap.add_argument(
-        "--offset",
-        type=float,
-        default=0.0,
-        help="seconds to shift the overlay by; positive makes it lead the audio "
-        "(use if the overlay looks late)",
-    )
-    ap.add_argument(
-        "--rows",
-        default="auto",
-        help="keysound slots: an integer, or 'auto' (default) to size them to the chart's "
-        "peak simultaneous keysounds, capped so the display fits the frame",
-    )
-    ap.add_argument(
-        "--press-hold",
-        type=float,
-        default=0.15,
-        help="seconds a lane stays lit after its note fires (default 0.15)",
-    )
-    ap.add_argument(
-        "--press-gap",
-        type=float,
-        default=2.0,
-        help="FRAMES a lane must stay dark before its next note lights it again (default 2). "
-        "Without it, fast consecutive taps run together and read as a hold.",
-    )
-    ap.add_argument("--bga", help="BGA video to composite onto (default: auto-detect)")
-    ap.add_argument("--no-bga", action="store_true", help="plain background only")
-    ap.add_argument(
-        "--audio", help="rendered audio to mux (default: reuse or render one)"
-    )
-    ap.add_argument(
-        "--assets", default="auto", help="keysound dir for rendering ('auto')"
-    )
-    ap.add_argument("--render", action="store_true", help="always re-render the audio")
-    ap.add_argument(
-        "--crf",
-        type=int,
-        default=18,
-        help="x264 quality (lower is better; default 18, near-transparent for the BGA)",
-    )
-    ap.add_argument(
-        "--outline",
-        type=int,
-        default=None,
-        help="label outline width in px (default scales with the frame: 1 at 720p)",
-    )
-    ap.add_argument("--preset", default="veryfast")
-    ap.add_argument(
-        "--encoder",
-        metavar="NAME",
-        help="video encoder (default libx264). Anything ffmpeg has: libx265, h264_nvenc, "
-        "hevc_vaapi, libsvtav1, ffv1... For encoders that are not x264/x265 the built-in "
-        "-crf/-preset are dropped, so pass their own rate control via --ffmpeg-args "
-        "(e.g. h264_nvenc: '-preset p4 -cq 20 -rc vbr').",
-    )
-    ap.add_argument(
-        "--vaapi-device",
-        default="/dev/dri/renderD128",
-        help="DRM render node for VAAPI encoders (default /dev/dri/renderD128)",
-    )
-    ap.add_argument(
-        "--ffmpeg-args",
-        metavar="ARGS",
-        help="extra OUTPUT options for ffmpeg, e.g. "
-        "--ffmpeg-args='-tune animation -movflags +faststart -profile:v high'. Quote the "
-        "whole string (shell-split). Use = when the value starts with '-', or argparse "
-        "reads it as an option.",
-    )
-    ap.add_argument(
-        "--ffmpeg-global-args",
-        metavar="ARGS",
-        help="extra GLOBAL/input options for ffmpeg, placed before the first input, e.g. "
-        "--ffmpeg-global-args='-hide_banner -filter_threads 2'",
-    )
-    ap.add_argument(
-        "--until", type=float, help="stop at this many seconds (for testing)"
-    )
-    ap.add_argument(
-        "--start",
-        type=float,
-        default=0.0,
-        help="start the clip at this many seconds (for quick checks)",
-    )
-    args = ap.parse_args()
+class RenderError(Exception):
+    """A chart cannot be rendered. Raised instead of exiting so bulk mode can continue."""
 
-    # a capture is nested as <song>/<keymode>/<difficulty>, so the basename alone would be
-    # just "shd" — keep the path components in the output name
+
+
+def render_chart(args, song_dir, out):
+    """Render one capture directory to `out`.
+
+    Raises RenderError on a per-chart failure (no notes, ffmpeg failure) so a bulk render
+    can report it and continue with the next chart.
+    """
     import render_song
 
-    song = render_song.chart_name(args.song_dir)
-    out = args.out or os.path.join("visualizations", "%s.mp4" % song)
+    song = render_song.chart_name(song_dir)
     # `-o somedir/` is a natural thing to type; ffmpeg needs a file, so append the default
     if out.endswith(os.sep) or os.path.isdir(out):
         out = os.path.join(out, "%s.mp4" % song)
     if os.path.dirname(out):
         os.makedirs(os.path.dirname(out), exist_ok=True)
 
-    ch, events, names, durations = build_events(args.song_dir)
+    ch, events, names, durations = build_events(song_dir)
     if not events:
-        sys.exit("%s has no notes" % args.song_dir)
+        raise RenderError("%s has no notes" % song_dir)
 
     # ---- background, and the format we follow it in ----------------------- #
     if args.no_bga:
         bga = None
     elif args.bga:
         if not os.path.exists(args.bga):
-            sys.exit("--bga file not found: %s" % args.bga)
+            raise RenderError("--bga file not found: %s" % args.bga)
         bga = args.bga
     else:
-        bga = find_bga(args.song_dir)
+        bga = find_bga(song_dir)
         if not bga:
             # Say so loudly: this used to fall through to a plain background silently, and a
             # black frame is easy to mistake for a dark BGA.
-            hint = (chart_label(args.song_dir).get("song") or "").lower()
+            hint = (chart_label(song_dir).get("song") or "").lower()
             print(
                 "!! no extracted BGA found for this chart - the background will be blank."
             )
@@ -494,7 +433,7 @@ def main():
     start = max(0.0, args.start)
     duration = max(0.5, duration - start)
 
-    label = chart_label(args.song_dir)
+    label = chart_label(song_dir)
     variant = " ".join(x for x in (label.get("keymode"), label.get("difficulty")) if x)
 
     # ---- audio ------------------------------------------------------------ #
@@ -506,7 +445,7 @@ def main():
         else:
             audio = "/tmp/_viz_%s.flac" % song
             print("rendering audio -> %s" % audio)
-            render_audio(args.song_dir, audio, args.assets)
+            render_audio(song_dir, audio, args.assets)
     try:
         import soundfile as sf
 
@@ -643,9 +582,9 @@ def main():
     # build once made an input path the output, truncating a 49 MB BGA to zero bytes.
     inputs = {audio} | ({bga} if bga else set())
     if out in inputs:
-        sys.exit("refusing to run: output %s is also an input" % out)
+        raise RenderError("refusing to run: output %s is also an input" % out)
     if cmd[-1] != out:
-        sys.exit("refusing to run: %s is not the last ffmpeg argument" % out)
+        raise RenderError("refusing to run: %s is not the last ffmpeg argument" % out)
 
     f_head = font(max(18, H // 34))
     f_small = font(max(12, H // 60))
@@ -698,7 +637,7 @@ def main():
         try:
             wanted = max(1, int(args.rows))
         except (TypeError, ValueError):
-            sys.exit("--rows must be an integer or 'auto'")
+            raise RenderError("--rows must be an integer or 'auto'")
     # Rather than dropping keysounds when they exceed the height, spill into more columns.
     cols = max(1, min(MAX_COLS, (wanted + fit - 1) // fit))
     rows_per_col = max(1, (wanted + cols - 1) // cols)
@@ -731,6 +670,7 @@ def main():
         W=W,
         H=H,
         mode=args.mode,
+        dim_auto=not args.no_auto_dim,
         variant=variant,
         lanes=lanes,
         f_head=f_head,
@@ -776,7 +716,9 @@ def main():
                 ev = events[next_i]
                 next_i += 1
                 if ev[2] in LANE_TRACK:
-                    recent_presses.append((ev[7], ev[2]))   # computed above, gap included
+                    recent_presses.append(
+                        (ev[8], ev[2])
+                    )  # lane_until, computed above, gap included
                 if ev[1] <= vt:
                     continue
                 free = next((i for i, s in enumerate(st["slots"]) if s is None), None)
@@ -814,7 +756,194 @@ def main():
         print("wrote %s" % out)
     else:
         print("ffmpeg command was:\n  %s" % " ".join(cmd))
-        sys.exit("ffmpeg failed (%s)" % proc.returncode)
+        raise RenderError("ffmpeg failed (%s)" % proc.returncode)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "song_dir",
+        nargs="?",
+        help="capture directory holding ez.ez and ezi.ezi, or a song directory "
+        "containing several (e.g. extracted_charts/ultimatum -> 4K/5K/6K/8K)",
+    )
+    ap.add_argument(
+        "--all",
+        action="store_true",
+        help="render every chart under --charts (each <song>/<keymode>/<difficulty>)",
+    )
+    ap.add_argument(
+        "--charts",
+        default="extracted_charts",
+        help="where to look with --all (default extracted_charts)",
+    )
+    ap.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="with a bulk render, leave charts whose output already exists alone",
+    )
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="re-render even when the output already exists (overrides --skip-existing)",
+    )
+    ap.add_argument(
+        "-o", "--out", help="output mp4 (default visualizations/<song>.mp4)"
+    )
+    ap.add_argument(
+        "--mode",
+        choices=("default", "keysound"),
+        default="default",
+        help="default: mode/difficulty + lanes + keysounds; keysound: keysounds only",
+    )
+    ap.add_argument(
+        "--size", type=parse_size, help="output WxH (default: the BGA's, else 1280x720)"
+    )
+    ap.add_argument(
+        "--fps", type=float, help="output frame rate (default: the BGA's, else 30)"
+    )
+    ap.add_argument(
+        "--offset",
+        type=float,
+        default=0.0,
+        help="seconds to shift the overlay by; positive makes it lead the audio "
+        "(use if the overlay looks late)",
+    )
+    ap.add_argument(
+        "--rows",
+        default="auto",
+        help="keysound slots: an integer, or 'auto' (default) to size them to the chart's "
+        "peak simultaneous keysounds, capped so the display fits the frame",
+    )
+    ap.add_argument(
+        "--press-hold",
+        type=float,
+        default=0.05,
+        help="seconds a lane stays lit after its note fires (default 0.05)",
+    )
+    ap.add_argument(
+        "--press-gap",
+        type=float,
+        default=2.0,
+        help="FRAMES a lane must stay dark before its next note lights it again (default 2). "
+        "Without it, fast consecutive taps run together and read as a hold.",
+    )
+    ap.add_argument(
+        "--no-auto-dim",
+        action="store_true",
+        help="colour every keysound row alike; by default auto-played keysounds (tracks "
+        "outside the chart's lanes) are dimmed to distinguish them from the player's",
+    )
+    ap.add_argument("--bga", help="BGA video to composite onto (default: auto-detect)")
+    ap.add_argument("--no-bga", action="store_true", help="plain background only")
+    ap.add_argument(
+        "--audio", help="rendered audio to mux (default: reuse or render one)"
+    )
+    ap.add_argument(
+        "--assets", default="auto", help="keysound dir for rendering ('auto')"
+    )
+    ap.add_argument("--render", action="store_true", help="always re-render the audio")
+    ap.add_argument(
+        "--crf",
+        type=int,
+        default=18,
+        help="x264 quality (lower is better; default 18, near-transparent for the BGA)",
+    )
+    ap.add_argument(
+        "--outline",
+        type=int,
+        default=None,
+        help="label outline width in px (default scales with the frame: 1 at 720p)",
+    )
+    ap.add_argument("--preset", default="veryfast")
+    ap.add_argument(
+        "--encoder",
+        metavar="NAME",
+        help="video encoder (default libx264). Anything ffmpeg has: libx265, h264_nvenc, "
+        "hevc_vaapi, libsvtav1, ffv1... For encoders that are not x264/x265 the built-in "
+        "-crf/-preset are dropped, so pass their own rate control via --ffmpeg-args "
+        "(e.g. h264_nvenc: '-preset p4 -cq 20 -rc vbr').",
+    )
+    ap.add_argument(
+        "--vaapi-device",
+        default="/dev/dri/renderD128",
+        help="DRM render node for VAAPI encoders (default /dev/dri/renderD128)",
+    )
+    ap.add_argument(
+        "--ffmpeg-args",
+        metavar="ARGS",
+        help="extra OUTPUT options for ffmpeg, e.g. "
+        "--ffmpeg-args='-tune animation -movflags +faststart -profile:v high'. Quote the "
+        "whole string (shell-split). Use = when the value starts with '-', or argparse "
+        "reads it as an option.",
+    )
+    ap.add_argument(
+        "--ffmpeg-global-args",
+        metavar="ARGS",
+        help="extra GLOBAL/input options for ffmpeg, placed before the first input, e.g. "
+        "--ffmpeg-global-args='-hide_banner -filter_threads 2'",
+    )
+    ap.add_argument(
+        "--until", type=float, help="stop at this many seconds (for testing)"
+    )
+    ap.add_argument(
+        "--start",
+        type=float,
+        default=0.0,
+        help="start the clip at this many seconds (for quick checks)",
+    )
+    args = ap.parse_args()
+
+    import render_song
+
+    # A single capture, or a bulk render. Pointing at a song directory (one holding
+    # <keymode>/<difficulty> subdirs rather than an ez.ez) expands to every chart under
+    # it, so `extracted_charts/ultimatum` renders 4K/5K/6K/8K in one go.
+    bulk = args.all or not (args.song_dir and os.path.exists(
+        os.path.join(args.song_dir, "ez.ez")
+    ))
+    if bulk:
+        root = args.charts if args.all else args.song_dir
+        if not root:
+            ap.error("give a song directory, or use --all")
+        if not os.path.isdir(root):
+            sys.exit("not a directory: %s" % root)
+        charts = render_song.discover_charts(root)
+        if not charts:
+            sys.exit("no charts with ez.ez + ezi.ezi under %s" % root)
+        outdir = args.out or "visualizations"
+        print("rendering %d chart(s) -> %s\n" % (len(charts), outdir))
+        ok = skipped = failed = 0
+        for d, name in charts:
+            out = os.path.join(outdir, "%s.mp4" % name)
+            if os.path.exists(out) and args.skip_existing and not args.force:
+                print("%-24s SKIP: exists (use --force to re-render)" % name)
+                skipped += 1
+                continue
+            print("== %s -> %s" % (name, out), flush=True)
+            try:
+                render_chart(args, d, out)
+                ok += 1
+            except RenderError as e:
+                print("%-24s SKIP: %s" % (name, e))
+                failed += 1
+            except Exception as e:
+                print("%-24s SKIP: %s: %s" % (name, type(e).__name__, e))
+                failed += 1
+        print("\n%d rendered, %d skipped, %d failed" % (ok, skipped, failed))
+        return
+
+    if not args.song_dir:
+        ap.error("give a song directory, or use --all")
+    out = args.out or os.path.join(
+        "visualizations", "%s.mp4" % render_song.chart_name(args.song_dir)
+    )
+    try:
+        render_chart(args, args.song_dir, out)
+    except RenderError as e:
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":
