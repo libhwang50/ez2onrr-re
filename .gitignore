@@ -1,0 +1,33 @@
+version.config
+ez2on_dumper.js
+decrypted_bundles/
+il2cpp_out/
+true_key_1024.bin
+extracted_assets/
+EZ2ON REBOOT R
+EZ2ON REBOOT R/
+__pycache__/
+*.pyc
+tools/build/
+
+
+# added 2026-09-18 (repo tidy-up)
+.venv/
+data/_namemap.json
+mitm_live/
+mitm_parsed/flow_dumps
+
+# third-party reference material (EZ2DJ/EZ2AC tooling, github.com/freem/ez2stuff)
+reference/
+
+# --- capture/dump artifacts (game memory + network traffic) — never publish ---
+# these are raw dumps of live game state and captured API/CDN traffic; the
+# pre-scrub history shipped them, so keep them out of the repo entirely.
+data/
+logs/
+mitm_live/
+mitm_parsed/
+extracted_charts/
+il2cpp_code/
+tools/legacy/*_out.json
+tools/**/*_out.json
