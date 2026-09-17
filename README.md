@@ -83,6 +83,15 @@ Steam still showing it running), or the Frida script is unloaded — the watch s
 stops rather than polling forever. A capture interrupted that way still writes `ident.json`,
 with an `incomplete` list of what it could not read.
 
+**Kill a crashed game before relaunching.** A dead game's husk keeps the gadget's port
+(`127.0.0.1:27042`) bound, so a relaunched game's gadget cannot listen and `dump_song.py`
+attaches to the corpse. It checks the first read and says so, but
+`pgrep -af EZ2ON.exe` and kill any leftover first.
+
+`--no-patternjson` skips the `rw-` range sweep that reads the in-play request JSON out of
+memory and takes the label from `chart_labels.json` instead. It is the switch for testing
+whether that sweep is what a crash lands on.
+
 ## Chart delivery
 
 Charts are not bundled in the client — they are fetched at runtime from a CloudFront CDN

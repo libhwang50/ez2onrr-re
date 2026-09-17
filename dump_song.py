@@ -12,6 +12,7 @@ Usage
     python3 dump_song.py                # watch, ~1 Hz, output under extracted_charts/
     python3 dump_song.py --out dir --interval 0.4
     python3 dump_song.py --read-instrument-dic   # opt into the risky cross-check read
+    python3 dump_song.py --no-patternjson        # skip the in-memory label sweep (diagnostic)
 
 Then just play songs; each one is captured on entry.  Read-only memory reads
 plus one HTTP GET per chart — no hooks, no guard pages.
@@ -33,6 +34,16 @@ Neither recovers, so after `WEDGE_LIMIT` consecutive failed polls the watch
 stops and says so, instead of polling a corpse and writing half-empty snapshots
 that look successful.  A capture interrupted this way still writes `ident.json`
 (and an `incomplete` list) from what it has, then stops the watch.
+
+A failed first read is checked at startup, because the usual cause is not the
+game you just launched: a crashed game's *husk* keeps the gadget's TCP port
+(127.0.0.1:27042) bound, so a relaunched game's gadget cannot listen and the
+attach lands on the dead process.  Kill the leftover before relaunching.
+
+The only target-process call between the entry snapshot and the next read is the
+`--no-patternjson` sweep, so that flag is the switch for testing whether the
+sweep is what a given crash lands on; with it, the label comes from
+`chart_labels.json` instead.
 
 Notes
 -----
@@ -379,6 +390,21 @@ def capture_name(rt, snap, name_by='variant'):
     return song_name(snap)
 
 
+def label_cache_as_runtime(snap):
+    """Build an `rt`-shaped label from the API cache, without touching the game.
+
+    Used by `--no-patternjson`, which skips the `rw-` range sweep that normally reads the
+    game's `c2s_get_pattern_file` request JSON out of memory.  The cache is filled in from
+    mitmproxy captures by `chart_labels.py`, so it only covers songs already seen — when it
+    misses, naming falls back to `song_<hash>`.
+    """
+    lab = label_for(snap.get('ezi_url'), os.path.dirname(os.path.abspath(__file__))) or {}
+    if not lab.get('song'):
+        return None
+    return {'musicresourcename': lab['song'], 'keymode': lab.get('keymode'),
+            'levelmode': lab.get('levelmode'), 'gamemode': lab.get('gamemode')}
+
+
 def settle(sc, timeout=20.0, interval=1.0):
     """Wait for the game to finish parsing, then read the parsed state once.
 
@@ -417,7 +443,7 @@ def settle(sc, timeout=20.0, interval=1.0):
         time.sleep(interval)
 
 
-def capture(sc, snap, out_root, name_by='title', read_dic=False):
+def capture(sc, snap, out_root, name_by='title', read_dic=False, use_patternjson=True):
     t0 = time.time()
 
     def mark(label, extra=''):
@@ -425,10 +451,16 @@ def capture(sc, snap, out_root, name_by='title', read_dic=False):
         print('   [+%5.1fs] %s%s' % (time.time() - t0, label, extra), flush=True)
 
     # Read the runtime identity FIRST, so the directory can be named after the song rather
-    # than after a URL hash. This is the same scan describe() would need, so it is only
-    # done once.
+    # than after a URL hash.  `patternjson` sweeps every `rw-` range for the request JSON;
+    # `--no-patternjson` skips that sweep and takes the label from the API cache instead,
+    # which is the switch used to test whether the sweep is what the game dies on.
     mark('reading the runtime label')
-    rt = runtime_pattern(sc)
+    if use_patternjson:
+        rt = runtime_pattern(sc)
+    else:
+        rt = label_cache_as_runtime(snap)
+        print('   note    : --no-patternjson; label from the API cache%s'
+              % ('' if rt else ' (miss, will fall back to the URL hash)'))
 
     name = capture_name(rt, snap, name_by)
     d = os.path.join(out_root, name)
@@ -612,6 +644,14 @@ def main():
                     help="variant (default): <song>_<keymode>_<difficulty> so each mode and "
                          "difficulty keeps its own capture; title: just the song, merging "
                          "variants; id: the numeric music id plus the variant")
+    ap.add_argument(
+        "--no-patternjson",
+        action="store_true",
+        help="skip the rw- range sweep that reads the in-play request JSON out of memory, "
+             "and take the song/mode/difficulty from chart_labels.json instead. Diagnostic: "
+             "that sweep is the only target-process call between the entry snapshot and the "
+             "next read, so skipping it separates it from the managed reads.",
+    )
     ap.add_argument("--gadget", default=GADGET)
     ap.add_argument(
         "--read-instrument-dic",
@@ -639,12 +679,26 @@ def main():
         sys.exit("missing %s — run: bash tools/il2cpp/build_run.sh" % driver)
     sc = ses.create_script(open(driver).read())
     sc.load()
-    print("attached to gadget; watching for songs (Ctrl-C to stop)")
 
     seen = set()
     probe = getattr(sc.exports_sync, 'probe', None)
     if probe is None:
         print('note: driver has no probe(); falling back to the heavy ident() poll')
+    else:
+        # Health check.  A dead read path on the very first read almost always means we
+        # attached to a *leftover* game process: when a crashed game's main thread exits
+        # while the process lingers, that husk keeps the gadget's TCP port bound
+        # (127.0.0.1:27042), so a relaunched game's gadget cannot listen and the attach
+        # lands on the corpse instead.
+        try:
+            rpc(sc, 'probe')
+        except GameWedged as e:
+            sys.exit("the gadget is not answering reads (%s).\n"
+                     "This usually means a previous game process is still alive and holding\n"
+                     "port 27042:  pgrep -af EZ2ON.exe\n"
+                     "Kill any leftover, relaunch the game, then retry." % e)
+    print("attached to gadget; watching for songs (Ctrl-C to stop)")
+
     wedges = 0
     while True:
         try:
@@ -675,7 +729,8 @@ def main():
             try:
                 full = rpc(sc, 'ident')             # the real snapshot, once
                 _d, wedged = capture(sc, full, a.out, a.name_by,
-                                     read_dic=a.read_instrument_dic)
+                                     read_dic=a.read_instrument_dic,
+                                     use_patternjson=not a.no_patternjson)
                 if wedged:
                     print("\nread path is gone — stopping the watch.\n"
                           "Restart the game, then the dumper.")
