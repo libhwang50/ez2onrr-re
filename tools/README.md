@@ -8,10 +8,10 @@ ripper scripts at the repository root (`extract_assets.py`, `find_bundle.py`,
 
 | directory | contents |
 |---|---|
-| `il2cpp/` | `frida-il2cpp-bridge` (`_il2cpp_bridge.js`) plus all IL2CPP drivers: symbolication (`_sym.js`, `_encl.js`), call-site scanning (`_findcallers.js`), code dumping (`_dump_code.js`), field/class inspection (`_igc.js`, `_tables.js`, `_cova.js`, `_namemap.js`, `_klassname.js`), scanners (`_staticscan.js`, `_finddisp.js`, `_sbox3.js`, `_asascan.js`), and older live-introspection tools (`_diag.py`, `_poll_capture.py`). |
+| `il2cpp/` | `frida-il2cpp-bridge` (`_il2cpp_bridge.js`) plus all IL2CPP drivers: symbolication (`_sym.js`, `_encl.js`), **call-site scanning and enclosing-method attribution (`_callers.js` — the workhorse)**, **klass/vtable inspection (`_slotfind.js`, `_probe_cls.js`)**, **static-field extraction (`_statics.js`, `_mem.js`, `_methods.js`, `_vt.js`)**, code dumping (`_dump_code.js`), field/class inspection (`_igc.js`, `_tables.js`, `_cova.js`, `_namemap.js`, `_klassname.js`), scanners (`_staticscan.js`, `_finddisp.js`, `_sbox3.js`, `_asascan.js`), and older live-introspection tools (`_diag.py`, `_poll_capture.py`). |
 | `probes/` | Passive runtime probes (safe) and the hook experiments. |
 | `mitm/` | mitmproxy addons (`_cdn_rewrite.py`), flow parsing, API decryption. |
-| `crypto/` | Cipher analysis: a verified parameterised Rijndael (`_rijndael256.py`, `_rijsearch.py`), key sweeps, brute-forcers. |
+| `crypto/` | Cipher analysis. `_chart_cipher.py` is the **reference implementation of the (now-solved) CDN chart cipher** — mask + AES-256-CBC; the production CLI lives at the repo root as `decrypt_chart.py`. Also a verified parameterised Rijndael (`_rijndael256.py`, `_rijsearch.py`), key sweeps, brute-forcers. |
 | `legacy/` | Superseded first-generation tooling (in-process WinHTTP download, early camera/field dumpers). |
 | `../data/` | Derived analysis artefacts (JSON: symbol maps, key-candidate tables, scan results). |
 | `build/` | **Generated** runnable drivers (git-ignored) — one flat directory, so the source dirs stay clean. |
@@ -42,6 +42,17 @@ sc  = s.create_script(open("tools/il2cpp/_sym_run.js").read())
 sc.load()
 print(sc.exports_sync.sym(["0x6ffff..."]) if False else "ready")
 ```
+
+Or just use the runner, which resolves and loads `tools/build/<driver>_run.js`:
+
+```bash
+python3 tools/_r.py _callers all '["0x6ffff2d97380"]'      # callers of one VA, attributed
+python3 tools/_r.py _statics statics '"Assembly-CSharp"' '"InGameCore"'   # static fields
+python3 tools/_dis.py 0x6ffff2d971b0 0x1e0                  # disassemble a range
+```
+
+`tools/_dis.py` reads live module bytes through the gadget and disassembles with capstone,
+so it needs no local copy of `GameAssembly.dll`.
 
 ## ⚠️ Things that crash the game — do not repeat
 
