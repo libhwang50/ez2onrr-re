@@ -62,6 +62,32 @@ def song_name(snap):
     return "song_" + (m.group(1) if m else str(int(time.time())))
 
 
+def settle(sc, timeout=15.0, interval=0.4):
+    """Poll until the game has finished parsing the chart it just fetched.
+
+    `ident()` is first readable as soon as the CDN URLs appear, which is before the
+    chart is parsed — so an immediate snapshot reports lanes=[0,0,0,0] and dic=0.
+    Returns the snapshot with the most parse progress seen before the timeout.
+    """
+    deadline = time.time() + timeout
+    best, best_score = None, -1
+    while True:
+        try:
+            snap = sc.exports_sync.ident()
+            lanes = [x for x in (snap.get('normalLanes') or []) if isinstance(x, int) and x > 0]
+            dic = snap.get('instrumentDicCount') or 0
+            score = sum(lanes) + dic
+            if score > best_score:
+                best, best_score = snap, score
+            if lanes and dic:
+                return snap
+        except Exception:
+            pass
+        if time.time() >= deadline:
+            return best
+        time.sleep(interval)
+
+
 def capture(sc, snap, out_root):
     name = song_name(snap)
     d = os.path.join(out_root, name)
@@ -72,8 +98,6 @@ def capture(sc, snap, out_root):
     print("   notes   : lanes=%s  dic=%s  bpm=%s  measures=%s" % (
         snap.get("normalLanes"), snap.get("instrumentDicCount"),
         snap.get("bpmNoteDataCount"), snap.get("MeasureScaleDataCount")))
-    with open(os.path.join(d, "ident.json"), "w") as f:
-        json.dump(snap, f, indent=1)
 
     # 1) the CDN payloads — grab them before the signed URL expires, then decrypt
     for field, tag, ext in (("ez_url", "ez", "ez"), ("ezi_url", "ezi", "ezi")):
@@ -119,6 +143,23 @@ def capture(sc, snap, out_root):
             print("   saved mem_rjl/rjm/rjn (in-memory buffers + key)")
     except Exception as e:
         print("   !! da.rus read failed: %s" % e)
+
+    # 2) wait for the game to finish parsing, then snapshot the parsed state.
+    #    The ident() taken on entry races the parse and reports zeros.
+    settled = settle(sc)
+    if settled:
+        with open(os.path.join(d, "ident.json"), "w") as f:
+            json.dump(settled, f, indent=1)
+        lanes = settled.get("normalLanes")
+        print("   parsed  : lanes=%s  dic=%s  bpm=%s  measures=%s" % (
+            lanes, settled.get("instrumentDicCount"),
+            settled.get("bpmNoteDataCount"), settled.get("MeasureScaleDataCount")))
+        if not lanes or not any(isinstance(x, int) and x > 0 for x in lanes):
+            print("   !! chart not parsed within the settle window; ident.json may be early")
+    else:
+        with open(os.path.join(d, "ident.json"), "w") as f:
+            json.dump(snap, f, indent=1)
+        print("   !! could not re-read ident; wrote the entry-time snapshot")
 
     # 3) the decrypted, parsed chart as the game holds it
     try:
