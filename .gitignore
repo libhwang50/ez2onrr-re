@@ -34,3 +34,7 @@ tools/**/*_out.json
 
 # rendered audio (derived from extracted_assets + charts)
 rendered_songs/
+
+# derived from captured API traffic (see the capture rules above); regenerate with
+# chart_labels.py
+chart_labels.json
