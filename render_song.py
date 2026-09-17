@@ -243,13 +243,23 @@ def discover_charts(root):
 
 
 def chart_name(song_dir, root='extracted_charts'):
-    """A unique, readable name for one capture directory."""
+    """A unique, readable name for one capture directory.
+
+    Captures nest as <song>/<keymode>/<difficulty>, so neither the basename ("shd") nor a name
+    taken relative to a *per-song* root ("4k_ez") is unique: the first collides across key
+    modes, the second across songs.  A bulk run on a song dir used to produce the latter, so
+    every song's 4K EZ render wanted the same filename.
+
+    Prefer the path relative to the charts root; when the directory is not under it, fall back
+    to the last three components, which is exactly that nesting.
+    """
+    path = os.path.normpath(song_dir)
     try:
-        rel = os.path.relpath(os.path.normpath(song_dir), os.path.normpath(root))
-    except ValueError:
-        rel = os.path.basename(os.path.normpath(song_dir))
-    if rel.startswith('..'):
-        rel = os.path.basename(os.path.normpath(song_dir))
+        rel = os.path.relpath(path, os.path.normpath(root))
+    except ValueError:                              # e.g. a different drive on Windows
+        rel = ''
+    if not rel or rel.startswith('..') or os.path.isabs(rel):
+        rel = os.sep.join(path.split(os.sep)[-3:])
     return rel.replace(os.sep, '_')
 
 
@@ -283,7 +293,8 @@ def main():
             sys.exit('no charts with ez.ez + ezi.ezi under %s' % args.charts)
         print('rendering %d chart(s) -> %s\n' % (len(charts), outdir))
         ok = skipped = 0
-        for d, name in charts:
+        for d, _name in charts:
+            name = chart_name(d)                    # includes the song, unlike the walk name
             out = os.path.join(outdir, name + '.flac')
             try:
                 print(render_one(d, args.assets, out, **kw))

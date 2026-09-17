@@ -916,7 +916,11 @@ def main():
         outdir = args.out or "visualizations"
         print("rendering %d chart(s) -> %s\n" % (len(charts), outdir))
         ok = skipped = failed = 0
-        for d, name in charts:
+        for d, _walkname in charts:
+            # Name from the capture's own path, not the walk's: a walk name is relative to the
+            # root given, so pointing at a song directory dropped the song and every song's
+            # 4K EZ render wanted the same filename.
+            name = render_song.chart_name(d)
             out = os.path.join(outdir, "%s.mp4" % name)
             if os.path.exists(out) and args.skip_existing and not args.force:
                 print("%-24s SKIP: exists (use --force to re-render)" % name)
