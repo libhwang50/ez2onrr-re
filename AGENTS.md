@@ -207,21 +207,41 @@ response, so experiments need no restart.
 * **`name` at `0x06` is not the song name** — it is an authoring tag. Observed values:
   `4-shd`, `#PTMAKE` (presumably built with the in-game pattern maker), and empty.
   Conflict and Hyper Magic are different songs that both carry `4-shd`.
-* **Track 22 triggers the song's pre-mixed backing track — this is where the full song is.**
-  Every one of the 5 captured songs holds a single type-1 note there (positions 0, 96 or
-  192 ticks) whose keysound is the whole song. Verified by duration: Conflict's MR is
-  159.8 s against a chart-implied 153.8 s, Rebind's 161.8 s against 162.6 s.
-  **The filename varies and cannot be used to find it** — `00-MR.wav`, `MR.wav`,
-  `99-BG.wav`, and for `ae_illusion` `mrt22Fix.wav` ("MR, track 22, fixed", 105.8 s).
-  Resolve it from the chart: `parse_chart.py --backing --ezi f.ezi f.ez`.
-* **Tracks 23–63 are additional auto-played keysound triggers.** Indices 0–21 keep the
-  arcade roles; 22 is the backing trigger. Beyond that they carry hundreds of type-1
-  events each across most of the song (Conflict: track 27 = 694 notes, 229 distinct
-  keysounds, 94 % span; track 28 = 886/200). Every keysound declared in a `.ezi` is
-  referenced by some track — `declared-but-unplayed` is 0 for both songs checked — so
-  the bank is fully sequenced by the chart. Whether the in-game mix is the backing track
-  alone (keysounds being player-hit sounds only) or backing *plus* these layers is **not
-determined**; that needs listening or engine-side audio routing analysis.
+* **Track 22 triggers a supplementary `MR` layer, not the full song.** Every one of the 5
+  captured songs holds a single type-1 note there (positions 0, 96 or 192 ticks).
+  **Do not mistake it for the song** — per listening, it contains only the instruments too
+  long or too incidental to sample as keysounds. Rebind's `MR` is ambience alone. Its
+  filename varies (`00-MR.wav`, `MR.wav`, `99-BG.wav`, and for `ae_illusion`
+  `mrt22Fix.wav` = "MR, track 22, fixed"), so resolve it from the chart:
+  `parse_chart.py --backing --ezi f.ezi f.ez`.
+* **The song is a render of the chart.** Playing every type-1 note on every track, each
+  keysound at its scheduled time, reconstructs it. Tracks 3–6 are the player's lane input
+  and 23–63 are auto-played instrument layers; the split does not matter for rendering —
+  all of them sound. Every keysound declared in a `.ezi` is referenced by some track
+  (`declared-but-unplayed` is 0), so the bank is fully sequenced by the chart.
+
+### 3.6 Tick → seconds (validated)
+
+```
+seconds = ticks * 1.25 / BPM          # piecewise, at each BPM change
+```
+
+A measure is **always 4 beats of 48 ticks**, and `ticksPerMeasure` is always 192. So a
+measure lasts `4 * 60 / BPM` seconds and one tick `60 / (BPM * 48)`.
+
+**`beatsPerMeasure` (type 4/5 events) does NOT change timing** — it is visual/metrical only.
+This matters: Conflict has a 4→7 change at tick 11136 and back to 4 at 14832, which makes
+the difference between 175.41 s and 153.75 s.
+
+| song | model | BGA video |
+|---|---|---|
+| Rebind | 162.58 s | 162.67 s |
+| Conflict | 153.75 s | 154.47 s |
+
+Both videos run slightly longer than the chart, consistent with a lead-out. Treating the
+time-signature change as a real tempo change would be off by 21 s on Conflict.
+
+`Chart.seconds_at(tick)` and `Chart.note_seconds()` in `parse_chart.py` implement this.
 * **Open: note types 5/6/9** (and 8 in some files) are undocumented; the reference
   `ezinfo` reports them as unhandled. Exposed raw by `parse_chart.py`.
 

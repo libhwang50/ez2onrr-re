@@ -186,18 +186,63 @@ class Chart:
 
     @property
     def backing_note(self):
-        """The note that triggers the song's pre-mixed backing track, if any.
+        """The note that triggers the song's supplementary `MR` layer, if any.
 
-        Track 22 holds a single type-1 note whose keysound is the whole song (the `MR`
-        sample). Verified on all 5 captured songs, all of which place it at track 22 —
-        positions 0, 96 or 192 ticks. Its filename varies (`00-MR.wav`, `MR.wav`,
-        `99-BG.wav`, and for ae_illusion `mrt22Fix.wav`), so resolve it from the chart,
-        not by name.
+        Track 22 holds a single type-1 note whose keysound carries the instruments too
+        long or too incidental to sample as keysounds (for Rebind, ambience alone). It is
+        **not** the full song — the song is a render of the whole chart (see module docs).
+        Verified on all 5 captured songs, all of which place it at track 22, positions 0,
+        96 or 192 ticks. The filename varies (`00-MR.wav`, `MR.wav`, `99-BG.wav`, and for
+        ae_illusion `mrt22Fix.wav`), so resolve it from the chart, not by name.
         """
         if len(self.tracks) <= 22:
             return None
         notes = self.tracks[22].notes_of_type(1)
         return notes[0] if notes else None
+
+    # --- timing (AGENTS.md 3.6) --------------------------------------------- #
+
+    def tempo_segments(self):
+        """[(startTick, endTick, BPM)] taken from the Control track's type-3 events."""
+        bpm = self.header['initialBPM'] or 120.0
+        changes = sorted({(n.position, float(n.value))
+                          for n in self.tracks[0].notes_of_type(3)}) if self.tracks else []
+        segs, last = [], 0
+        for tick, val in changes:
+            if tick > last:
+                segs.append((last, tick, bpm))
+                last = tick
+            bpm = val or bpm
+        segs.append((last, self.header['totalTicks'], bpm))
+        return [s for s in segs if s[1] > s[0]]
+
+    def seconds_at(self, tick):
+        """Chart tick -> seconds.
+
+        A measure is always 4 beats of 48 ticks and `ticksPerMeasure` is always 192, so
+        one measure lasts `4 * 60 / BPM` seconds. A type-4/5 `beatsPerMeasure` event is
+        visual/metrical only and deliberately does **not** affect timing — treating it as
+        a real tempo change is off by 21 s on Conflict (AGENTS.md 3.6).
+        """
+        tpm = self.header['ticksPerMeasure'] or 192
+        want, acc = float(tick), 0.0
+        for t1, t2, bpm in self.tempo_segments():
+            if want <= t1:
+                break
+            acc += (min(want, t2) - t1) * 4.0 * 60.0 / (bpm * tpm)
+        return acc
+
+    def note_seconds(self):
+        """[(seconds, trackIndex, Note)] for every type-1 note, in time order."""
+        out = [(self.seconds_at(n.position), t.index, n)
+               for t in self.tracks for n in t.notes_of_type(1)]
+        out.sort(key=lambda r: (r[0], r[1]))
+        return out
+
+    @property
+    def duration(self):
+        """Seconds from tick 0 to totalTicks."""
+        return self.seconds_at(self.header['totalTicks'])
 
     def as_dict(self):
         return {'header': self.header,
