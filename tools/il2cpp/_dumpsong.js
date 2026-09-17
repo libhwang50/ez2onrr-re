@@ -5,6 +5,31 @@ function hexOf(a, n) {
     try { const p = dat(a); const u = new Uint8Array(p.readByteArray(Math.min(a.length, n || 32)));
           let h = ''; for (let i = 0; i < u.length; i++) h += u[i].toString(16).padStart(2, '0'); return h; } catch (e) { return null; }
 }
+// Cache the class and the `instance` Field (a static). Note: a Field obtained from a class
+// reads as STATIC via .value, so instance fields must still be resolved per object.
+let _cls = null, _instField = null;
+function coreClass() {
+    if (_cls) return;
+    const img = Il2Cpp.domain.assembly("Assembly-CSharp").image;
+    _cls = img.class('InGameCore');
+    _instField = _cls.field('instance');
+}
+
+rpc.exports.probe = function () {
+    return onMain(() => {
+        try {
+            coreClass();
+            const inst = _instField.value;
+            if (!inst) return { hasInst: false };
+            const o = { hasInst: true };
+            try { const v = inst.field('ez_url').value;  o.ez_url  = v ? v.content : null; } catch (e) {}
+            try { const v = inst.field('ezi_url').value; o.ezi_url = v ? v.content : null; } catch (e) {}
+            try { o.ready = inst.field('ReadyToURL').value; } catch (e) {}
+            return o;
+        } catch (e) { return { err: '' + e }; }
+    });
+};
+
 rpc.exports.ident = function (withLanes) {
     return onMain(() => {
         const img = Il2Cpp.domain.assembly("Assembly-CSharp").image;
@@ -105,4 +130,24 @@ rpc.exports.instrumentDic = function () {
         }
         return out;
     });
+};
+
+// The c2s_get_pattern_file request JSON the game holds as a UTF-16 string; it carries
+// musicresourcename / keymode / levelmode / gamemode for the chart in play.
+rpc.exports.patternjson = function () {
+    const pat = '7b 00 22 00 61 00 70 00 70 00 69 00 64 00 22 00 3a 00 22 00';  // {"appid":"
+    const out = [];
+    for (const r of Process.enumerateRanges({ protection: 'rw-', coalesce: true })) {
+        if (r.size < 64 || r.size > 512 * 1024 * 1024) continue;
+        try {
+            for (const m of Memory.scanSync(r.base, r.size, pat)) {
+                try {
+                    const s = m.address.readUtf16String(400);
+                    if (s && s.indexOf('musicresourcename') >= 0) out.push(s.replace(/\u0000.*$/, ''));
+                } catch (e) {}
+            }
+        } catch (e) {}
+        if (out.length >= 40) break;
+    }
+    return out;
 };

@@ -100,8 +100,13 @@ def runtime_pattern(sc):
     which is authoritative and needs no API capture. Scanning takes ~2 s.
     """
     try:
-        found = sc.exports_sync.patternjson()
-    except Exception:
+        fn = getattr(sc.exports_sync, 'patternjson', None)
+        if fn is None:
+            print('   !! driver has no patternjson(); cannot read the runtime label', flush=True)
+            return None
+        found = fn()
+    except Exception as e:
+        print('   !! patternjson failed: %s' % e, flush=True)
         return None
     for s in (found or []):
         try:
@@ -285,6 +290,12 @@ def capture(sc, snap, out_root):
     name = song_name(snap)
     d = os.path.join(out_root, name)
     os.makedirs(d, exist_ok=True)
+    t0 = time.time()
+
+    def mark(label, extra=''):
+        # Timestamped, flushed: if the game dies mid-capture this says exactly where.
+        print('   [+%5.1fs] %s%s' % (time.time() - t0, label, extra), flush=True)
+
     print("\n=== %s ===" % name)
     print("   ez_url  : %s" % (snap.get("ez_url") or "")[:80])
     print("   ezi_url : %s" % (snap.get("ezi_url") or "")[:80])
@@ -325,6 +336,7 @@ def capture(sc, snap, out_root):
             print("   !! %s decrypt failed: %s  (cdn_*.bin kept for later)" % (tag, e))
 
     # 2) the in-memory buffers the game actually decrypts
+    mark('reading da.rus buffers')
     try:
         rus = sc.exports_sync.da_rus_full()
         if rus:
@@ -339,6 +351,7 @@ def capture(sc, snap, out_root):
 
     # 2) wait for the game to finish parsing, then snapshot the parsed state.
     #    The ident() taken on entry races the parse and reports zeros.
+    mark('waiting for the game to finish parsing')
     settled = settle(sc)
     if settled:
         lanes = settled.get("normalLanes")
@@ -352,6 +365,7 @@ def capture(sc, snap, out_root):
 
     # name the song and its mode/difficulty
     try:
+        mark('reading the runtime label')
         rt = runtime_pattern(sc)
         text, label = describe(settled or snap, d, rt)
         print(text)
@@ -364,19 +378,23 @@ def capture(sc, snap, out_root):
 
     # 3) the decrypted, parsed chart as the game holds it
     try:
+        mark('reading instrumentDic')
         dic = sc.exports_sync.instrument_dic()
         with open(os.path.join(d, "instrumentDic.json"), "w") as f:
             json.dump(dic, f)
         print("   saved instrumentDic.json (%d entries)" % len(dic))
     except Exception as e:
         print("   !! instrumentDic read failed: %s" % e)
+    mark('capture complete')
     return d
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="extracted_charts")
-    ap.add_argument("--interval", type=float, default=0.5)
+    ap.add_argument("--interval", type=float, default=1.0,
+                    help="watch poll interval in seconds (default 1.0; the signed URL lives "
+                         "~150 s so there is no need to poll fast)")
     ap.add_argument("--gadget", default=GADGET)
     a = ap.parse_args()
 
@@ -398,10 +416,16 @@ def main():
     sc.load()
     print("attached to gadget; watching for songs (Ctrl-C to stop)")
 
-    seen, last_note = set(), 0.0
+    seen = set()
+    probe = getattr(sc.exports_sync, 'probe', None)
+    if probe is None:
+        print('note: driver has no probe(); falling back to the heavy ident() poll')
     while True:
         try:
-            snap = sc.exports_sync.ident()
+            # probe() is ~3x cheaper than ident(): three field reads instead of reflecting over
+            # patternFileInfo, reading the da.rus buffers and counting five lists. The full
+            # snapshot is only needed once a song is actually being captured.
+            snap = probe() if probe is not None else sc.exports_sync.ident()
         except Exception:
             time.sleep(1.0)
             continue
@@ -409,7 +433,8 @@ def main():
         if url and url not in seen:
             seen.add(url)
             try:
-                capture(sc, snap, a.out)
+                full = sc.exports_sync.ident()      # the real snapshot, once
+                capture(sc, full, a.out)
             except Exception as e:
                 print("   !! capture error: %s" % e)
         time.sleep(a.interval)
