@@ -187,18 +187,29 @@ response, so experiments need no restart.
   game's parsed `instrumentDic` 2719/2719.
 * **The `.ezi` is per song, NOT per mode or difficulty.** Comparing every variant captured
   (Conflict at keymode 1/levelmode 4, 1/3 and 3/3; Engine at 1/4, 3/3 and two gamemodes;
-  Destr0yer at 1/4 and 3/3) each song's decrypted `.ezi` is **byte-identical** — one
-  sha256 per song. So the keysound bank is a property of the song, and a new difficulty
-  never needs a fresh keysound set.
-* **The `.ez` chart DOES differ by both keymode and difficulty — including the auto-played
-  tracks.** Conflict SHD vs HD (same keymode 1, gamemode 1) differs in the lanes
-  (450/454/461/449 vs 331/330/340/303) *and* in nearly every auto-play track (23–63), while
-  the track-22 `MR` note is the same. So each variant is a different arrangement and each
-  renders differently.
+  Destr0yer at 1/4 and 3/3; PUPA 5K HD vs 5K NM; **Hyper Magic 4K SHD vs 8K EZ**) each
+  song's decrypted `.ezi` is **byte-identical** — one sha256 per song, even across key
+  modes. So the keysound bank is a property of the song, and no new difficulty or key mode
+  ever needs a fresh keysound set.
+* **The `.ez` chart differs by keymode and difficulty — but only in how notes are ASSIGNED,
+  not in what sounds.** Comparing the multiset of `(position, keysound)` over *all* tracks:
+  * PUPA 5K HD vs 5K NM — **identical**, 4047 events each, none unique to either, and the
+    two render to **byte-identical audio**;
+  * Conflict 4K HD is a strict **subset** of 4K SHD (7 events dropped, 0 added);
+  * Hyper Magic 4K SHD vs 8K EZ differ by 3 events out of 2506.
+
+  Meanwhile the lanes for PUPA differ hugely (1297 vs 704 notes) and the auto-play tracks
+  differ by exactly the opposite amount (-593/+593). So difficulty moves notes between the
+  player's lanes and the auto-played tracks; the song is unchanged.
+  **Practical consequence: one chart per song is enough to render the full song.** Capturing
+  every difficulty is not needed for the audio.
+* **The `.ez` per-track counts differ by keymode and difficulty** (Conflict SHD vs HD differs
+  in the lanes *and* in nearly every track 23–63, while the track-22 `MR` note is the same).
+  It is the track *assignment* that moves, per the point above.
 * **Key mode is directly readable from the chart**: the number of playable lanes is the
-  count of tracks from 3 upwards that carry notes — 4 for keymode `1` (4K), **6 for keymode
-  `3` (6K)**. The API's keymode is 1-based and does not map obviously onto 4K/5K/6K/7K/8K
-  beyond that; `keymode` 2 and 4+ have not been captured.
+  count of tracks from 3 upwards that carry notes — 4 → 4K (API keymode `1`), 5 → 5K,
+  6 → 6K (API keymode `3`), 8 → 8K. Confirmed on all four. 7K is unobserved (it is said to
+  be course-only, behind the O2Jam Collaboration DLC).
 * **Difficulty is `levelmode`: 1=EZ, 2=NM, 3=HD, 4=SHD** (Conflict and Engine at levelmode 4
   are both SHD; Conflict levelmode 3 is HD). `gamemode` 1 and 2 produced identical charts
   for the same mode/difficulty, so it is not a chart selector.
@@ -226,9 +237,15 @@ response, so experiments need no restart.
   The unit of the long-note `flags` value is unknown (it is *not* a tick count), and it has
   **no audio effect**: verified in-game that a long note's keysound plays exactly like a
   normal note's and is not sustained. The distinction must drive judgement or visuals.
-* **`name` at `0x06` is not the song name** — it is an authoring tag. Observed values:
-  `4-shd`, `#PTMAKE` (presumably built with the in-game pattern maker), and empty.
-  Conflict and Hyper Magic are different songs that both carry `4-shd`.
+* **`name` at `0x06` is the chart variant, not the song name**: it is `<keys>-<difficulty>`, e.g.
+  `4-shd`, `8-ez`, `5-nm`, `5-hd`. So it decodes the key mode **and** difficulty straight
+  from the chart, which is more direct than asking the API. It is not always set — Engine
+  and Revelation leave it empty — and `#PTMAKE` marks a chart built with the in-game
+  pattern maker. Different songs genuinely share a tag: Conflict and Hyper Magic both
+  carry `4-shd` because both are 4K SHD.
+* **Key mode from the lane count**, which matches the name tag on every sample: 4 lanes →
+  4K, 5 → 5K, 6 → 6K, 8 → 8K. (7K is unobserved; it is said to be course-only.) This is
+  the fallback when the name is empty or `#PTMAKE`.
 * **Track 22 triggers a supplementary `MR` layer, not the full song.** Every one of the 5
   captured songs holds a single type-1 note there (positions 0, 96 or 192 ticks).
   **Do not mistake it for the song** — per listening, it contains only the instruments too
@@ -436,11 +453,11 @@ header, tracks, note events with normal/long, `.ezi` join; JSON or a note listin
 
 **Next:**
 
-1. Capture `keymode` 2 and 4+ to finish the keymode → 4K/5K/6K/7K/8K map (only 1 → 4 lanes
-   and 3 → 6 lanes are known), and check whether 7K is really course-only.
-2. Identify note types 5/6/9 against `InGameCore`'s `specialNoteData` / `autoNoteData`.
-3. Record the song id in `ident.json` directly rather than via `chart_labels.json` —
-   `patternFileInfo` reads empty at capture time, so the API traffic is currently the only
-   source for the name and difficulty.
+1. Identify note types 5/6/9 against `InGameCore`'s `specialNoteData` / `autoNoteData`.
+2. Find the song *name* for a chart with no API label — the header name gives the variant
+   (`5-hd`) but not the song, so `dump_song.py` still falls back to `song_<hash>` there.
+   (`patternFileInfo` reads empty at capture time, which is what forces the API route.)
+3. Determine whether the API's `keymode` ever disagrees with the header-name / lane-count
+   key mode (7K unobserved; 8K seen as `8-ez` but no API label yet).
 4. Find what selects the key pair (`svk`/`svm`/`svo`) — not the payload, the CDN path, or
    `bundleCryptKey`; it looks like an authoring/build-time choice.

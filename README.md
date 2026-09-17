@@ -114,6 +114,11 @@ python3 parse_chart.py --backing --ezi song/ezi.ezi song/ez.ez
 > too long or too incidental to sample as keysounds (for Rebind, just ambience).
 > `parse_chart.py --backing` finds that layer, and `render_song.py` builds the song. See
 > `AGENTS.md` §3.5.
+>
+> **One chart per song is enough.** Difficulty and key mode do not change the song — they
+> move notes between the player's lanes and the auto-played tracks. PUPA 5K HD and 5K NM
+> have identical note-event sets and render to byte-identical audio, and the `.ezi`
+> keysound index is byte-identical for every variant of a song.
 
 ### Rendering a song
 

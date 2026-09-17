@@ -55,21 +55,21 @@ DIFF_LABEL = {'1': 'EZ', '2': 'NM', '3': 'HD', '4': 'SHD'}
 LABELS_FILE = 'chart_labels.json'
 
 
-def chart_keymode(ez_path):
-    """Key mode, from the chart itself: the number of playable lanes.
+def chart_variant(ez_path):
+    """(keymode, difficulty, lane_count) read out of the chart itself.
 
-    Lanes are the tracks from 3 upwards that carry notes (3-6 for 4K, 3-8 for 6K, ...),
-    verified against the game's `normalLanes`. This is the one label that needs no help
-    from the API, so it works even for a capture with no matching labels file.
+    The header name encodes the variant (`4-shd`, `8-ez`, `5-nm`), so both labels usually
+    come straight from the chart. When it does not (empty, or `#PTMAKE` for a
+    pattern-maker chart) key mode still falls back to the playable lane count and
+    difficulty has to come from the API.
     """
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from parse_chart import parse_ez
         ch = parse_ez(open(ez_path, 'rb').read())
-        lanes = sum(1 for t in ch.tracks[3:22] if t.notes_of_type(1))
-        return LANE_LABEL.get(lanes), lanes
+        return ch.keymode, ch.difficulty, ch.lane_count
     except Exception:
-        return None, None
+        return None, None, None
 
 
 def label_for(ezi_url, root='.'):
@@ -92,20 +92,23 @@ def label_for(ezi_url, root='.'):
 def describe(snap, d):
     """One line naming the song and its mode/difficulty, plus a dict for ident.json."""
     lab = label_for(snap.get('ezi_url'), os.path.dirname(os.path.abspath(__file__))) or {}
-    km, lanes = chart_keymode(os.path.join(d, 'ez.ez'))
-    diff = DIFF_LABEL.get(str(lab.get('levelmode')))
+    km, diff, lanes = chart_variant(os.path.join(d, 'ez.ez'))
+    from_name = bool(diff)
+    if not diff:
+        diff = DIFF_LABEL.get(str(lab.get('levelmode')))
     song = lab.get('song') or song_name(snap)
     bits = [b for b in (km, diff) if b]
-    out = {'song': song, 'keymode': km, 'lanes': lanes,
-           'difficulty': diff, 'levelmode': lab.get('levelmode'),
-           'gamemode': lab.get('gamemode'),
-           'api_keymode': lab.get('keymode'), 'labelSource': lab.get('source')}
+    out = {'song': song, 'keymode': km, 'lanes': lanes, 'difficulty': diff,
+           'difficultyFromName': from_name, 'levelmode': lab.get('levelmode'),
+           'gamemode': lab.get('gamemode'), 'api_keymode': lab.get('keymode'),
+           'labelSource': lab.get('source')}
     text = '   song    : %s%s' % (song, ('  [%s]' % ' '.join(bits)) if bits else '')
-    if lab:
-        text += '   (api keymode=%s levelmode=%s gamemode=%s)' % (
-            lab.get('keymode'), lab.get('levelmode'), lab.get('gamemode'))
+    if from_name:
+        text += "   (variant from the chart's header name)"
+    elif lab:
+        text += '   (difficulty from API levelmode=%s)' % lab.get('levelmode')
     else:
-        text += '   (no API label; key mode derived from the chart)'
+        text += '   (key mode from lane count; no API label, so difficulty unknown)'
     return text, out
 
 

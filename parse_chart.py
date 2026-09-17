@@ -38,11 +38,18 @@ understood at all.
 import argparse
 import json
 import os
+import re
 import struct
 import sys
 
 BYTES_PER_NOTE = 13
 NOTE_TYPE_NAMES = {1: 'note', 2: 'volume', 3: 'bpm', 4: 'beats'}
+
+# The header `name` at 0x06 is the chart variant, e.g. '4-shd', '8-ez', '5-nm'. It is the
+# most direct source for key mode and difficulty, when the chart sets it.
+VARIANT_RE = re.compile(r'^(\d+)-(ez|nm|hd|shd)$', re.I)
+LANE_LABEL = {4: '4K', 5: '5K', 6: '6K', 7: '7K', 8: '8K'}
+DIFF_BY_LEVELMODE = {'1': 'EZ', '2': 'NM', '3': 'HD', '4': 'SHD'}
 
 # Arcade track roles (EZ2AC v6+). REBOOT files use 64 tracks; roles past 21 are not
 # confirmed, so those are reported by index only.
@@ -185,6 +192,30 @@ class Chart:
         return self.header['totalTicks'] / tpm if tpm else 0.0
 
     @property
+    def lane_count(self):
+        """Playable lanes: tracks from 3 upwards that carry notes (4 for 4K, 8 for 8K...)."""
+        return sum(1 for t in self.tracks[3:22] if t.notes_of_type(1))
+
+    @property
+    def variant(self):
+        """The header name if it encodes one, else None. '#PTMAKE' = pattern-maker chart."""
+        return self.header['name'] or None
+
+    @property
+    def keymode(self):
+        """'4K'..'8K'. Prefers the header name ('4-shd' -> 4K), else counts the lanes."""
+        m = VARIANT_RE.match(self.header['name'] or '')
+        if m:
+            return m.group(1) + 'K'
+        return LANE_LABEL.get(self.lane_count)
+
+    @property
+    def difficulty(self):
+        """'EZ'/'NM'/'HD'/'SHD' from the header name, else None (needs the API's levelmode)."""
+        m = VARIANT_RE.match(self.header['name'] or '')
+        return m.group(2).upper() if m else None
+
+    @property
     def backing_note(self):
         """The note that triggers the song's supplementary `MR` layer, if any.
 
@@ -314,8 +345,12 @@ def load(path):
 
 def summarize_chart(ch):
     h = ch.header
-    lines = ['EZFF chart  v%d  name=%r' % (h['version'], h['name']),
-             '  ticks/measure : %d' % h['ticksPerMeasure'],
+    lines = ['EZFF chart  v%d  name=%r' % (h['version'], h['name'])]
+    bits = [b for b in (ch.keymode, ch.difficulty) if b]
+    if bits:
+        lines.append('  variant       : %s%s' % (' '.join(bits),
+                     '  [from the header name]' if ch.difficulty else '  [from lane count]'))
+    lines += ['  ticks/measure : %d' % h['ticksPerMeasure'],
              '  initial BPM   : %.3f' % h['initialBPM'],
              '  second BPM    : %.3f' % h['secondBPM'],
              '  total ticks   : %d  (%.2f measures)'
@@ -449,9 +484,10 @@ def main():
                             {'keysound': bn.keysound, 'position': bn.position}}
             continue
         if bulk:
-            print('%-52s %-10s v%d  %6.2f BPM  %5d events  %3d tracks'
+            bits = ' '.join(b for b in (ch.keymode, ch.difficulty) if b)
+            print('%-52s %-10s v%d  %6.2f BPM  %5d events  %3d tracks  %s'
                   % (rel, repr(ch.header['name']), ch.header['version'],
-                     ch.header['initialBPM'], total, ch.header['trackCount']))
+                     ch.header['initialBPM'], total, ch.header['trackCount'], bits))
         if args.notes:
             insts = parse_ezi(load(args.ezi)[0]) if args.ezi else None
             for line in note_lines(ch, insts):
