@@ -41,3 +41,6 @@ chart_labels.json
 
 # game metadata cache (regenerate with harvest_metadata.py)
 music_names.json
+
+# visualiser output (derived from charts + BGAs)
+visualizations/

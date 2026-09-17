@@ -299,7 +299,8 @@ Both videos run slightly longer than the chart, consistent with a lead-out. Trea
 time-signature change as a real tempo change would be off by 21 s on Conflict.
 
 `Chart.seconds_at(tick)` and `Chart.note_seconds()` in `parse_chart.py` implement this, and
-`render_song.py` uses it to mix every note's keysound into an audio file. All 5 captured
+`render_song.py` uses it to mix every note's keysound into an audio file, and
+`visualize_song.py` draws that mix as a video with the keysounds overlaid on the BGA. All 5 captured
 songs render; Conflict (6393 events, 2719 distinct keysounds) takes ~3 s and comes out
 with a normal mix profile (mean ≈ −17 dB, normalised peak). Rendering is fast enough to do
 in bulk — 5 songs in 11 s (`render_song.py --all`).
@@ -434,6 +435,9 @@ User-facing (repo root):
 | `parse_chart.py` | **read decrypted charts** — `.ez` note charts and `.ezi` keysound indexes, as a summary, JSON, or note listing |
 | `chart_labels.py` | **name charts** — decrypt captured API traffic into `chart_labels.json` (song name, key mode, difficulty); `dump_song.py` reads it back |
 | `render_song.py` | **render a song** — plays every note's keysound at its scheduled time; `--assets auto` matches keysounds by content |
+| `visualize_song.py` | **visualise a render** — mp4 with keysounds, lanes and progress overlaid on the BGA |
+| `harvest_metadata.py` | dump the game's song metadata table (title, composer) → `music_names.json` |
+| `song_meta.py` | resolve a song's title/composer, with folding and prefix fallbacks |
 | `dump_song.py` | **per-song snapshot** — byte-exact CDN archive, decrypted plaintext, `da.rus` buffers + `instrumentDic`, plus the song/mode/difficulty label read from the running game |
 | `run_dumper.sh` | Il2CppDumper (blocked by the missing metadata magic) |
 

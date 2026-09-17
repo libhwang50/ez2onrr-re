@@ -44,6 +44,9 @@ python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 10
 | `parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
 | `chart_labels.py` | decrypt captured API traffic → `chart_labels.json` (song name, key mode, difficulty) |
 | `render_song.py <song_dir>` | **render the song** — plays every note's keysound at its scheduled time; `--assets auto` matches the keysounds by content, `--all` walks every captured chart |
+| `visualize_song.py <song_dir>` | **visualise the render** — an mp4 with the keysounds, lanes and progress overlaid on the BGA (or a plain background) |
+| `song_meta.py` | look up a song's title/composer from the harvested metadata table |
+| `harvest_metadata.py` | dump the game's song metadata table → `music_names.json` |
 
 Then just **play songs**: `dump_song.py` captures each one on entry and writes
 
@@ -106,6 +109,21 @@ python3 parse_chart.py --dir extracted_charts --json archive.json
 # which keysound is the full song? (track 22's note — the filename varies)
 python3 parse_chart.py --backing --ezi song/ezi.ezi song/ez.ez
 ```
+
+### Visualising a render
+
+```bash
+python3 visualize_song.py extracted_charts/changa2            # -> visualizations/changa2.mp4
+python3 visualize_song.py <song> --no-bga --size 1920x1080 --fps 60
+```
+
+A video of the render: a top bar with the title/variant/composer and a progress bar, a lane
+row that lights as lanes fire, and a ticker of the most recent keysounds with lane, index and
+filename. It uses the song's BGA when one has been extracted, otherwise a plain background.
+
+The overlay is drawn as RGBA frames piped straight into ffmpeg, which composites it and muxes
+the rendered audio in one pass. Rendering runs at roughly 2x realtime at 1280x720/30fps —
+`--fps`, `--size` and `--until` trade that off.
 
 `parse_chart.py` also accepts an encrypted payload straight from the CDN, so
 `python3 parse_chart.py extracted_charts/_live/cur_conflict_ez_url.ez` works too.
