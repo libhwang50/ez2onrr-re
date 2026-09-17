@@ -137,7 +137,10 @@ background defaults to 1280x720 at 30 fps. Encoding defaults to `--crf 18`, near
 for the BGA, and label outlines scale with the frame (1 px at 720p, `--outline` to override).
 
 A lane lights for `--press-hold` seconds after its note fires (default 0.15) — a key press is
-an event, not a duration. It used to stay lit while the note's *sample* was still sounding, and
+an event, not a duration. It is also forced dark for `--press-gap` frames before that lane's
+next note (default 2), without which fast consecutive taps run together and read as a hold;
+Change My World 4K SHD has 632 same-lane pairs within 0.2 s, so it shows the difference. A lane
+is never dark for less than one frame, so even the tightest pair still blinks. It used to stay lit while the note's *sample* was still sounding, and
 lane samples run up to 7.7 s, so a press could hold a key down for seconds; on chords several
 lanes stuck at once. **Long notes are the exception:** they keep their lane lit for the whole
 hold, which is `flags` ticks of the note record converted to seconds (0.2-2.6 s in practice).

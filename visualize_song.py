@@ -274,7 +274,7 @@ def draw_frame(img, dr, st):
     for i, ev in enumerate(st["slots"]):
         if ev is None:
             continue
-        start, end, track, ks, fname, is_long, _hold = ev
+        start, end, track, ks, fname, is_long, _hold, _until = ev
         # column-major: newer keysounds fill the first column before spilling right
         c, r = divmod(i, st["rows_per_col"])
         x0 = st["pad"] + c * st["colw"]
@@ -359,6 +359,13 @@ def main():
         type=float,
         default=0.15,
         help="seconds a lane stays lit after its note fires (default 0.15)",
+    )
+    ap.add_argument(
+        "--press-gap",
+        type=float,
+        default=2.0,
+        help="FRAMES a lane must stay dark before its next note lights it again (default 2). "
+        "Without it, fast consecutive taps run together and read as a hold.",
     )
     ap.add_argument("--bga", help="BGA video to composite onto (default: auto-detect)")
     ap.add_argument("--no-bga", action="store_true", help="plain background only")
@@ -653,6 +660,27 @@ def main():
         ),
     )
     # ---- keysound slots: size to the chart, in columns if one will not fit ----- #
+    # Each lane highlight ends early enough to leave a dark gap before that lane's next note.
+    # Otherwise consecutive taps blink: the highlight from the first is still on when the second
+    # arrives, and the pair reads as a single hold.
+    press_hold = max(0.0, args.press_hold)
+    gap = max(0.0, args.press_gap) / fps_f
+    min_on = 1.0 / fps_f
+    per_track = {}
+    for i, e in enumerate(events):
+        if e[2] in LANE_TRACK:
+            per_track.setdefault(e[2], []).append(i)
+    lane_until = [0.0] * len(events)
+    for _tr, idxs in per_track.items():
+        for k, i in enumerate(idxs):
+            st_i, hold = events[i][0], events[i][6]
+            nxt = events[idxs[k + 1]][0] if k + 1 < len(idxs) else None
+            end = st_i + (hold if hold > 0 else press_hold)
+            if nxt is not None:
+                end = min(end, nxt - gap)
+            lane_until[i] = max(end, st_i + min_on)
+    events = [tuple(e) + (lane_until[i],) for i, e in enumerate(events)]
+
     frame_times = [start + i / fps_f for i in range(n_frames)]
     peak_on_frames = max_simultaneous(events, times=frame_times)
     peak_true = max_simultaneous(events)
@@ -736,7 +764,6 @@ def main():
     empty = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     next_i = 0
     dropped = 0
-    press_hold = max(0.0, args.press_hold)
     recent_presses = []  # (onset, track) for the lane highlight
     try:
         for fi in range(n_frames):
@@ -749,9 +776,7 @@ def main():
                 ev = events[next_i]
                 next_i += 1
                 if ev[2] in LANE_TRACK:
-                    # a long note keeps its lane lit for the hold; a normal press is brief
-                    until = ev[0] + max(press_hold, ev[6])
-                    recent_presses.append((until, ev[2]))
+                    recent_presses.append((ev[7], ev[2]))   # computed above, gap included
                 if ev[1] <= vt:
                     continue
                 free = next((i for i, s in enumerate(st["slots"]) if s is None), None)
