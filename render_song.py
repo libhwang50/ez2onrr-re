@@ -30,6 +30,7 @@ Known imprecision: `velocity` is 127 for essentially every note, so it is applie
 but never exercised.
 """
 import argparse
+import json
 import os
 import sys
 
@@ -38,8 +39,51 @@ import soundfile as sf
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_chart import parse_ez, parse_ezi, load  # noqa: E402
+import song_meta  # noqa: E402
 
 AUDIO_EXT = ('.flac', '.ogg', '.wav', '.mp3')
+
+
+def chart_label(song_dir):
+    """The label dict `dump_song.py` wrote next to a capture, if present."""
+    try:
+        return (json.load(open(os.path.join(song_dir, 'ident.json'))) or {}).get('label') or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def tag_file(path, song, label=None):
+    """Write Vorbis comments onto a rendered FLAC. Returns the tags written.
+
+    The song's title and composer come from the game's `MUSIC_NAME_DIC` (see
+    `harvest_metadata.py`); the mode/difficulty come from the capture's label. Nothing is
+    written when the song cannot be resolved, so a render never gets wrong credits.
+    """
+    label = label or {}
+    tags = song_meta.tags(song) if song else {}
+    if not tags:
+        return {}
+    bits = ' '.join(b for b in (label.get('keymode'), label.get('difficulty')) if b)
+    extra = []
+    if bits:
+        extra.append(bits)
+    if label.get('gamemode'):
+        extra.append('gamemode %s' % label['gamemode'])
+    if extra:
+        tags['comment'] = (tags.get('comment', '') +
+                           ('; ' if tags.get('comment') else '') + '; '.join(extra))
+    tags['albumartist'] = tags.get('artist', '')
+    try:
+        from mutagen.flac import FLAC
+        f = FLAC(path)
+        f.delete()
+        for k, v in tags.items():
+            if v:
+                f[k] = [str(v)]
+        f.save()
+    except ImportError:
+        return {}
+    return tags
 
 
 def resample(x, sr_in, sr_out):
@@ -89,7 +133,7 @@ def resolve_assets(stems, root='extracted_assets', min_score=0.9):
 
 
 def render_one(song_dir, assets, out, rate=44100, gain=1.0, normalize=True, only=None,
-               assets_root='extracted_assets'):
+               assets_root='extracted_assets', tag=True, song=None):
     """Render one song. Returns a one-line summary, or raises on a hard failure."""
     ez = os.path.join(song_dir, 'ez.ez')
     ezi = os.path.join(song_dir, 'ezi.ezi')
@@ -162,11 +206,17 @@ def render_one(song_dir, assets, out, rate=44100, gain=1.0, normalize=True, only
         os.makedirs(outdir, exist_ok=True)
     sf.write(out, mix, rate, format='FLAC')
 
+    label = chart_label(song_dir)
+    name = song or label.get('song')
+    written = tag_file(out, name, label) if tag else {}
+
     warn = ''
     if missing_name:
         warn += ' [%d notes reference unknown keysounds]' % missing_name
     if missing_file:
         warn += ' [%d keysounds absent from assets]' % missing_file
+    if tag and not written:
+        warn += ' [untagged: song not resolved]'
     return ('%-16s %5d events / %4d keysounds  chart %6.2fs -> %6.2fs%s'
             % (os.path.basename(os.path.normpath(song_dir)), used, len(cache),
                seconds, len(mix) / rate, warn))
@@ -198,10 +248,13 @@ def main():
     ap.add_argument('--gain', type=float, default=1.0)
     ap.add_argument('--no-normalize', action='store_true')
     ap.add_argument('--tracks', help='only these track indices, e.g. 3,4,5,6')
+    ap.add_argument('--song', help='song name for tagging (default: the capture label)')
+    ap.add_argument('--no-tags', action='store_true', help='skip FLAC metadata')
     args = ap.parse_args()
 
     only = {int(x) for x in args.tracks.split(',')} if args.tracks else None
-    kw = dict(rate=args.rate, gain=args.gain, normalize=not args.no_normalize, only=only)
+    kw = dict(rate=args.rate, gain=args.gain, normalize=not args.no_normalize, only=only,
+              tag=not args.no_tags, song=args.song)
 
     if args.all:
         outdir = args.out or 'rendered_songs'

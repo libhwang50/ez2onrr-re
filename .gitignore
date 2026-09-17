@@ -38,3 +38,6 @@ rendered_songs/
 # derived from captured API traffic (see the capture rules above); regenerate with
 # chart_labels.py
 chart_labels.json
+
+# game metadata cache (regenerate with harvest_metadata.py)
+music_names.json
