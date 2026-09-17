@@ -78,10 +78,16 @@ the Frida bridge holds the enumerator and its boxed keys as raw pointers the IL2
 never told about, so a GC mid-loop can free them. It is only a cross-check anyway; `ezi.ezi`
 carries the same index → filename mapping.
 
-If the read path dies — the game's main thread exits (the process can linger, window frozen,
-Steam still showing it running), or the Frida script is unloaded — the watch says so and
-stops rather than polling forever. A capture interrupted that way still writes `ident.json`,
-with an `incomplete` list of what it could not read.
+If the read path dies — the game's main thread is wedged (spinning), has exited, or the Frida
+script is unloaded — the watch says so and stops rather than hanging or polling forever. Each
+call is bounded by a timeout, so a livelocked read reports instead of blocking on a futex. A
+capture interrupted that way still writes `ident.json`, with an `incomplete` list of what it
+could not read.
+
+Reads run on Frida's own thread. `--on-main` puts them back on the game's main thread via
+`Process.runOnThread`, which is only needed for a call into the OS crypto provider — that
+hijack has livelocked the main thread under Proton (100% CPU, gadget wedged, reads never
+return), so it is off by default.
 
 **Kill a crashed game before relaunching.** A dead game's husk keeps the gadget's port
 (`127.0.0.1:27042`) bound, so a relaunched game's gadget cannot listen and `dump_song.py`

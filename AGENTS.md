@@ -24,14 +24,24 @@ use `Process.getModuleByName`.
   hot BCL functions and cold, once-per-launch cipher constructors alike.
   `MemoryAccessMonitor` guard pages crash it too (`da`'s static-fields page is read
   ~350×/s from several threads and the guard is one-shot).
-* Use **managed invocation** via `frida-il2cpp-bridge` (`onMain()` for anything touching
-  BCL crypto — Wine/CNG thread affinity), plus **≤4 Hz host-side polling**. Attach the
-  `gum-js-loop` thread to the domain as little as possible, and never **hold** managed
-  objects across invocations: `Il2Cpp.perform` attaches Frida's own thread as a side effect,
-  and the bridge keeps the enumerator/boxed values it returns as raw pointers the IL2CPP GC
-  does not know about, so a GC mid-loop frees them and the next invoke touches freed memory.
-  Walking `Dictionary`-shaped state with `get_Keys`/`GetEnumerator`/`MoveNext`/`get_Current`
-  is the worst case — read the backing array instead, or derive the data host-side.
+* Use **managed invocation** via `frida-il2cpp-bridge`, plus **≤4 Hz host-side polling**.
+  Attach the `gum-js-loop` thread to the domain as little as possible, and never **hold**
+  managed objects across invocations: `Il2Cpp.perform` attaches Frida's own thread as a side
+  effect, and the bridge keeps the enumerator/boxed values it returns as raw pointers the
+  IL2CPP GC does not know about, so a GC mid-loop frees them and the next invoke touches
+  freed memory.  Walking `Dictionary`-shaped state with
+  `get_Keys`/`GetEnumerator`/`MoveNext`/`get_Current` is the worst case — read the backing
+  array instead, or derive the data host-side.
+* **`onMain()` is only for OS crypto.** `onMain()` gets onto the game's main thread by
+  hijacking it with `Process.runOnThread`, and under Proton that has **livelocked** it: the
+  thread spins at 100% CPU, the gadget's message loop wedges so the RPC never returns, and
+  the game is left frozen with no way to attach again.  The earlier reading — that the
+  managed *invocations* were the hazard — was wrong: the hang was caught inside `daRusFull()`,
+  which invokes nothing.  Reads use plain `Il2Cpp.perform`; only a call into the OS crypto
+  provider (Wine/CNG thread affinity) needs the main thread.
+* **Bound every RPC.** A hijack that livelocks never returns, so a plain synchronous call
+  blocks on a futex forever with no output.  `dump_song.py` runs each call on a daemon thread
+  and treats a timeout as a wedge.
 * When the read path dies it does **not** raise a clean error: the game's main thread can
   exit while the process lingers (window frozen on its last frame, Steam still listing it as
   running, ~128 worker threads alive, `/proc/<pid>/maps` empty only because `/proc/<tgid>/*`

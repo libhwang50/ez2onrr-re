@@ -1,5 +1,22 @@
 
-function onMain(fn) { return Il2Cpp.perform(() => Process.runOnThread(Il2Cpp.mainThread.id, () => fn())); }
+// Where the reads run.  The only thing that genuinely needs the game's main thread is a call
+// into the OS crypto provider (Wine/CNG thread affinity, AGENTS.md 1) — and this driver does
+// no crypto, only field reads, byte-array reads and a few BCL property gets.
+//
+// `Process.runOnThread` gets onto that thread by hijacking it, and under Proton that has
+// livelocked it: the main thread spins at 100% CPU, the gadget's message loop wedges so the
+// RPC never returns, and the game is left frozen.  It is not the managed invocations — the
+// hang was caught inside daRusFull(), which invokes nothing at all.
+//
+// So run on Frida's own domain-attached thread by default.  `setOnMain(true)` restores the
+// old hijack for anyone who needs a real crypto call.
+let _useMainThread = false;
+function read(fn) {
+    return Il2Cpp.perform(() => _useMainThread
+        ? Process.runOnThread(Il2Cpp.mainThread.id, () => fn())
+        : fn());
+}
+rpc.exports.setOnMain = function (v) { _useMainThread = !!v; return _useMainThread; };
 function dat(a) { try { return a.elements.handle; } catch (e) { return a.handle.add(0x20); } }
 function hexOf(a, n) {
     try { const p = dat(a); const u = new Uint8Array(p.readByteArray(Math.min(a.length, n || 32)));
@@ -16,7 +33,7 @@ function coreClass() {
 }
 
 rpc.exports.probe = function () {
-    return onMain(() => {
+    return read(() => {
         try {
             coreClass();
             const inst = _instField.value;
@@ -31,7 +48,7 @@ rpc.exports.probe = function () {
 };
 
 rpc.exports.ident = function (withLanes) {
-    return onMain(() => {
+    return read(() => {
         const img = Il2Cpp.domain.assembly("Assembly-CSharp").image;
         const inst = img.class('InGameCore').field('instance').value;
         const o = { hasInst: !!inst };
@@ -95,7 +112,7 @@ rpc.exports.ident = function (withLanes) {
     });
 };
 rpc.exports.daRusFull = function () {
-    return onMain(() => {
+    return read(() => {
         const img = Il2Cpp.domain.assembly("Assembly-CSharp").image;
         const p = img.class('da').staticFieldsData.add(840).readPointer();
         if (p.isNull()) return null;
@@ -111,7 +128,7 @@ rpc.exports.daRusFull = function () {
     });
 };
 rpc.exports.instrumentDic = function () {
-    return onMain(() => {
+    return read(() => {
         const img = Il2Cpp.domain.assembly("Assembly-CSharp").image;
         const inst = img.class('InGameCore').field('instance').value;
         const d = inst.field('instrumentDic').value;

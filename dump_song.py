@@ -17,33 +17,38 @@ Usage
 Then just play songs; each one is captured on entry.  Read-only memory reads
 plus one HTTP GET per chart — no hooks, no guard pages.
 
-If the read path dies
----------------------
-The memory reads are safe; the *managed invocations* are what is fragile.  Every
-read runs on the game's main thread (so a call into the OS crypto provider stays
-on the thread Wine/CNG expects) via `Il2Cpp.perform` + `Process.runOnThread`.
-That has two failure modes, and both are terminal:
+Where the reads run, and how they fail
+--------------------------------------
+Reads run on **Frida's own thread**, via `Il2Cpp.perform` alone.  The only thing
+that genuinely needs the game's main thread is a call into the OS crypto provider
+(Wine/CNG thread affinity), and this tool does no crypto.  Getting onto that
+thread means hijacking it with `Process.runOnThread`, and that has livelocked it:
+the main thread spins at 100% CPU, the gadget's message loop wedges so the RPC
+never returns, and the game is left frozen.  It is not the managed invocations —
+the hang was caught inside `daRusFull()`, which invokes nothing at all.
+`--on-main` restores the hijack for anyone who needs a real crypto call.
 
-* the main thread exits while the process lingers — the window keeps showing its
-  last frame and Steam still counts the game as running, but every read fails
-  with `failed to run on thread` / `couldn't collect attached threads`;
-* the Frida script is unloaded (the gadget tearing it down, or the host process
-  going away) — reads fail with `script has been destroyed`.
+When a read cannot go on it does **not** raise a clean error.  Three terminal
+modes, all of which stop the watch after `WEDGE_LIMIT` consecutive failed polls:
 
-Neither recovers, so after `WEDGE_LIMIT` consecutive failed polls the watch
-stops and says so, instead of polling a corpse and writing half-empty snapshots
-that look successful.  A capture interrupted this way still writes `ident.json`
-(and an `incomplete` list) from what it has, then stops the watch.
+* **the main thread is wedged** — spinning, gadget unresponsive, the call never
+  returns.  Bounded by `RPC_TIMEOUT` so this reports instead of hanging forever,
+  which is how it used to present;
+* **the main thread has exited** while the process lingers — the window keeps
+  showing its last frame and Steam still counts the game as running, but reads
+  fail with `failed to run on thread` / `couldn't collect attached threads`;
+* **the Frida script is unloaded** (the gadget tearing it down, or the host
+  process going away) — reads fail with `script has been destroyed`.
 
-A failed first read is checked at startup, because the usual cause is not the
-game you just launched: a crashed game's *husk* keeps the gadget's TCP port
-(127.0.0.1:27042) bound, so a relaunched game's gadget cannot listen and the
-attach lands on the dead process.  Kill the leftover before relaunching.
+A capture interrupted this way still writes `ident.json` (and an `incomplete`
+list) from what it has, then stops the watch.  A failed *first* read is checked
+at startup, because the usual cause is not the game you just launched: a crashed
+game's *husk* keeps the gadget's TCP port (127.0.0.1:27042) bound, so a relaunched
+game's gadget cannot listen and the attach lands on the dead process.  Kill the
+leftover before relaunching.
 
-The only target-process call between the entry snapshot and the next read is the
-`--no-patternjson` sweep, so that flag is the switch for testing whether the
-sweep is what a given crash lands on; with it, the label comes from
-`chart_labels.json` instead.
+`--no-patternjson` skips the `rw-` range sweep that reads the in-play request
+JSON out of memory and takes the label from `chart_labels.json` instead.
 
 Notes
 -----
@@ -65,7 +70,7 @@ Notes
   eagerly previously overwrote a real capture with the wrong chart.  Such a
   snapshot now goes to `<name>_mismatch/` instead.
 """
-import argparse, atexit, json, os, re, signal, sys, time, urllib.request, urllib.error
+import argparse, atexit, json, os, re, signal, sys, threading, time, urllib.request, urllib.error
 
 # Track the live Frida session so SIGTERM (e.g. `timeout`), SIGINT and normal exit all
 # detach it. SIGTERM does NOT run Python finally blocks, so without this the agent is left
@@ -222,6 +227,7 @@ WEDGE_MARKERS = (
     'the connection is closed',
 )
 WEDGE_LIMIT = 3  # consecutive failed polls before the game is declared gone
+RPC_TIMEOUT = 20.0  # seconds a single driver call may block before the game is called wedged
 
 
 class GameWedged(Exception):
@@ -233,17 +239,36 @@ def is_wedged(exc):
     return any(m in msg for m in WEDGE_MARKERS)
 
 
-def rpc(sc, name, *args):
-    """Call a driver export, surfacing a dead-main-thread failure as GameWedged."""
+def rpc(sc, name, *args, timeout=RPC_TIMEOUT):
+    """Call a driver export, with a timeout.
+
+    A read that never returns is the worst failure mode this tool has: the game's main thread
+    is wedged (spinning at 100% CPU, gadget unresponsive) and a plain call would block on a
+    futex forever, with no output, which is exactly how it presented.  The call therefore runs
+    on a daemon thread so the wait can be bounded; a timeout is reported as GameWedged.
+    """
     fn = getattr(sc.exports_sync, name, None)
     if fn is None:
         raise AttributeError('driver has no %s()' % name)
-    try:
-        return fn(*args)
-    except Exception as e:
+    box, done = {}, threading.Event()
+
+    def run():
+        try:
+            box['v'] = fn(*args)
+        except BaseException as e:      # forwarded to the caller, whatever it is
+            box['e'] = e
+        finally:
+            done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    if not done.wait(timeout):
+        raise GameWedged('no response to %s() within %gs' % (name, timeout))
+    if 'e' in box:
+        e = box['e']
         if is_wedged(e):
             raise GameWedged(str(e)) from None
-        raise
+        raise e
+    return box.get('v')
 
 
 def label_for(ezi_url, root='.'):
@@ -652,6 +677,14 @@ def main():
              "that sweep is the only target-process call between the entry snapshot and the "
              "next read, so skipping it separates it from the managed reads.",
     )
+    ap.add_argument(
+        "--on-main",
+        action="store_true",
+        help="run reads on the game's main thread by hijacking it with Frida's "
+             "Process.runOnThread.  Only needed for a call into the OS crypto provider; off "
+             "by default because the hijack has livelocked that thread under Proton (it "
+             "spins at 100%% and the gadget wedges, so reads never return).",
+    )
     ap.add_argument("--gadget", default=GADGET)
     ap.add_argument(
         "--read-instrument-dic",
@@ -679,6 +712,15 @@ def main():
         sys.exit("missing %s — run: bash tools/il2cpp/build_run.sh" % driver)
     sc = ses.create_script(open(driver).read())
     sc.load()
+
+    # Reads run on Frida's own thread unless --on-main; see the driver's `read`.  Set it
+    # before the health check so that check exercises the path we will actually use.
+    if getattr(sc.exports_sync, 'set_on_main', None) is not None:
+        sc.exports_sync.set_on_main(bool(a.on_main))
+        print('reads on: %s' % ("the game's main thread (--on-main)" if a.on_main
+                                else "Frida's own thread"))
+    else:
+        print('note: driver predates setOnMain(); reads go wherever it puts them')
 
     seen = set()
     probe = getattr(sc.exports_sync, 'probe', None)
