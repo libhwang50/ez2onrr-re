@@ -68,6 +68,19 @@ evidence, not as tools:
 * **High-frequency in-process polling** (the 10 ms `Il2Cpp.perform` loop) on top
   of either of the above.
 
+Two further hazards, learned later, that are **not** about hooking:
+
+* **Killing a watcher without detaching.** SIGTERM does not run Python `finally`
+  blocks, so `timeout 30 python3 dump_song.py` leaves the Frida agent resident and
+  wedges the gadget's message loop. `dump_song.py` and `harvest_chart.py` install
+  SIGTERM/SIGINT/SIGHUP handlers that detach before exiting — keep that guard when
+  writing new watchers, and prefer a clean Ctrl-C over `kill`.
+* **Invoking list methods while the game is still building the list.** `normalLanes`
+  was read by calling `get_Item`/`get_Count` on `normalNoteData`'s inner lists during
+  song load, which once returned **five lanes for a 4-lane chart** — proof the read
+  landed mid-mutation. `dump_song.settle()` now waits for the cheap counts to stop
+  changing before touching the lanes, and reads them once.
+
 **Safe alternatives:** read-only memory reads, managed invocation through the
 bridge on the game's main thread (`onMain()`), and low-rate (≤4 Hz) passive
 polling from the host (`probes/_poll_da.py` is the pattern to copy).

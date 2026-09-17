@@ -145,3 +145,41 @@ rpc.exports.strstatics = function (asmName, clsName) {
     return out;
   });
 };
+
+// Dump the entire MUSIC_NAME_DIC (music id -> MUSIC_NAME_DATA) as plain records.
+rpc.exports.dumpall = function () {
+  return onMain(() => {
+    const img = Il2Cpp.domain.assembly('Assembly-CSharp').image;
+    const d = new Il2Cpp.Object(img.class('da').staticFieldsData.add(0x350).readPointer());
+    const n = d.method('get_Count', 0).invoke();
+    const keys = d.method('get_Keys', 0).invoke();
+    const it = keys.method('GetEnumerator', 0).invoke();
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      if (!it.method('MoveNext', 0).invoke()) break;
+      let key, val;
+      try {
+        key = it.method('get_Current', 0).invoke();
+        val = d.method('get_Item', 1).invoke(key);
+      } catch (e) { continue; }
+      const rec = { id: 0 };
+      try { rec.id = parseInt(('' + key).match(/-?\d+/)[0], 10); } catch (e) {}
+      for (const f of val.class.fields) {
+        const t = '' + f.type.name;
+        let v; try { v = val.field(f.name).value; } catch (e) { continue; }
+        if (t === 'System.String') { try { rec[f.name] = v ? v.content : null; } catch (e) { rec[f.name] = null; } }
+        else if (t === 'System.Int32') { try { rec[f.name] = Number('' + v); } catch (e) {} }
+        else if (t === 'System.Int32[]' && v) {
+          try {
+            const len = v.length;
+            let p; try { p = v.elements.handle; } catch (e) { p = v.handle.add(0x20); }
+            const a = []; for (let j = 0; j < len; j++) a.push(p.add(4 * j).readS32());
+            rec[f.name] = a;
+          } catch (e) { rec[f.name] = null; }
+        }
+      }
+      out.push(rec);
+    }
+    return out;
+  });
+};

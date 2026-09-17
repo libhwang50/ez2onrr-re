@@ -25,7 +25,40 @@ Notes
 * The in-memory parse (`instrumentDic.json`, `*_chart.json`) is a cross-check on
   the decrypted files, not the source of truth.
 """
-import argparse, json, os, re, sys, time, urllib.request, urllib.error
+import argparse, atexit, json, os, re, signal, sys, time, urllib.request, urllib.error
+
+# Track the live Frida session so SIGTERM (e.g. `timeout`), SIGINT and normal exit all
+# detach it. SIGTERM does NOT run Python finally blocks, so without this the agent is left
+# resident and wedges the gadget's message loop — which has taken the game down.
+_LIVE_SESSION = None
+
+
+def _detach(*_a):
+    global _LIVE_SESSION
+    if _LIVE_SESSION is not None:
+        try:
+            _LIVE_SESSION.detach()
+        except Exception:
+            pass
+        _LIVE_SESSION = None
+
+
+def _install_teardown():
+    def bye(*_a):
+        _detach()
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(0)
+
+    atexit.register(_detach)
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            signal.signal(sig, bye)
+        except Exception:
+            pass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import decrypt_chart  # noqa: E402  (same directory)
@@ -153,6 +186,21 @@ def describe(snap, d, runtime=None):
     song = (runtime.get('musicresourcename') if consistent else None) \
         or lab.get('song') or song_name(snap)
 
+    # enrich with the game's metadata table (title, composer), when it resolves
+    meta = {}
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import song_meta
+        rec = song_meta.by_name(song)
+        if rec:
+            meta = {'title': song_meta.title(rec) or song,
+                    'composer': rec.get('Composer') or None,
+                    'musicId': rec.get('id'),
+                    'metaNameKr': rec.get('KorName'), 'metaNameEn': rec.get('EngName'),
+                    'metaNameJp': rec.get('JapName')}
+    except Exception:
+        pass
+
     mismatch = ''
     if file_km and rt_km and file_km != rt_km:
         mismatch = ('chart is %s (%d lanes) but the game requested %s; the runtime '
@@ -164,6 +212,7 @@ def describe(snap, d, runtime=None):
            'gamemode': runtime.get('gamemode') or lab.get('gamemode'),
            'labelSource': 'runtime' if (runtime and consistent) else 'chart',
            'labelMismatch': mismatch or None}
+    out.update(meta)
     text = '   song    : %s%s' % (song, ('  [%s]' % ' '.join(bits)) if bits else '')
     if runtime:
         text += '   (runtime keymode=%s levelmode=%s gamemode=%s)' % (
@@ -176,6 +225,11 @@ def describe(snap, d, runtime=None):
         text += '   (key mode from lane count; difficulty unknown)'
     if mismatch:
         text += '\n   !! label mismatch: %s' % mismatch
+    if meta:
+        text += '\n   meta    : %s%s%s' % (
+            meta.get('title') or song,
+            ('  —  ' + meta['composer']) if meta.get('composer') else '',
+            ('   (music id %s)' % meta['musicId']) if meta.get('musicId') else '')
     return text, out
 
 
@@ -193,35 +247,35 @@ def song_name(snap):
     return "song_" + (m.group(1) if m else str(int(time.time())))
 
 
-def settle(sc, timeout=15.0, interval=1.0):
-    """Poll until the game has finished parsing the chart it just fetched.
+def settle(sc, timeout=20.0, interval=1.0):
+    """Wait for the game to finish parsing, then read the parsed state once.
 
-    `ident()` is first readable as soon as the CDN URLs appear, which is before the
-    chart is parsed — so an immediate snapshot reports lanes=[0,0,0,0] and dic=0.
-    Returns the snapshot with the most parse progress seen before the timeout.
+    Two phases, deliberately. Computing `normalLanes` means invoking `get_Item`/`get_Count`
+    on `normalNoteData`'s inner lists; doing that while the game is still building them
+    produced a 5-entry `normalLanes` for a 4-lane chart — a snapshot taken mid-mutation, and
+    exactly the kind of access that has taken the game down.
 
-    Deliberately slow (1 Hz): the game has crashed twice during song load while this
-    watcher was polling, and AGENTS.md warns about high-frequency in-process polling.
-    The chart and keysounds are already on disk by this point, so this is only for the
-    cross-check against the game's own parse.
+    Phase 1 polls only the cheap counts (no per-lane invocations) until they stop changing;
+    phase 2 asks for the lanes exactly once. On timeout the cheap snapshot is returned, so
+    a failure here still yields the buffer counts.
     """
     deadline = time.time() + timeout
-    best, best_score = None, -1
+    last, best = None, None
     while True:
         try:
-            try:
-                snap = sc.exports_sync.ident(True)      # with normalLanes
-            except Exception:
-                snap = sc.exports_sync.ident()           # older driver without the flag
-            lanes = [x for x in (snap.get('normalLanes') or []) if isinstance(x, int) and x > 0]
-            dic = snap.get('instrumentDicCount') or 0
-            score = sum(lanes) + dic
-            if score > best_score:
-                best, best_score = snap, score
-            if lanes and dic:
-                return snap
+            snap = sc.exports_sync.ident()          # cheap: no lane invocations
+            best = snap
         except Exception:
-            pass
+            snap = None
+        if snap:
+            counts = (snap.get('instrumentDicCount'), snap.get('normalNoteDataCount'))
+            if all(isinstance(c, int) and c > 0 for c in counts):
+                if counts == last:
+                    try:
+                        return sc.exports_sync.ident(True)   # read the lanes once
+                    except Exception:
+                        return snap
+                last = counts
         if time.time() >= deadline:
             return best
         time.sleep(interval)
@@ -329,6 +383,13 @@ def main():
     import frida
     dev = frida.get_device_manager().add_remote_device(a.gadget)
     ses = dev.attach("Gadget")
+    global _LIVE_SESSION
+    _LIVE_SESSION = ses
+    _install_teardown()
+    try:
+        sys.stdout.reconfigure(line_buffering=True)   # unbuffered logs under redirection
+    except Exception:
+        pass
     driver = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "tools", "build", "_dumpsong_run.js")
     if not os.path.exists(driver):
@@ -359,3 +420,5 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\nstopped")
+    finally:
+        _detach()
