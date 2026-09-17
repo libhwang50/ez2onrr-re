@@ -222,8 +222,13 @@ def render_audio(song_dir, out, assets="auto"):
 
 def txt(dr, xy, s, fnt, fill, st, anchor=None):
     dr.text(
-        xy, s, font=fnt, fill=fill, anchor=anchor,
-        stroke_width=st['stroke'], stroke_fill=SHADOW
+        xy,
+        s,
+        font=fnt,
+        fill=fill,
+        anchor=anchor,
+        stroke_width=st["stroke"],
+        stroke_fill=SHADOW,
     )
 
 
@@ -234,7 +239,14 @@ def draw_frame(img, dr, st):
 
     if st["mode"] == "default":
         if st["variant"]:
-            txt(dr, (pad, pad - 2), st["variant"], st["f_head"], (255, 255, 255, 245), st)
+            txt(
+                dr,
+                (pad, pad - 2),
+                st["variant"],
+                st["f_head"],
+                (255, 255, 255, 245),
+                st,
+            )
         bw, bh = st["lane_w"], st["lane_h"]
         y0 = pad + st["f_head"].size + 12
         for i, track in enumerate(st["lanes"]):
@@ -288,7 +300,14 @@ def draw_frame(img, dr, st):
 
         lane = ("%d" % (track - 2)) if track in LANE_TRACK else ("T%d" % track)
         txt(dr, (x0 + st["off_lane"], yy), lane, st["f_mono"], (190, 220, 255, 245), st)
-        txt(dr, (x0 + st["off_ks"], yy), "%d" % ks, st["f_mono"], (190, 220, 255, 245), st)
+        txt(
+            dr,
+            (x0 + st["off_ks"], yy),
+            "%d" % ks,
+            st["f_mono"],
+            (190, 220, 255, 245),
+            st,
+        )
         name = fname or "(unknown)"
         if len(name) > st["name_chars"]:
             name = name[: max(1, st["name_chars"] - 2)] + ".."
@@ -367,9 +386,9 @@ def main():
         "--encoder",
         metavar="NAME",
         help="video encoder (default libx264). Anything ffmpeg has: libx265, h264_nvenc, "
-             "hevc_vaapi, libsvtav1, ffv1... For encoders that are not x264/x265 the built-in "
-             "-crf/-preset are dropped, so pass their own rate control via --ffmpeg-args "
-             "(e.g. h264_nvenc: '-preset p4 -cq 20 -rc vbr').",
+        "hevc_vaapi, libsvtav1, ffv1... For encoders that are not x264/x265 the built-in "
+        "-crf/-preset are dropped, so pass their own rate control via --ffmpeg-args "
+        "(e.g. h264_nvenc: '-preset p4 -cq 20 -rc vbr').",
     )
     ap.add_argument(
         "--vaapi-device",
@@ -380,15 +399,15 @@ def main():
         "--ffmpeg-args",
         metavar="ARGS",
         help="extra OUTPUT options for ffmpeg, e.g. "
-             "--ffmpeg-args='-tune animation -movflags +faststart -profile:v high'. Quote the "
-             "whole string (shell-split). Use = when the value starts with '-', or argparse "
-             "reads it as an option.",
+        "--ffmpeg-args='-tune animation -movflags +faststart -profile:v high'. Quote the "
+        "whole string (shell-split). Use = when the value starts with '-', or argparse "
+        "reads it as an option.",
     )
     ap.add_argument(
         "--ffmpeg-global-args",
         metavar="ARGS",
         help="extra GLOBAL/input options for ffmpeg, placed before the first input, e.g. "
-             "--ffmpeg-global-args='-hide_banner -filter_threads 2'",
+        "--ffmpeg-global-args='-hide_banner -filter_threads 2'",
     )
     ap.add_argument(
         "--until", type=float, help="stop at this many seconds (for testing)"
@@ -404,6 +423,7 @@ def main():
     # a capture is nested as <song>/<keymode>/<difficulty>, so the basename alone would be
     # just "shd" — keep the path components in the output name
     import render_song
+
     song = render_song.chart_name(args.song_dir)
     out = args.out or os.path.join("visualizations", "%s.mp4" % song)
     # `-o somedir/` is a natural thing to type; ffmpeg needs a file, so append the default
@@ -429,17 +449,24 @@ def main():
             # Say so loudly: this used to fall through to a plain background silently, and a
             # black frame is easy to mistake for a dark BGA.
             hint = (chart_label(args.song_dir).get("song") or "").lower()
-            print("!! no extracted BGA found for this chart - the background will be blank.")
+            print(
+                "!! no extracted BGA found for this chart - the background will be blank."
+            )
             print("   extract it, then re-run:")
-            print("       python3 extract_assets.py %s --bga"
-                  % (hint or "<song_id>"))
+            print("       python3 extract_assets.py %s --bga" % (hint or "<song_id>"))
             print("   (--no-bga silences this, --bga FILE points at one directly)")
             if os.path.isdir("extracted_assets") and hint:
-                have = [d for d in os.listdir("extracted_assets")
-                        if os.path.isdir(os.path.join("extracted_assets", d))]
+                have = [
+                    d
+                    for d in os.listdir("extracted_assets")
+                    if os.path.isdir(os.path.join("extracted_assets", d))
+                ]
                 near = [d for d in have if hint and (hint in d or d in hint)]
                 if near:
-                    print("   extracted asset dirs that look related: %s" % ", ".join(sorted(near)))
+                    print(
+                        "   extracted asset dirs that look related: %s"
+                        % ", ".join(sorted(near))
+                    )
     native = probe_video(bga) if bga else None
     if native:
         W, H, fps_f, fps_arg = native
@@ -526,8 +553,10 @@ def main():
     else:
         codec_args = ["-c:v", vcodec]
         if args.encoder:
-            print("encoder %s: -crf/-preset omitted, pass its own rate control with "
-                  "--ffmpeg-args" % vcodec)
+            print(
+                "encoder %s: -crf/-preset omitted, pass its own rate control with "
+                "--ffmpeg-args" % vcodec
+            )
 
     if is_vaapi:
         if out_pix_fmt == "yuv420p":
@@ -577,11 +606,23 @@ def main():
     if is_vaapi:
         va_dev = getattr(args, "vaapi_device", "/dev/dri/renderD128")
         if not os.path.exists(va_dev) and os.path.exists("/dev/dri"):
-            renders = [os.path.join("/dev/dri", f) for f in os.listdir("/dev/dri") if "renderD" in f]
+            renders = [
+                os.path.join("/dev/dri", f)
+                for f in os.listdir("/dev/dri")
+                if "renderD" in f
+            ]
             if renders:
                 va_dev = sorted(renders)[0]
-        if not args.ffmpeg_global_args or "-init_hw_device" not in args.ffmpeg_global_args:
-            global_opts += ["-init_hw_device", "vaapi=va:%s" % va_dev, "-filter_hw_device", "va"]
+        if (
+            not args.ffmpeg_global_args
+            or "-init_hw_device" not in args.ffmpeg_global_args
+        ):
+            global_opts += [
+                "-init_hw_device",
+                "vaapi=va:%s" % va_dev,
+                "-filter_hw_device",
+                "va",
+            ]
     if args.ffmpeg_global_args:
         global_opts += shlex.split(args.ffmpeg_global_args)
     if global_opts:
@@ -616,10 +657,13 @@ def main():
     peak_on_frames = max_simultaneous(events, times=frame_times)
     peak_true = max_simultaneous(events)
     if peak_on_frames < peak_true:
-        print("note: true peak is %d keysound(s) but only %d coincide on a rendered frame at "
-              "%.4g fps; sizing to %d." % (peak_true, peak_on_frames, fps_f, peak_on_frames))
+        print(
+            "note: true peak is %d keysound(s) but only %d coincide on a rendered frame at "
+            "%.4g fps; sizing to %d."
+            % (peak_true, peak_on_frames, fps_f, peak_on_frames)
+        )
     peak = peak_on_frames
-    fit = max(1, int(H * 0.60 / row_h))              # rows that fit in a single column
+    fit = max(1, int(H * 0.60 / row_h))  # rows that fit in a single column
     if str(args.rows).lower() == "auto":
         wanted = peak
     else:
@@ -632,13 +676,19 @@ def main():
     rows_per_col = max(1, (wanted + cols - 1) // cols)
     total = cols * rows_per_col
     if total < wanted:
-        print("note: %d slots wanted but only %d fit in %d column(s); raise --size for more."
-              % (wanted, total, cols))
+        print(
+            "note: %d slots wanted but only %d fit in %d column(s); raise --size for more."
+            % (wanted, total, cols)
+        )
     if total < peak:
-        print("note: %d keysounds sound at once at peak but %d slot(s) are shown, so some are "
-              "evicted." % (peak, total))
-    print("peak simultaneous keysounds: %d -> %d row(s) x %d column(s) = %d slots"
-          % (peak, rows_per_col, cols, total))
+        print(
+            "note: %d keysounds sound at once at peak but %d slot(s) are shown, so some are "
+            "evicted." % (peak, total)
+        )
+    print(
+        "peak simultaneous keysounds: %d -> %d row(s) x %d column(s) = %d slots"
+        % (peak, rows_per_col, cols, total)
+    )
 
     colw = W / float(cols)
     bar_w = max(40, int(min(W * 0.085, colw * 0.14)))
@@ -687,7 +737,7 @@ def main():
     next_i = 0
     dropped = 0
     press_hold = max(0.0, args.press_hold)
-    recent_presses = []          # (onset, track) for the lane highlight
+    recent_presses = []  # (onset, track) for the lane highlight
     try:
         for fi in range(n_frames):
             vt = start + fi / fps_f + args.offset
