@@ -91,6 +91,18 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
   parameter, **not** cipher key material.
 * **Naming is correct**: `final_url_ez` = the **chart**, `final_url_ezi` = the
   **keysound index** *(supersedes the earlier “inverted” claim)*.
+* **The current chart's labels are readable at runtime, in memory.** `InGameCore`'s
+  `patternFileInfo` is null by capture time, but the game holds the `c2s_get_pattern_file`
+  **request JSON** as a UTF-16 string:
+  `{"appid":"1477590","musicresourcename":"Rebind","keymode":"2","levelmode":"3","gamemode":"1"}`.
+  So `musicresourcename` (the song name), `keymode` and `levelmode` can be read from the
+  running game with no API capture — see `tools/il2cpp/_findstr.js` `patternjson`, which
+  scans `rw-` ranges for the `{"appid":"` prefix (~2 s, one hit). `dump_song.py` uses it as
+  the primary source and falls back to the chart name, then the API label cache.
+* **`keymode` is 1-based over the key modes**: `1` → 4K, `2` → 5K, `3` → 6K (all three
+  confirmed against the user's own labels). `4`+ is unobserved. It agrees with the key mode
+  derived from the chart, which is a useful cross-check: a disagreement means the runtime
+  state and the chart file are from different songs.
 
 ### 3.3 CDN payload cipher — SOLVED
 
@@ -422,7 +434,7 @@ User-facing (repo root):
 | `parse_chart.py` | **read decrypted charts** — `.ez` note charts and `.ezi` keysound indexes, as a summary, JSON, or note listing |
 | `chart_labels.py` | **name charts** — decrypt captured API traffic into `chart_labels.json` (song name, key mode, difficulty); `dump_song.py` reads it back |
 | `render_song.py` | **render a song** — plays every note's keysound at its scheduled time; `--assets auto` matches keysounds by content |
-| `dump_song.py` | **per-song snapshot** — byte-exact CDN archive, decrypted plaintext, `da.rus` buffers + `instrumentDic`, plus the song/mode/difficulty label |
+| `dump_song.py` | **per-song snapshot** — byte-exact CDN archive, decrypted plaintext, `da.rus` buffers + `instrumentDic`, plus the song/mode/difficulty label read from the running game |
 | `run_dumper.sh` | Il2CppDumper (blocked by the missing metadata magic) |
 
 Investigation tooling — layout, build step and crash warnings: **`tools/README.md`**.

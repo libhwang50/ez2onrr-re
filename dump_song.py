@@ -52,16 +52,55 @@ def safe(name):
 
 LANE_LABEL = {4: '4K', 5: '5K', 6: '6K', 7: '7K', 8: '8K'}
 DIFF_LABEL = {'1': 'EZ', '2': 'NM', '3': 'HD', '4': 'SHD'}
+# The API's keymode is 1-based over the key modes. 1, 2 and 3 are confirmed (4K, 5K, 6K);
+# 4+ is unobserved, so it is reported as-is rather than guessed.
+KEYMODE_LABEL = {'1': '4K', '2': '5K', '3': '6K'}
 LABELS_FILE = 'chart_labels.json'
+
+
+def runtime_pattern(sc):
+    """The chart the game has in play, from the request JSON it holds in memory.
+
+    `InGameCore.patternFileInfo` is null by the time a capture runs, but the game keeps the
+    `c2s_get_pattern_file` request as a UTF-16 string —
+    `{"appid":...,"musicresourcename":"Rebind","keymode":"2","levelmode":"3",...}` —
+    which is authoritative and needs no API capture. Scanning takes ~2 s.
+    """
+    try:
+        found = sc.exports_sync.patternjson()
+    except Exception:
+        return None
+    for s in (found or []):
+        try:
+            rec = json.loads(s)
+        except Exception:
+            continue
+        if rec.get('musicresourcename'):
+            return rec
+    return None
+
+
+def variant_from_name(ez_path):
+    """(keymode, difficulty) taken ONLY from the chart's header name, or (None, None).
+
+    The name encodes the variant (`4-shd`, `8-ez`, `5-nm`) and is the most direct source,
+    but it is sometimes empty or `#PTMAKE`. Deliberately does not fall back to the lane
+    count — that is a weaker signal and must not outrank the runtime.
+    """
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from parse_chart import parse_ez, VARIANT_RE
+        name = parse_ez(open(ez_path, 'rb').read()).header['name'] or ''
+        m = VARIANT_RE.match(name)
+        return (m.group(1) + 'K', m.group(2).upper()) if m else (None, None)
+    except Exception:
+        return None, None
 
 
 def chart_variant(ez_path):
     """(keymode, difficulty, lane_count) read out of the chart itself.
 
-    The header name encodes the variant (`4-shd`, `8-ez`, `5-nm`), so both labels usually
-    come straight from the chart. When it does not (empty, or `#PTMAKE` for a
-    pattern-maker chart) key mode still falls back to the playable lane count and
-    difficulty has to come from the API.
+    Key mode falls back to the playable lane count when the name does not carry it.
     """
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -89,26 +128,54 @@ def label_for(ezi_url, root='.'):
     return table.get(ezi_url.split('?')[0].split('/')[-1][:24])
 
 
-def describe(snap, d):
-    """One line naming the song and its mode/difficulty, plus a dict for ident.json."""
+def describe(snap, d, runtime=None):
+    """One line naming the song and its mode/difficulty, plus a dict for ident.json.
+
+    Source order: the game's own request JSON (authoritative), then the chart's header name
+    (which encodes the variant), then the label cache from API captures, then the lane
+    count for key mode.
+    """
+    runtime = runtime or {}
     lab = label_for(snap.get('ezi_url'), os.path.dirname(os.path.abspath(__file__))) or {}
-    km, diff, lanes = chart_variant(os.path.join(d, 'ez.ez'))
-    from_name = bool(diff)
-    if not diff:
-        diff = DIFF_LABEL.get(str(lab.get('levelmode')))
-    song = lab.get('song') or song_name(snap)
+    name_km, name_diff = variant_from_name(os.path.join(d, 'ez.ez'))
+    lanes = chart_variant(os.path.join(d, 'ez.ez'))[2]
+    file_km = name_km or LANE_LABEL.get(lanes)          # the chart file's own key mode
+    rt_km = KEYMODE_LABEL.get(str(runtime.get('keymode')))
+    rt_diff = DIFF_LABEL.get(str(runtime.get('levelmode')))
+
+    # The runtime reflects whatever was playing when it was read, so only trust it when it
+    # agrees with the chart file. Otherwise the lane count wins (a 4-lane chart is 4K
+    # whatever the game was doing) and we say so rather than mixing the two.
+    consistent = not (file_km and rt_km) or file_km == rt_km
+    km = file_km or rt_km
+    diff = name_diff or (rt_diff if consistent else None) or \
+           DIFF_LABEL.get(str(lab.get('levelmode')))
+    song = (runtime.get('musicresourcename') if consistent else None) \
+        or lab.get('song') or song_name(snap)
+
+    mismatch = ''
+    if file_km and rt_km and file_km != rt_km:
+        mismatch = ('chart is %s (%d lanes) but the game requested %s; the runtime '
+                    'difficulty was ignored' % (file_km, lanes or 0, rt_km))
     bits = [b for b in (km, diff) if b]
     out = {'song': song, 'keymode': km, 'lanes': lanes, 'difficulty': diff,
-           'difficultyFromName': from_name, 'levelmode': lab.get('levelmode'),
-           'gamemode': lab.get('gamemode'), 'api_keymode': lab.get('keymode'),
-           'labelSource': lab.get('source')}
+           'keymodeFromChart': file_km, 'keymodeFromRuntime': rt_km,
+           'levelmode': runtime.get('levelmode') or lab.get('levelmode'),
+           'gamemode': runtime.get('gamemode') or lab.get('gamemode'),
+           'labelSource': 'runtime' if (runtime and consistent) else 'chart',
+           'labelMismatch': mismatch or None}
     text = '   song    : %s%s' % (song, ('  [%s]' % ' '.join(bits)) if bits else '')
-    if from_name:
+    if runtime:
+        text += '   (runtime keymode=%s levelmode=%s gamemode=%s)' % (
+            runtime.get('keymode'), runtime.get('levelmode'), runtime.get('gamemode'))
+    elif name_diff:
         text += "   (variant from the chart's header name)"
     elif lab:
         text += '   (difficulty from API levelmode=%s)' % lab.get('levelmode')
     else:
-        text += '   (key mode from lane count; no API label, so difficulty unknown)'
+        text += '   (key mode from lane count; difficulty unknown)'
+    if mismatch:
+        text += '\n   !! label mismatch: %s' % mismatch
     return text, out
 
 
@@ -231,7 +298,8 @@ def capture(sc, snap, out_root):
 
     # name the song and its mode/difficulty
     try:
-        text, label = describe(settled or snap, d)
+        rt = runtime_pattern(sc)
+        text, label = describe(settled or snap, d, rt)
         print(text)
         base = settled or snap
         base['label'] = label
