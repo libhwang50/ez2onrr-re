@@ -12,6 +12,11 @@ Usage
     python3 render_song.py <song_dir> --assets auto -o out.flac
     python3 render_song.py --all -o rendered_songs/
 
+Output names come from the capture's `ident.json`: the song's title when the metadata table
+resolved one (`Hyper_Magic_4K_SHD.flac`), else its resource codename, plus the key mode and
+difficulty so variants do not collide. An unidentified capture keeps its `song_<hash>` name.
+Without `-o`, a render is written to `rendered_songs/<name>.flac`.
+
 `song_dir` must hold a decrypted `ez.ez` and `ezi.ezi` (what `dump_song.py` writes, or
 `decrypt_chart.py --out` produces). `--assets auto` finds the matching
 `extracted_assets/<song_id>` by comparing keysound filenames, which is necessary because
@@ -32,6 +37,7 @@ but never exercised.
 import argparse
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -242,16 +248,41 @@ def discover_charts(root):
     return sorted(found)
 
 
+_PLACEHOLDER_RE = re.compile(r'^song_[0-9a-f]{6,}$')
+
+
+def slug(s):
+    """Filesystem-friendly text: runs of punctuation/space become single underscores."""
+    return re.sub(r'[^\w.-]+', '_', song_meta.clean(str(s or '')),
+                  flags=re.UNICODE).strip('._')
+
+
+def song_slug(song_dir):
+    """The capture's song name: its title, else its codename, else ''.
+
+    `ident.json` records both the display `title` (from the game's metadata table) and the
+    resource codename (`song`, e.g. `HyperMagic`). An unidentified capture has neither, only
+    the `song_<hash>` placeholder the dumper fell back to, which is not a name.
+    """
+    label = chart_label(song_dir)
+    for key in ('title', 'song'):
+        v = label.get(key)
+        if v and not _PLACEHOLDER_RE.match(str(v).strip()):
+            return slug(v)
+    return ''
+
+
 def chart_name(song_dir, root='extracted_charts'):
-    """A unique, readable name for one capture directory.
+    """A unique, readable name for one capture directory: song plus variant.
 
-    Captures nest as <song>/<keymode>/<difficulty>, so neither the basename ("shd") nor a name
-    taken relative to a *per-song* root ("4k_ez") is unique: the first collides across key
-    modes, the second across songs.  A bulk run on a song dir used to produce the latter, so
-    every song's 4K EZ render wanted the same filename.
+    The song comes from the capture's `ident.json` — the display title when the metadata
+    table resolved one (`Hyper Magic`), else the resource codename (`HyperMagic`) — so a
+    render is named after the song rather than `song_<hash>`. The variant (key mode +
+    difficulty) keeps the 4K/5K/6K/8K and EZ/NM/HD/SHD variants of one song from colliding.
 
-    Prefer the path relative to the charts root; when the directory is not under it, fall back
-    to the last three components, which is exactly that nesting.
+    Captures nest as <song>/<keymode>/<difficulty>, so when the label is missing both the
+    song and the variant fall back to that path. When the directory is not under the charts
+    root, use its last three components, which is exactly that nesting.
     """
     path = os.path.normpath(song_dir)
     try:
@@ -260,7 +291,14 @@ def chart_name(song_dir, root='extracted_charts'):
         rel = ''
     if not rel or rel.startswith('..') or os.path.isabs(rel):
         rel = os.sep.join(path.split(os.sep)[-3:])
-    return rel.replace(os.sep, '_')
+    parts = rel.split(os.sep)
+
+    label = chart_label(song_dir)
+    song = song_slug(song_dir) or slug(parts[0])
+    variant = [label.get('keymode'), label.get('difficulty')]
+    if not any(variant):                            # no label: read the nesting
+        variant = parts[1:]
+    return '_'.join([song] + [b for b in (slug(v) for v in variant) if b])
 
 
 def main():
@@ -307,7 +345,7 @@ def main():
 
     if not args.song_dir:
         ap.error('give a song directory, or --all')
-    out = args.out or (os.path.basename(os.path.normpath(args.song_dir)) + '.flac')
+    out = args.out or os.path.join('rendered_songs', chart_name(args.song_dir) + '.flac')
     print(render_one(args.song_dir, args.assets, out, **kw))
 
 
