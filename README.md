@@ -43,6 +43,7 @@ python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 10
 | `decrypt_chart.py <cdn_*.bin>` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
 | `parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
 | `chart_labels.py` | decrypt captured API traffic → `chart_labels.json` (song name, key mode, difficulty) |
+| `check_charts.py` | **audit the captures** — flags a chart filed under the wrong key mode or difficulty, a missing artifact, or a record that disagrees with the chart on disk; exits non-zero |
 | `render_song.py <song_dir>` | **render the song** — plays every note's keysound at its scheduled time; `--assets auto` matches the keysounds by content, `--all` walks every captured chart |
 | `visualize_song.py <song_dir>` | **visualise the render** — an mp4 with the keysounds, lanes and progress overlaid on the BGA (or a plain background). Pass a song directory or `--all` to render every variant, `--skip-existing` to leave finished ones |
 | `song_meta.py` | look up a song's title/composer from the harvested metadata table |
@@ -76,7 +77,13 @@ new chart. If they disagree and a capture already exists, the snapshot goes to
 game's dictionary is ~4 managed invocations per entry — ~8,000 for Ultimatum's 2,014 — and
 the Frida bridge holds the enumerator and its boxed keys as raw pointers the IL2CPP GC is
 never told about, so a GC mid-loop can free them. It is only a cross-check anyway; `ezi.ezi`
-carries the same index → filename mapping.
+carries the same index → filename mapping. (This was added while chasing the freezes on the
+theory that it caused them; it did not — the hang was caught in a read that invokes nothing —
+but the unpacked-pointer risk is real, so it stays opt-in.)
+
+The captures are audited with `check_charts.py`, which flags a chart filed under the wrong
+key mode or difficulty (the mislabelling bug filed a 4K chart under `5k/shd`), a missing
+artifact, or a record that disagrees with the chart on disk.
 
 If the read path dies — the game's main thread is wedged (spinning), has exited, or the Frida
 script is unloaded — the watch says so and stops rather than hanging or polling forever. Each

@@ -10,6 +10,11 @@
 //
 // So run on Frida's own domain-attached thread by default.  `setOnMain(true)` restores the
 // old hijack for anyone who needs a real crypto call.
+//
+// It is also much cheaper: reaching the main thread means resolving `Il2Cpp.mainThread`,
+// which is `Il2Cpp.attachedThreads[0]`, and that getter's last resort walks every `rw-` range
+// in the process looking for the IL2CPP thread list — on every single read.  Captures went
+// from several seconds to well under one.
 let _useMainThread = false;
 function read(fn) {
     return Il2Cpp.perform(() => _useMainThread

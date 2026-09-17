@@ -63,7 +63,10 @@ Notes
   and the bridge holds the enumerator and its boxed keys as raw pointers the
   IL2CPP GC is never told about, so a GC mid-loop frees them and the next invoke
   touches freed memory.  `ezi.ezi` already carries the same mapping.  Use
-  `--read-instrument-dic` when you want the cross-check.
+  `--read-instrument-dic` when you want the cross-check.  (This was originally
+  added while chasing the freezes, on the theory that it was the cause.  It was
+  not — the hang was caught inside `daRusFull()`, which invokes nothing — but the
+  unpacked-pointer risk is real, so it stays opt-in.)
 * The output directory is decided by the *chart's own* identity, not only by the
   runtime label: the game updates `ez_url`/`ezi_url` in stages, so a snapshot
   taken mid-transition can pair the old label with the new chart.  Writing that
@@ -623,12 +626,13 @@ def capture(sc, snap, out_root, name_by='title', read_dic=False, use_patternjson
     except Exception as e:
         print("   !! labelling failed: %s" % e)
 
-    # 4) the decrypted, parsed chart as the game holds it.  OFF by default: walking a
-    #    Dictionary with get_Keys/GetEnumerator/MoveNext/get_Current/get_Item is ~4 managed
-    #    invocations per entry (~8,000 for Ultimatum's 2,014), and the bridge holds the
-    #    enumerator and its boxed keys as raw pointers the IL2CPP GC is never told about.
-    #    A GC during the loop frees them and the next invoke touches freed memory.  It is
-    #    only a cross-check anyway — `ezi.ezi` carries the same index -> filename mapping.
+    # 4) the decrypted, parsed chart as the game holds it.  OFF by default.  This is not
+    #    the freeze cause it was once taken for — the hang was caught in daRusFull(), which
+    #    invokes nothing — but walking a Dictionary with get_Keys/GetEnumerator/MoveNext/
+    #    get_Current/get_Item is ~4 managed invocations per entry (~8,000 for Ultimatum's
+    #    2,014), and the bridge holds the enumerator and its boxed keys as raw pointers the
+    #    IL2CPP GC is never told about.  A GC mid-loop frees them and the next invoke touches
+    #    freed memory.  It is only a cross-check anyway: `ezi.ezi` carries the same mapping.
     if read_dic and not wedged:
         mark('reading instrumentDic')
         try:
@@ -691,7 +695,7 @@ def main():
         action="store_true",
         help="also walk the game's instrumentDic through managed invocations and save it "
              "as a cross-check on the decrypted .ezi. Off by default: it is ~4 managed "
-             "invocations per entry, which is the riskiest thing this tool does, and the "
+             "invocations per entry, which is the riskiest read this tool does, and the "
              ".ezi already carries the same mapping.",
     )
     a = ap.parse_args()

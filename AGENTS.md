@@ -481,6 +481,7 @@ User-facing (repo root):
 | `decrypt_chart.py` | **decrypt CDN payloads** → `.ez` / `.ezi` plaintext (library + CLI) |
 | `parse_chart.py` | **read decrypted charts** — `.ez` note charts and `.ezi` keysound indexes, as a summary, JSON, or note listing |
 | `chart_labels.py` | **name charts** — decrypt captured API traffic into `chart_labels.json` (song name, key mode, difficulty); `dump_song.py` reads it back |
+| `check_charts.py` | **audit the captures** — chart identity vs the `<keymode>/<difficulty>/` it is filed under, missing artifacts, and `ident.json` disagreeing with the chart on disk. Catches the mislabelling bug that filed a 4K chart under `5k/shd`; exits non-zero, so it can gate a batch |
 | `render_song.py` | **render a song** — plays every note's keysound at its scheduled time; `--assets auto` matches keysounds by content |
 | `visualize_song.py` | **visualise a render** — mp4 with keysounds, lanes and progress overlaid on the BGA; player-lane rows are bright, auto-played rows dimmed (`--no-auto-dim` to disable); bulk-renders a whole song dir or `--all`, with `--skip-existing`/`--force` |
 | `harvest_metadata.py` | dump the game's song metadata table (title, composer) → `music_names.json` |
