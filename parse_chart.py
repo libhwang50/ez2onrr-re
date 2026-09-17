@@ -21,11 +21,18 @@ Usage
 
 Verified vs. inferred
 ---------------------
-Verified against the file's own `.ezi` and internal structure: the header fields, the
-track walk, the 13-byte stride, and the type-1 keysound index (every one lands inside the
-`.ezi` index set; 0 out of range). The `velocity`/`pan` byte positions follow the EZ2AC
-spec. The meaning of the 2-byte field in a note's params[5:7] is **not** confirmed for
-REBOOT — it is exposed raw as `flags` rather than guessed at.
+Verified against the game's own parsed state and the file itself: the header fields, the
+track walk, the 13-byte stride, the type-1 keysound index (every one lands inside the
+`.ezi` index set), and two things confirmed against `normalLanes` over 3 songs x 4 lanes:
+
+  * **tracks 3-6 are the 4K lanes, in order** (lane 0-3); and
+  * **a type-1 note is a long note iff `flags not in (0, 6)`** — normal + long per lane
+    reproduced `normalLanes` exactly on all 12 lanes.
+
+The `velocity`/`pan` byte positions follow the EZ2AC spec, but `velocity` is 127 for
+essentially every note here, so its meaning is untested. The unit of the `flags` value
+on a long note is unknown (it is *not* a tick count). Tracks other than 3-6 are not
+understood at all.
 """
 import argparse
 import json
@@ -116,8 +123,13 @@ class Note:
 
     @property
     def flags(self):
-        """uint16 at params[5:7]. Meaning unconfirmed for REBOOT — exposed raw."""
+        """uint16 at params[5:7]. 0 or 6 => normal note; anything else => long note."""
         return struct.unpack_from('<H', self.params, 5)[0]
+
+    @property
+    def is_long(self):
+        """Type-1 only. Verified against the game's `normalLanes` on 3 songs x 4 lanes."""
+        return self.type == 1 and self.flags not in (0, 6)
 
     @property
     def value(self):
@@ -131,7 +143,7 @@ class Note:
              'typeName': NOTE_TYPE_NAMES.get(self.type, 'type%d' % self.type)}
         if self.type == 1:
             d.update(keysound=self.keysound, velocity=self.velocity,
-                     pan=self.pan, flags=self.flags)
+                     pan=self.pan, flags=self.flags, long=self.is_long)
         else:
             d['value'] = self.value
         return d
@@ -265,21 +277,26 @@ def summarize_chart(ch):
     for t in ch.tracks:
         if not t.notes:
             continue
-        t1 = len(t.notes_of_type(1))
-        lines.append('    %-4d %-11s events=%-5d notes=%-5d ticks=%d'
-                     % (t.index, t.role, len(t.notes), t1, t.num_ticks))
+        n1 = t.notes_of_type(1)
+        nlong = sum(1 for n in n1 if n.is_long)
+        lane = ' lane%d' % (t.index - 3) if 3 <= t.index <= 6 else ''
+        lines.append('    %-4d %-11s%s events=%-5d notes=%-5d (normal=%-5d long=%-4d) ticks=%d'
+                     % (t.index, t.role, lane, len(t.notes), len(n1), len(n1) - nlong,
+                        nlong, t.num_ticks))
     return '\n'.join(lines)
 
 
 def note_lines(ch, instruments=None):
     names = {i.index: i.filename for i in (instruments or [])}
     tpm = ch.header['ticksPerMeasure'] or 1
-    yield '# track  role        pos(ticks)  measure  keysound  vel   filename'
+    yield '# track  role        pos(ticks)  measure  keysound  vel  kind  filename'
     for t in ch.tracks:
+        lane = 'lane%d' % (t.index - 3) if 3 <= t.index <= 6 else '-'
         for n in t.notes_of_type(1):
-            yield '%-8d %-11s %10d %8.3f %9d %4d   %s' % (
-                t.index, t.role, n.position, n.position / tpm,
-                n.keysound, n.velocity, names.get(n.keysound, ''))
+            yield '%-8d %-11s %10d %8.3f %9d %4d  %-4s  %s' % (
+                t.index, lane, n.position, n.position / tpm,
+                n.keysound, n.velocity, 'long' if n.is_long else 'n',
+                names.get(n.keysound, ''))
 
 
 def collect(dirpath):
@@ -367,4 +384,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())

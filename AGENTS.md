@@ -114,15 +114,16 @@ mask(ebx) = XOR over i in 0..63 of ( S[i] ^ r_i ^ (ebx & 0xff) )
 **Stage 2 — AES-256-CBC/PKCS7**, key and IV from one of **three static pairs**, all in
 `InGameCore`:
 
-| pair | decodes | observed on |
-|---|---|---|
-| `svk`/`svl` | Engine | |
-| `svm`/`svn` | *(not yet observed)* | |
-| `svo`/`svp` | Conflict, Rebind | |
+| pair | observed on |
+|---|---|
+| `svk`/`svl` | Engine 4K SHD |
+| `svm`/`svn` | Change My World 4K SHD, Hyper Magic 4K SHD |
+| `svo`/`svp` | Conflict 4K SHD, Rebind 4K SHD |
 
 **The pair is selected per payload by validation, not recorded anywhere.** The game does
-not store a key index, and `bundleCryptKey` is identical for songs that use *different*
-pairs — so it is not the selector. For any given payload exactly one pair yields valid
+not store a key index; `bundleCryptKey` is identical across songs that use different pairs,
+and the CDN path bucket differs even between a song's own `.ez` and `.ezi` while the pair
+does not — so neither is the selector. For any given payload exactly one pair yields valid
 PKCS7 padding, so `decrypt_chart.decrypt()` tries all three and accepts the one whose
 plaintext has valid padding **and** looks like a chart (`EZFF`) or an index (printable
 `[index] [velocity] [filename]` lines). `decrypt_named()` also returns which pair matched.
@@ -197,9 +198,18 @@ response, so experiments need no restart.
   running it on a decrypted REBOOT payload *introduces* 38 non-monotonic positions, 67
   out-of-range positions and 4 invalid keysound indices, whereas the file as served has
   **zero** of each. Adding `0xF9` turns valid note types (`0x01`) into `0xFA`. Do not apply it.
-* **Open: the track index → lane/mode map.** REBOOT uses 64 tracks; indices 0–21 match the
-  arcade roles (verified via `ezinfo`), but 22–63 also carry hundreds of notes and their
-  meaning is unconfirmed. Playable lanes are *not* simply tracks 3–6.
+* **Track index → lane, and long notes — SOLVED for 4K.** Verified against the game's own
+  `normalLanes` over 3 songs x 4 lanes, 12/12 exact:
+  * **tracks 3–6 are the 4K lanes, in order** (track 3 → lane 0 … track 6 → lane 3);
+  * a type-1 note is a **long note iff `flags not in (0, 6)`**; `flags` is the uint16 at
+    `params[5:7]`. Normal + long per lane reproduced `normalLanes` exactly.
+  The unit of the long-note `flags` value is unknown (it is *not* a tick count).
+* **The `name` field at `0x06` is not the song name** — it is an authoring tag. Observed
+  values: `4-shd`, `#PTMAKE` (presumably built with the in-game pattern maker), and empty.
+  Conflict and Hyper Magic are different songs that both carry `4-shd`.
+* **Tracks other than 3–6 are still unexplained.** Indices 0–21 match the arcade roles and
+  22–63 should be BGM per EZ2AC, but they carry hundreds of note events each (e.g. Conflict
+  track 27 = 694). Their meaning is open; note listings report raw track indices for them.
 * **Open: note types 5/6/9** (and 8 in some files) are undocumented; the reference
   `ezinfo` reports them as unhandled. Exposed raw by `parse_chart.py`.
 
@@ -358,16 +368,16 @@ cipher, and the CDN chart/index cipher (§3.3, `decrypt_chart.py`).
 **Done:** located the chart decryptor by scanning for direct calls into the `dc*` cluster
 (`tools/il2cpp/_callers.js`), identified `dcf → dcg` as `mask ∘ AES-256-CBC`, extracted the
 static key material (`svq`/`svr` mask tables, three key/IV pairs), and verified the result
-end-to-end (Conflict + Rebind + Engine, 4 payloads, 2 key pairs). `parse_chart.py` reads
-the result: header, tracks, note events, `.ezi` join; JSON or a note listing.
-`dump_song.py` now decrypts on capture, so a song lands readable.
+end-to-end (5 songs, 3 key pairs). The 4K lane map and the long-note rule are verified
+against the game's own `normalLanes`, 12/12 lanes exact. `parse_chart.py` reads the result:
+header, tracks, note events with normal/long, `.ezi` join; JSON or a note listing.
+`dump_song.py` now decrypts on capture and waits for the parse before snapshotting.
 
 **Next:**
 
-1. Establish the track index → lane/mode map (§3.5) so note listings can name lanes
-   instead of raw track numbers — needs a match against a freshly dumped `normalNoteData`.
-2. Identify note types 5/6/9 against `InGameCore`'s `specialNoteData` / `autoNoteData`.
-3. Find what selects the key pair (`svk`/`svm`/`svo`) — it is not in the payload; more
-   samples would show whether it tracks something observable (e.g. CDN path prefix).
+1. Identify note types 5/6/9 against `InGameCore`'s `specialNoteData` / `autoNoteData`.
+2. Explain tracks 22–63 (hundreds of note events each; arcade calls them BGM).
+3. Find what selects the key pair (`svk`/`svm`/`svo`) — it is not in the payload, the CDN
+   path, or `bundleCryptKey`; it looks like an authoring/build-time choice.
 4. Join `parse_chart.py` output against `extract_assets.py` output so a chart's keysounds
    can be resolved by name across the whole archive (a bulk "make it readable" mode).

@@ -73,7 +73,10 @@ def settle(sc, timeout=15.0, interval=0.4):
     best, best_score = None, -1
     while True:
         try:
-            snap = sc.exports_sync.ident()
+            try:
+                snap = sc.exports_sync.ident(True)      # with normalLanes
+            except Exception:
+                snap = sc.exports_sync.ident()           # older driver without the flag
             lanes = [x for x in (snap.get('normalLanes') or []) if isinstance(x, int) and x > 0]
             dic = snap.get('instrumentDicCount') or 0
             score = sum(lanes) + dic

@@ -5,7 +5,7 @@ function hexOf(a, n) {
     try { const p = dat(a); const u = new Uint8Array(p.readByteArray(Math.min(a.length, n || 32)));
           let h = ''; for (let i = 0; i < u.length; i++) h += u[i].toString(16).padStart(2, '0'); return h; } catch (e) { return null; }
 }
-rpc.exports.ident = function () {
+rpc.exports.ident = function (withLanes) {
     return onMain(() => {
         const img = Il2Cpp.domain.assembly("Assembly-CSharp").image;
         const inst = img.class('InGameCore').field('instance').value;
@@ -52,13 +52,20 @@ rpc.exports.ident = function () {
         for (const nm of ['instrumentDic','normalNoteData','longNoteData','bpmNoteData','MeasureScaleData']) {
             try { const v = inst.field(nm).value; o[nm + 'Count'] = v === null ? null : cnt(v); } catch (e) { o[nm + 'Count'] = 'ERR'; }
         }
-        try {
-            const nnd = inst.field('normalNoteData').value;
-            o.normalLanes = [];
-            for (let i = 0; i < (o.normalNoteDataCount || 0); i++) {
-                try { const l = nnd.method('get_Item', 1).invoke(i); o.normalLanes.push(l === null ? -1 : l.method('get_Count', 0).invoke()); } catch (e) {}
-            }
-        } catch (e) {}
+        // normalLanes is the only invoke-heavy part of this snapshot (one get_Item +
+        // get_Count per lane), and it is only needed once, at capture time — so it is
+        // opt-in. The watch loop calls ident() with no argument every poll; making this
+        // unconditional means invoking list methods several times a second while the
+        // player is scrolling the song list and assets are loading.
+        if (withLanes) {
+            try {
+                const nnd = inst.field('normalNoteData').value;
+                o.normalLanes = [];
+                for (let i = 0; i < (o.normalNoteDataCount || 0); i++) {
+                    try { const l = nnd.method('get_Item', 1).invoke(i); o.normalLanes.push(l === null ? -1 : l.method('get_Count', 0).invoke()); } catch (e) {}
+                }
+            } catch (e) {}
+        }
         return o;
     });
 };
