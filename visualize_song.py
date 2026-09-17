@@ -146,17 +146,27 @@ def build_events(song_dir, assets_root="extracted_assets"):
     except Exception as e:
         print("warning: could not read keysound durations: %s" % e, flush=True)
 
-    events = [
-        (
-            sec,
-            sec + max(0.05, durations.get(n.keysound, UNKNOWN_SAMPLE)),
-            track,
-            n.keysound,
-            names.get(n.keysound, ""),
-            n.is_long,
+    # A long note is held for `flags` ticks — confirmed against the chart: with that unit every
+    # hold ends at or before the next note in its own lane (43/43 and 83/83 across the two
+    # captures), while at 2x most of them would overlap the next note, which a lane cannot do.
+    # That makes the hold's length in seconds computable.
+    events = []
+    for sec, track, n in ch.note_seconds():
+        hold = 0.0
+        if n.is_long and n.flags:
+            end_tick = min(n.position + n.flags, ch.header["totalTicks"])
+            hold = max(0.0, ch.seconds_at(end_tick) - sec)
+        events.append(
+            (
+                sec,
+                sec + max(0.05, durations.get(n.keysound, UNKNOWN_SAMPLE)),
+                track,
+                n.keysound,
+                names.get(n.keysound, ""),
+                n.is_long,
+                hold,
+            )
         )
-        for sec, track, n in ch.note_seconds()
-    ]
     events.sort(key=lambda e: e[0])
     return ch, events, names, durations
 
@@ -252,7 +262,7 @@ def draw_frame(img, dr, st):
     for i, ev in enumerate(st["slots"]):
         if ev is None:
             continue
-        start, end, track, ks, fname, is_long = ev
+        start, end, track, ks, fname, is_long, _hold = ev
         # column-major: newer keysounds fill the first column before spilling right
         c, r = divmod(i, st["rows_per_col"])
         x0 = st["pad"] + c * st["colw"]
@@ -665,7 +675,9 @@ def main():
                 ev = events[next_i]
                 next_i += 1
                 if ev[2] in LANE_TRACK:
-                    recent_presses.append((ev[0], ev[2]))
+                    # a long note keeps its lane lit for the hold; a normal press is brief
+                    until = ev[0] + max(press_hold, ev[6])
+                    recent_presses.append((until, ev[2]))
                 if ev[1] <= vt:
                     continue
                 free = next((i for i, s in enumerate(st["slots"]) if s is None), None)
@@ -678,9 +690,8 @@ def main():
             # its notes was still *sounding*, so a long sample (a sustained pad, or anything
             # with a slow release) held the key down for seconds — worst on chords, where
             # several lanes stuck at once.
-            cutoff = vt - press_hold
-            recent_presses = [(s, t) for s, t in recent_presses if s >= cutoff]
-            st["active_tracks"] = {t for _s, t in recent_presses}
+            recent_presses = [(u, t) for u, t in recent_presses if u > vt]
+            st["active_tracks"] = {t for _u, t in recent_presses}
             st["t"] = vt
             img.paste(empty, (0, 0))
             draw_frame(img, dr, st)

@@ -251,9 +251,14 @@ response, so experiments need no restart.
   * **tracks 3–6 are the 4K lanes, in order** (track 3 → lane 0 … track 6 → lane 3);
   * a type-1 note is a **long note iff `flags not in (0, 6)`**; `flags` is the uint16 at
     `params[5:7]`. Normal + long per lane reproduced `normalLanes` exactly.
-  The unit of the long-note `flags` value is unknown (it is *not* a tick count), and it has
-  **no audio effect**: verified in-game that a long note's keysound plays exactly like a
-  normal note's and is not sustained. The distinction must drive judgement or visuals.
+  **`flags` is the hold length in ticks.** Confirmed against the charts: with that unit every
+  hold ends at or before the next note in its own lane (43/43 in Changa 2, 83/83 in Rebind),
+  whereas at twice that unit most holds would overlap the next note in the same lane, which a
+  lane cannot do. Values are multiples of 12 ticks (a 1/16-measure grid), giving holds of
+  0.2-2.6 s, and `bar`/`hold` land on plausible musical positions. It has **no audio effect**:
+  verified in-game that a long note's keysound plays exactly like a normal note's and is not
+  sustained. So it drives judgement and the visual hold bar, and `visualize_song.py` uses it to
+  keep a lane lit for the whole hold.
 * **`name` at `0x06` is the chart variant, not the song name**: it is `<keys>-<difficulty>`, e.g.
   `4-shd`, `8-ez`, `5-nm`, `5-hd`. So it decodes the key mode **and** difficulty straight
   from the chart, which is more direct than asking the API. It is not always set — Engine

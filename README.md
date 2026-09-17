@@ -139,7 +139,8 @@ for the BGA, and label outlines scale with the frame (1 px at 720p, `--outline` 
 A lane lights for `--press-hold` seconds after its note fires (default 0.15) — a key press is
 an event, not a duration. It used to stay lit while the note's *sample* was still sounding, and
 lane samples run up to 7.7 s, so a press could hold a key down for seconds; on chords several
-lanes stuck at once.
+lanes stuck at once. **Long notes are the exception:** they keep their lane lit for the whole
+hold, which is `flags` ticks of the note record converted to seconds (0.2-2.6 s in practice).
 
 `--rows auto` (the default) sizes the keysound display to the chart's peak simultaneous
 keysounds **sampled at the frames actually rendered**, so nothing visible is dropped and no
