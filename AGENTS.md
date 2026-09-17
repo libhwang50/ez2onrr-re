@@ -203,7 +203,9 @@ response, so experiments need no restart.
   * **tracks 3–6 are the 4K lanes, in order** (track 3 → lane 0 … track 6 → lane 3);
   * a type-1 note is a **long note iff `flags not in (0, 6)`**; `flags` is the uint16 at
     `params[5:7]`. Normal + long per lane reproduced `normalLanes` exactly.
-  The unit of the long-note `flags` value is unknown (it is *not* a tick count).
+  The unit of the long-note `flags` value is unknown (it is *not* a tick count), and it has
+  **no audio effect**: verified in-game that a long note's keysound plays exactly like a
+  normal note's and is not sustained. The distinction must drive judgement or visuals.
 * **`name` at `0x06` is not the song name** — it is an authoring tag. Observed values:
   `4-shd`, `#PTMAKE` (presumably built with the in-game pattern maker), and empty.
   Conflict and Hyper Magic are different songs that both carry `4-shd`.
@@ -219,6 +221,7 @@ response, so experiments need no restart.
   and 23–63 are auto-played instrument layers; the split does not matter for rendering —
   all of them sound. Every keysound declared in a `.ezi` is referenced by some track
   (`declared-but-unplayed` is 0), so the bank is fully sequenced by the chart.
+  **Verified by ear against gameplay — reported as an exact match.**
 
 ### 3.6 Tick → seconds (validated)
 
@@ -244,7 +247,8 @@ time-signature change as a real tempo change would be off by 21 s on Conflict.
 `Chart.seconds_at(tick)` and `Chart.note_seconds()` in `parse_chart.py` implement this, and
 `render_song.py` uses it to mix every note's keysound into an audio file. All 5 captured
 songs render; Conflict (6393 events, 2719 distinct keysounds) takes ~3 s and comes out
-with a normal mix profile (mean ≈ −17 dB, normalised peak).
+with a normal mix profile (mean ≈ −17 dB, normalised peak). Rendering is fast enough to do
+in bulk — 5 songs in 11 s (`render_song.py --all`).
 * **Open: note types 5/6/9** (and 8 in some files) are undocumented; the reference
   `ezinfo` reports them as unhandled. Exposed raw by `parse_chart.py`.
 
@@ -411,11 +415,10 @@ header, tracks, note events with normal/long, `.ezi` join; JSON or a note listin
 
 **Next:**
 
-1. Verify a render by ear against the in-game audio, and check whether a long note should
-   sustain its sample (currently it plays once, like a normal note).
-2. Identify note types 5/6/9 against `InGameCore`'s `specialNoteData` / `autoNoteData`.
-3. Record the song id in `ident.json` — `patternFileInfo` is empty when read, so
+1. Identify note types 5/6/9 against `InGameCore`'s `specialNoteData` / `autoNoteData`, and
+   find what the long-note `flags` value drives (judgement/visuals only).
+2. Record the song id in `ident.json` — `patternFileInfo` is empty when read, so
    `dump_song.py` falls back to `song_<hash>` and the chart → `extracted_assets` mapping
    has to be recovered by content matching (`render_song.py --assets auto`).
-4. Find what selects the key pair (`svk`/`svm`/`svo`) — not the payload, the CDN path, or
+3. Find what selects the key pair (`svk`/`svm`/`svo`) — not the payload, the CDN path, or
    `bundleCryptKey`; it looks like an authoring/build-time choice.

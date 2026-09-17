@@ -9,21 +9,25 @@ not the song itself. See AGENTS.md 3.5 / 3.6.
 
 Usage
 -----
-    python3 render_song.py <song_dir> --assets extracted_assets/<song_id> -o out.wav
+    python3 render_song.py <song_dir> --assets auto -o out.flac
+    python3 render_song.py --all -o rendered_songs/
 
 `song_dir` must hold a decrypted `ez.ez` and `ezi.ezi` (what `dump_song.py` writes, or
-`decrypt_chart.py --out` produces). Keysounds are matched to the `.ezi` filenames by stem,
-so `00-MR.wav` in the index resolves to `00-MR.flac` on disk.
+`decrypt_chart.py --out` produces). `--assets auto` finds the matching
+`extracted_assets/<song_id>` by comparing keysound filenames, which is necessary because
+`dump_song.py` names its directories `song_<hash>` and never records the song id.
 
-Requires numpy and soundfile (both editable via `uv pip install --python .venv/bin/python
-numpy soundfile`).
+Requires numpy and soundfile (`uv pip install --python .venv/bin/python numpy soundfile`).
 
-Limitations
------------
-* A long note plays its keysound once, as a normal note. If a hold is meant to sustain the
-  sample, that is not reproduced — the `flags` value carries the length but its unit is
-  unknown (AGENTS.md 3.5).
-* `velocity` is 127 for essentially every note, so it is applied as a gain but is untested.
+Verified
+--------
+A/B'd by ear against in-game gameplay and reported as an exact match. **Long notes behave
+exactly like normal notes: the keysound plays once and is not sustained.** The `flags`
+field still marks which notes are long, but it has no effect on audio, so nothing extra is
+needed here — the distinction must matter to judgement or visuals.
+
+Known imprecision: `velocity` is 127 for essentially every note, so it is applied as a gain
+but never exercised.
 """
 import argparse
 import os
@@ -33,7 +37,9 @@ import numpy as np
 import soundfile as sf
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from parse_chart import parse_ezi, load  # noqa: E402
+from parse_chart import parse_ez, parse_ezi, load  # noqa: E402
+
+AUDIO_EXT = ('.flac', '.ogg', '.wav', '.mp3')
 
 
 def resample(x, sr_in, sr_out):
@@ -49,7 +55,7 @@ def resample(x, sr_in, sr_out):
 
 
 def build_index(ezi):
-    """keysound index -> filename stem, lowercased."""
+    """keysound index -> filename stem."""
     return {i.index: os.path.splitext(i.filename)[0] for i in ezi}
 
 
@@ -58,18 +64,14 @@ def build_filemap(asset_dir):
     out = {}
     for fn in os.listdir(asset_dir):
         stem, ext = os.path.splitext(fn)
-        if ext.lower() in ('.flac', '.ogg', '.wav', '.mp3'):
+        if ext.lower() in AUDIO_EXT:
             out[stem.lower()] = os.path.join(asset_dir, fn)
     return out
 
 
-def resolve_assets(ezi_stems, root='extracted_assets', min_score=0.9):
-    """Find the extracted_assets/<song_id> whose files match this chart's keysounds.
-
-    `dump_song.py` names its directories song_<hash> and does not record the song id, so
-    match on the keysound stems the `.ezi` declares instead.
-    """
-    want = {s.lower() for s in ezi_stems}
+def resolve_assets(stems, root='extracted_assets', min_score=0.9):
+    """Find the extracted_assets/<song_id> whose files match this chart's keysounds."""
+    want = {s.lower() for s in stems}
     best = (0.0, None)
     if not os.path.isdir(root):
         return None, 0.0
@@ -86,50 +88,30 @@ def resolve_assets(ezi_stems, root='extracted_assets', min_score=0.9):
     return (best[1], best[0]) if best[0] >= min_score else (None, best[0])
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('song_dir', help='directory holding ez.ez and ezi.ezi')
-    ap.add_argument('--assets', required=True,
-                    help="extracted keysounds for this song, or 'auto' to match by contents")
-    ap.add_argument('-o', '--out', help='output audio file (default <song_dir>.flac)')
-    ap.add_argument('--rate', type=int, default=44100, help='output sample rate (default 44100)')
-    ap.add_argument('--gain', type=float, default=1.0, help='master gain before normalisation')
-    ap.add_argument('--no-normalize', action='store_true', help='skip peak normalisation')
-    ap.add_argument('--tracks', help='only these track indices, e.g. 3,4,5,6')
-    args = ap.parse_args()
-
-    ez = os.path.join(args.song_dir, 'ez.ez')
-    ezi = os.path.join(args.song_dir, 'ezi.ezi')
+def render_one(song_dir, assets, out, rate=44100, gain=1.0, normalize=True, only=None,
+               assets_root='extracted_assets'):
+    """Render one song. Returns a one-line summary, or raises on a hard failure."""
+    ez = os.path.join(song_dir, 'ez.ez')
+    ezi = os.path.join(song_dir, 'ezi.ezi')
     if not (os.path.exists(ez) and os.path.exists(ezi)):
-        sys.exit('need both ez.ez and ezi.ezi in %s' % args.song_dir)
+        raise ValueError('no ez.ez / ezi.ezi in %s' % song_dir)
 
-    data, was_enc = load(ez)
-    from parse_chart import parse_ez
-    ch = parse_ez(data)
-    ezi_data, _ = load(ezi)
-    ezi_index = parse_ezi(ezi_data)
-    idx2stem = build_index(ezi_index)
-    if args.assets == 'auto':
-        assets, score = resolve_assets(list(idx2stem.values()))
+    ch = parse_ez(load(ez)[0])
+    data_ezi, _ = load(ezi)
+    idx2stem = build_index(parse_ezi(data_ezi))
+
+    if assets == 'auto':
+        assets, score = resolve_assets(list(idx2stem.values()), root=assets_root)
         if not assets:
-            sys.exit('no extracted_assets/* matches this chart (best overlap %.2f)' % score)
-        print('  matched assets %s (%.1f%% of keysounds)' % (assets, score * 100))
-        args.assets = assets
-    filemap = build_filemap(args.assets)
+            raise ValueError('no extracted_assets/* matches (best overlap %.2f)' % score)
+    filemap = build_filemap(assets)
 
-    only = None
-    if args.tracks:
-        only = {int(x) for x in args.tracks.split(',') if x.strip() != ''}
-
-    seconds = ch.duration
-    rate = args.rate
-    # Leave room for the last notes' sample tails, then trim trailing silence, so a note
+    seconds, n_frames = ch.duration, 0
+    # Room for the last notes' tails, then trimmed to the last non-silent frame, so a note
     # landing exactly on the final tick is not dropped.
     n_frames = int(np.ceil(seconds * rate)) + 30 * rate
     mix = np.zeros((n_frames, 2), dtype=np.float32)
 
-    # decode each needed keysound once
     cache, missing_name, missing_file, used = {}, 0, 0, 0
     events = []
     for sec, track, note in ch.note_seconds():
@@ -144,10 +126,6 @@ def main():
             missing_file += 1
             continue
         events.append((sec, stem, path, note.velocity))
-    if missing_name:
-        print('  !! %d notes reference a keysound absent from the .ezi' % missing_name)
-    if missing_file:
-        print('  !! %d keysounds are not present in %s' % (missing_file, args.assets))
 
     for sec, stem, path, vel in events:
         if stem not in cache:
@@ -163,26 +141,90 @@ def main():
         if off >= n_frames:
             continue
         n = min(buf.shape[0], n_frames - off)
+        # float32 accumulation with a single clip at the end; int16 would saturate
+        # mid-mix once enough layers overlap.
         mix[off:off + n] += buf[:n] * (vel / 127.0)
         used += 1
 
     peak = float(np.max(np.abs(mix))) if mix.size else 0.0
-    if not args.no_normalize and peak > 0:
+    if normalize and peak > 0:
         mix *= (0.99 / peak)
-    mix *= args.gain
+    mix *= gain
     np.clip(mix, -1.0, 1.0, out=mix)
 
-    # trim trailing silence so the file ends where the song does
     env = np.abs(mix).max(axis=1)
     last = int(np.argmax(env[::-1] > 1e-6)) if env.size else 0
     if last:
         mix = mix[:len(mix) - last + 1]
 
-    out = args.out or (os.path.basename(os.path.normpath(args.song_dir)) + '.flac')
+    outdir = os.path.dirname(out)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
     sf.write(out, mix, rate, format='FLAC')
-    print('  rendered %d events from %d distinct keysounds -> %s' % (used, len(cache), out))
-    print('  chart %.2f s, output %.2f s @ %d Hz, peak before normalise %.3f'
-          % (seconds, len(mix) / rate, rate, peak))
+
+    warn = ''
+    if missing_name:
+        warn += ' [%d notes reference unknown keysounds]' % missing_name
+    if missing_file:
+        warn += ' [%d keysounds absent from assets]' % missing_file
+    return ('%-16s %5d events / %4d keysounds  chart %6.2fs -> %6.2fs%s'
+            % (os.path.basename(os.path.normpath(song_dir)), used, len(cache),
+               seconds, len(mix) / rate, warn))
+
+
+def discover_charts(root):
+    """Every subdirectory of `root` that holds both ez.ez and ezi.ezi."""
+    found = []
+    for name in sorted(os.listdir(root)):
+        d = os.path.join(root, name)
+        if os.path.isdir(d) and os.path.exists(os.path.join(d, 'ez.ez')) \
+                and os.path.exists(os.path.join(d, 'ezi.ezi')):
+            found.append(d)
+    return found
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('song_dir', nargs='?', help='directory holding ez.ez and ezi.ezi')
+    ap.add_argument('--all', action='store_true',
+                    help='render every chart under --charts')
+    ap.add_argument('--charts', default='extracted_charts',
+                    help='where to look with --all (default extracted_charts)')
+    ap.add_argument('--assets', default='auto',
+                    help="extracted keysounds for this song, or 'auto' (default)")
+    ap.add_argument('-o', '--out', help='output file, or directory when using --all')
+    ap.add_argument('--rate', type=int, default=44100)
+    ap.add_argument('--gain', type=float, default=1.0)
+    ap.add_argument('--no-normalize', action='store_true')
+    ap.add_argument('--tracks', help='only these track indices, e.g. 3,4,5,6')
+    args = ap.parse_args()
+
+    only = {int(x) for x in args.tracks.split(',')} if args.tracks else None
+    kw = dict(rate=args.rate, gain=args.gain, normalize=not args.no_normalize, only=only)
+
+    if args.all:
+        outdir = args.out or 'rendered_songs'
+        charts = discover_charts(args.charts)
+        if not charts:
+            sys.exit('no charts with ez.ez + ezi.ezi under %s' % args.charts)
+        print('rendering %d chart(s) -> %s\n' % (len(charts), outdir))
+        ok = skipped = 0
+        for d in charts:
+            out = os.path.join(outdir, os.path.basename(os.path.normpath(d)) + '.flac')
+            try:
+                print(render_one(d, args.assets, out, **kw))
+                ok += 1
+            except Exception as e:
+                print('%-16s SKIP: %s' % (os.path.basename(os.path.normpath(d)), e))
+                skipped += 1
+        print('\n%d rendered, %d skipped' % (ok, skipped))
+        return
+
+    if not args.song_dir:
+        ap.error('give a song directory, or --all')
+    out = args.out or (os.path.basename(os.path.normpath(args.song_dir)) + '.flac')
+    print(render_one(args.song_dir, args.assets, out, **kw))
 
 
 if __name__ == '__main__':

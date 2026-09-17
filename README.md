@@ -42,7 +42,7 @@ python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 10
 | `harvest_key.py` | derive `true_key_1024.bin` from live memory |
 | `decrypt_chart.py <cdn_*.bin>` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
 | `parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
-| `render_song.py <song_dir>` | **render the song** — plays every note's keysound at its scheduled time; `--assets auto` matches the keysounds by content |
+| `render_song.py <song_dir>` | **render the song** — plays every note's keysound at its scheduled time; `--assets auto` matches the keysounds by content, `--all` walks every captured chart |
 
 Then just **play songs**: `dump_song.py` captures each one on entry and writes
 
@@ -118,11 +118,16 @@ python3 parse_chart.py --backing --ezi song/ezi.ezi song/ez.ez
 
 ```bash
 python3 render_song.py extracted_charts/<song> --assets auto -o song.flac
+python3 render_song.py --all -o rendered_songs/        # every captured chart
 ```
+
+**Verified by ear against in-game gameplay — reported as an exact match.** Long notes need
+no special handling: their keysound plays once, exactly like a normal note, and is not
+sustained.
 
 `--assets auto` resolves which `extracted_assets/<song_id>` belongs to a chart by
 matching the `.ezi` keysound filenames against the files on disk (exact, 100%, for every
-song here). Rendering is fast — Conflict, the largest sample, takes about 3 s.
+song here). Rendering is fast — the 5 captured songs render in 11 s.
 
 ## ⚠️ Two rules for the Frida tooling
 
