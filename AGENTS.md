@@ -162,6 +162,24 @@ response, so experiments need no restart.
   `\r\n` terminated, velocity 0/1, PKCS7-padded at EOF. Corroboration — MilK: 18,192 B ÷
   807 keysounds = **22.5 B per line**; Conflict: 2,719 lines, mapping verified against the
   game's parsed `instrumentDic` 2719/2719.
+* **Positions are ticks; the game works in measures.** `InGameCore` divides by
+  `ticksPerMeasure` (Conflict: 192), so `normalNoteData[*].seu` is measures and
+  `<set>k__BackingField` is seconds (`seu × 60/BPM × 4`). Cross-check: the first 1P Key1
+  note is tick 384 = measure 2.0 = keysound 166, matching the game's `{seu: 2.0, sev: 166}`.
+* **Note record = 13 bytes** (the v7 sizing) for both v7 and v8: `pos`(u32), `type`(u8),
+  then 8 param bytes. Type 1 uses `keysound`(u16), `velocity`(u8, 127 in practice),
+  `pan`(u8, 64 = centre), pad, a 2-byte field at `params[5:7]`, pad. Types 2/3/4 are
+  volume (u8), BPM (float), beats-per-measure (u8).
+* **The v8 anti-tamper step does NOT apply to CDN-served charts.** `ezunfn` (subtract
+  `0xF9` at `0x1F8`/`0x400`/`0x5F0` every `0x600`) is documented for arcade v8 files, but
+  running it on a decrypted REBOOT payload *introduces* 38 non-monotonic positions, 67
+  out-of-range positions and 4 invalid keysound indices, whereas the file as served has
+  **zero** of each. Adding `0xF9` turns valid note types (`0x01`) into `0xFA`. Do not apply it.
+* **Open: the track index → lane/mode map.** REBOOT uses 64 tracks; indices 0–21 match the
+  arcade roles (verified via `ezinfo`), but 22–63 also carry hundreds of notes and their
+  meaning is unconfirmed. Playable lanes are *not* simply tracks 3–6.
+* **Open: note types 5/6/9** (and 8 in some files) are undocumented; the reference
+  `ezinfo` reports them as unhandled. Exposed raw by `parse_chart.py`.
 
 ## 4. Runtime internals
 
@@ -287,7 +305,9 @@ User-facing (repo root):
 | `decrypt_all.py` | bulk bundle decryption with `true_key_1024.bin` |
 | `harvest_key.py` | derive `true_key_1024.bin` from live memory |
 | `harvest_chart.py` | watch `InGameCore` for chart URLs and fetch them |
-| `dump_song.py` | **per-song snapshot** — byte-exact CDN archive + `da.rus` buffers + `instrumentDic` |
+| `decrypt_chart.py` | **decrypt CDN payloads** → `.ez` / `.ezi` plaintext (library + CLI) |
+| `parse_chart.py` | **read decrypted charts** — `.ez` note charts and `.ezi` keysound indexes, as a summary, JSON, or note listing |
+| `dump_song.py` | **per-song snapshot** — byte-exact CDN archive, decrypted plaintext, `da.rus` buffers + `instrumentDic` |
 | `run_dumper.sh` | Il2CppDumper (blocked by the missing metadata magic) |
 
 Investigation tooling — layout, build step and crash warnings: **`tools/README.md`**.
@@ -303,7 +323,7 @@ Notable: `tools/probes/_poll_da.py` (safe 4 Hz `da.rus` watcher — the pattern 
 | Path | Contents |
 |---|---|
 | `extracted_assets/<song_id>/` | FLAC/OGG keysounds, BGA `.mp4` |
-| `extracted_charts/<name>_<keymode>_<levelmode>_<gamemode>/` | `ident.json`, `cdn_*.bin`, `mem_rjl/rjm/rjn.bin`, `instrumentDic.json` |
+| `extracted_charts/<name>_<keymode>_<levelmode>_<gamemode>/` | `ident.json`, `cdn_*.bin`, `ez.ez` / `ezi.ezi` (decrypted), `mem_rjl/rjm/rjn.bin`, `instrumentDic.json` |
 | `EZ2ON REBOOT R/decrypted_bundles/` | decrypted `.unity3d` containers |
 | `song_index.json` | bundle-hash → song/asset index |
 | `true_key_1024.bin` | master bundle XOR key |
@@ -313,16 +333,18 @@ Notable: `tools/probes/_poll_da.py` (safe 4 Hz `da.rus` watcher — the pattern 
 **No blockers.** Every layer is now solved: AssetBundles, keysounds/BGA, the API session
 cipher, and the CDN chart/index cipher (§3.3, `decrypt_chart.py`).
 
-**Done this session:** located the chart decryptor by scanning for direct calls into the
-`dc*` cluster (`tools/il2cpp/_callers.js`), identified `dcf → dcg` as `mask ∘ AES-256-CBC`,
-extracted the static key material (`svq`/`svr` mask tables, `svo`/`svp` key/IV), and
-verified the result end-to-end (Conflict: `EZFF` header + 2719/2719 keysound-name match).
+**Done:** located the chart decryptor by scanning for direct calls into the `dc*` cluster
+(`tools/il2cpp/_callers.js`), identified `dcf → dcg` as `mask ∘ AES-256-CBC`, extracted the
+static key material (`svq`/`svr` mask tables, `svo`/`svp` key/IV), and verified the result
+end-to-end (Conflict: `EZFF` header + 2719/2719 keysound-name match). `parse_chart.py` reads
+the result: header, tracks, note events, `.ezi` join; JSON or a note listing.
+`dump_song.py` now decrypts on capture, so a song lands readable.
 
 **Next:**
 
-1. Bulk-decrypt the archived `extracted_charts/` payloads and drop the `.dec` step from
-   the extraction pipeline.
-2. Determine what the sibling statics `svk`/`svl` and `svm`/`svn` protect.
-3. Validate decrypted charts against the reference EZ2AC tooling
-   (`reference/ez2stuff/`, `ezinfo` / `ezins`) and emit `ezinfo`-style note listings.
-4. Fold `decrypt_chart.py` into `dump_song.py` so a captured song lands already plaintext.
+1. Establish the track index → lane/mode map (§3.5) so note listings can name lanes
+   instead of raw track numbers — needs a match against a freshly dumped `normalNoteData`.
+2. Identify note types 5/6/9 against `InGameCore`'s `specialNoteData` / `autoNoteData`.
+3. Determine what the sibling statics `svk`/`svl` and `svm`/`svn` protect.
+4. Join `parse_chart.py` output against `extract_assets.py` output so a chart's keysounds
+   can be resolved by name across the whole archive (a bulk "make it readable" mode).

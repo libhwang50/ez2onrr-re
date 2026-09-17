@@ -41,6 +41,7 @@ python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 10
 | `dump_song.py [--out DIR] [--interval S]` | **recommended** — per-song byte-exact CDN archive + in-memory snapshot |
 | `harvest_key.py` | derive `true_key_1024.bin` from live memory |
 | `decrypt_chart.py <cdn_*.bin>` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
+| `parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
 
 Then just **play songs**: `dump_song.py` captures each one on entry and writes
 
@@ -48,6 +49,7 @@ Then just **play songs**: `dump_song.py` captures each one on entry and writes
 |---|---|
 | `ident.json` | song identity, signed URLs, field counts, per-lane note counts |
 | `cdn_ez_*.bin`, `cdn_ezi_*.bin` | the CDN payloads, byte-exact as served |
+| `ez.ez`, `ezi.ezi` | the decrypted chart and keysound index |
 | `mem_rjl.bin`, `mem_rjm.bin`, `mem_rjn.bin` | the buffers and transport key the game holds (the chart key is static — see below) |
 | `instrumentDic.json` | the keysound index as the game parsed it |
 
@@ -72,17 +74,31 @@ Naming follows the EZ2AC arcade convention: **`.ez` is the note chart** (`EZFF` 
 **`.ezi` is the keysound index, which is plain text** (`<index> <velocity> <filename>`).
 Both are served **encrypted** — see below.
 
-### Decrypting a payload
-
-```bash
-python3 decrypt_chart.py --out extracted_charts/_decrypted extracted_charts/_live/*.ez
-```
+### Decrypting and reading a payload
 
 The CDN cipher is a fixed keystream XOR followed by AES-256-CBC/PKCS7, with the key and IV
 baked into the binary as static fields of `InGameCore` (`svo`/`svp`, mask tables
 `svq`/`svr`). It is **not** per-song — an earlier per-song-key theory came from
 `bundleCryptKey`, which is a transport record and not the chart key. Full derivation in
 `AGENTS.md` §3.3.
+
+```bash
+# decrypt a captured payload (dump_song.py already writes these decrypted)
+python3 decrypt_chart.py --out extracted_charts/_decrypted extracted_charts/_live/*.ez
+
+# read it — header summary, full JSON, or a per-note listing
+python3 parse_chart.py extracted_charts/_decrypted/cur_conflict_ez_url.ez
+python3 parse_chart.py --json chart.json extracted_charts/_decrypted/cur_conflict_ez_url.ez
+python3 parse_chart.py --notes --ezi extracted_charts/_decrypted/cur_conflict_ezi_url.ezi \
+    extracted_charts/_decrypted/cur_conflict_ez_url.ez
+
+# every chart under a tree, decrypting captures as needed
+python3 parse_chart.py --dir extracted_charts
+python3 parse_chart.py --dir extracted_charts --json archive.json
+```
+
+`parse_chart.py` also accepts an encrypted payload straight from the CDN, so
+`python3 parse_chart.py extracted_charts/_live/cur_conflict_ez_url.ez` works too.
 
 ## ⚠️ Two rules for the Frida tooling
 
@@ -104,7 +120,7 @@ README.md
 true_key_1024.bin    master bundle XOR key
 song_index.json      bundle-hash → song index
 extract_assets.py  find_bundle.py  decrypt_all.py
-harvest_key.py  harvest_chart.py  dump_song.py  decrypt_chart.py  run_dumper.sh
+harvest_key.py  harvest_chart.py  dump_song.py  decrypt_chart.py  parse_chart.py  run_dumper.sh
 tools/               investigation tooling — see tools/README.md
   il2cpp/  probes/  mitm/  crypto/  legacy/
 data/  logs/  mitm_live/  mitm_parsed/  il2cpp_code/    ignored capture artefacts

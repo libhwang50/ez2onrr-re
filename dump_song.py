@@ -19,11 +19,16 @@ Notes
 -----
 * CDN signed URLs expire after ~150 s, so they are fetched the moment they
   appear.  A 403 means the URL expired before we got to it.
-* The CDN payloads are encrypted (the game's cipher is not yet reversed);
-  they are archived byte-exactly as served, alongside the game's decrypted
-  in-memory parse, which is what `*_chart.json` / `instrumentDic.json` hold.
+* Both the byte-exact payload as served (`cdn_ez_*.bin`) and the decrypted
+  plaintext (`ez.ez` / `ezi.ezi`) are written, so the archive is reproducible
+  without re-visiting the CDN.
+* The in-memory parse (`instrumentDic.json`, `*_chart.json`) is a cross-check on
+  the decrypted files, not the source of truth.
 """
 import argparse, json, os, re, sys, time, urllib.request, urllib.error
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import decrypt_chart  # noqa: E402  (same directory)
 
 HEADERS = {
     "User-Agent": "UnityPlayer/6000.0.78f1 (UnityWebRequest/1.0, libcurl/8.10.1-DEV)",
@@ -70,8 +75,8 @@ def capture(sc, snap, out_root):
     with open(os.path.join(d, "ident.json"), "w") as f:
         json.dump(snap, f, indent=1)
 
-    # 1) the encrypted CDN payloads — grab them before the signed URL expires
-    for field, tag in (("ez_url", "ez"), ("ezi_url", "ezi")):
+    # 1) the CDN payloads — grab them before the signed URL expires, then decrypt
+    for field, tag, ext in (("ez_url", "ez", "ez"), ("ezi_url", "ezi", "ezi")):
         url = snap.get(field)
         if not url:
             continue
@@ -83,8 +88,19 @@ def capture(sc, snap, out_root):
             print("   saved %-4s %7d bytes  <- %s" % (tag, len(body), field))
         except urllib.error.HTTPError as e:
             print("   !! %s fetch failed: HTTP %s (signed URL likely expired)" % (tag, e.code))
+            continue
         except Exception as e:
             print("   !! %s fetch failed: %s" % (tag, e))
+            continue
+
+        # decrypt the payload we just archived
+        try:
+            pt = body if decrypt_chart.is_plaintext(body) else decrypt_chart.decrypt(body)
+            with open(os.path.join(d, "%s.%s" % (tag, ext)), "wb") as f:
+                f.write(pt)
+            print("   %-4s plaintext: %s" % (tag, decrypt_chart.summarize(pt)))
+        except Exception as e:
+            print("   !! %s decrypt failed: %s" % (tag, e))
 
     # 2) the in-memory buffers the game actually decrypts
     try:
