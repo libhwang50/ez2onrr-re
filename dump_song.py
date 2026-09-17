@@ -252,6 +252,40 @@ def song_name(snap):
     return "song_" + (m.group(1) if m else str(int(time.time())))
 
 
+def safe_dir(name):
+    """Filesystem-friendly directory name: lowercase, alphanumerics and - _ . only."""
+    s = re.sub(r"[^A-Za-z0-9_.-]", "_", str(name)).strip("._").lower()
+    return s[:80] or "song"
+
+
+def capture_name(rt, snap, name_by='title'):
+    """Directory name for a capture.
+
+    `title` (default) uses the song's own name — `extracted_charts/destr0yer/` — which is
+    what the runtime request JSON gives us as `musicresourcename`. `id` uses the numeric
+    music id from the metadata table. `variant` keeps the old resource_mode_difficulty form
+
+    Falls back to `song_<hash>` when the runtime label is unavailable, which is the one case
+    where the song is unknown.
+    """
+    resource = (rt or {}).get('musicresourcename')
+    if resource:
+        if name_by == 'id':
+            try:
+                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                import song_meta
+                rec = song_meta.by_name(resource)
+                if rec and rec.get('id'):
+                    return safe_dir(rec['id'])
+            except Exception:
+                pass
+        if name_by == 'variant':
+            bits = [resource, rt.get('keymode'), rt.get('levelmode'), rt.get('gamemode')]
+            return safe('_'.join(str(b) for b in bits if b))
+        return safe_dir(resource)
+    return song_name(snap)
+
+
 def settle(sc, timeout=20.0, interval=1.0):
     """Wait for the game to finish parsing, then read the parsed state once.
 
@@ -286,17 +320,36 @@ def settle(sc, timeout=20.0, interval=1.0):
         time.sleep(interval)
 
 
-def capture(sc, snap, out_root):
-    name = song_name(snap)
-    d = os.path.join(out_root, name)
-    os.makedirs(d, exist_ok=True)
+def capture(sc, snap, out_root, name_by='title'):
     t0 = time.time()
 
     def mark(label, extra=''):
         # Timestamped, flushed: if the game dies mid-capture this says exactly where.
         print('   [+%5.1fs] %s%s' % (time.time() - t0, label, extra), flush=True)
 
+    # Read the runtime identity FIRST, so the directory can be named after the song rather
+    # than after a URL hash. This is the same scan describe() would need, so it is only
+    # done once.
+    mark('reading the runtime label')
+    rt = runtime_pattern(sc)
+
+    name = capture_name(rt, snap, name_by)
+    d = os.path.join(out_root, name)
+    existing = None
+    if os.path.exists(os.path.join(d, 'ident.json')):
+        try:
+            existing = (json.load(open(os.path.join(d, 'ident.json'))) or {}).get('label') or {}
+        except Exception:
+            existing = {}
+    os.makedirs(d, exist_ok=True)
+
     print("\n=== %s ===" % name)
+    if existing:
+        old = ' '.join(x for x in (existing.get('keymode'), existing.get('difficulty')) if x)
+        new = ' '.join(x for x in (KEYMODE_LABEL.get(str((rt or {}).get('keymode'))),
+                                   DIFF_LABEL.get(str((rt or {}).get('levelmode')))) if x)
+        print("   note    : replacing an existing capture%s"
+              % ((' of %s with %s' % (old or '?', new or '?')) if old or new else ''))
     print("   ez_url  : %s" % (snap.get("ez_url") or "")[:80])
     print("   ezi_url : %s" % (snap.get("ezi_url") or "")[:80])
     print("   notes   : lanes=%s  dic=%s  bpm=%s  measures=%s" % (
@@ -365,8 +418,6 @@ def capture(sc, snap, out_root):
 
     # name the song and its mode/difficulty
     try:
-        mark('reading the runtime label')
-        rt = runtime_pattern(sc)
         text, label = describe(settled or snap, d, rt)
         print(text)
         base = settled or snap
@@ -395,6 +446,9 @@ def main():
     ap.add_argument("--interval", type=float, default=1.0,
                     help="watch poll interval in seconds (default 1.0; the signed URL lives "
                          "~150 s so there is no need to poll fast)")
+    ap.add_argument("--name-by", choices=('title', 'id', 'variant'), default='title',
+                    help="name each capture after the song title (default), its music id, or "
+                         "the old resource_mode_difficulty form")
     ap.add_argument("--gadget", default=GADGET)
     a = ap.parse_args()
 
@@ -434,7 +488,7 @@ def main():
             seen.add(url)
             try:
                 full = sc.exports_sync.ident()      # the real snapshot, once
-                capture(sc, full, a.out)
+                capture(sc, full, a.out, a.name_by)
             except Exception as e:
                 print("   !! capture error: %s" % e)
         time.sleep(a.interval)

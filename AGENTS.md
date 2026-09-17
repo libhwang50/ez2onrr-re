@@ -450,7 +450,7 @@ Notable: `tools/probes/_poll_da.py` (safe 4 Hz `da.rus` watcher — the pattern 
 | Path | Contents |
 |---|---|
 | `extracted_assets/<song_id>/` | FLAC/OGG keysounds, BGA `.mp4` |
-| `extracted_charts/<name>_<keymode>_<levelmode>_<gamemode>/` | `ident.json`, `cdn_*.bin`, `ez.ez` / `ezi.ezi` (decrypted), `mem_rjl/rjm/rjn.bin`, `instrumentDic.json` |
+| `extracted_charts/<song>/` | `ident.json` (identity + label + metadata), `cdn_*.bin`, `ez.ez` / `ezi.ezi` (decrypted), `mem_rjl/rjm/rjn.bin`, `instrumentDic.json`. Named after the song (`destr0yer/`); `--name-by id|variant` changes that, and an unidentifiable song falls back to `song_<hash>` |
 | `EZ2ON REBOOT R/decrypted_bundles/` | decrypted `.unity3d` containers |
 | `song_index.json` | bundle-hash → song/asset index |
 | `true_key_1024.bin` | master bundle XOR key |
