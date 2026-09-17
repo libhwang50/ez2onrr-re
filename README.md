@@ -127,8 +127,10 @@ fired. A playing keysound keeps its slot until it ends and new ones fill the gap
 shifts under the reader. Sample lengths are read from the keysound files, not guessed.
 
 When a BGA is used the overlay adopts its resolution and frame rate (1280x720 at 60 fps for
-Changa 2) and the BGA is passed through unscaled, so the original is preserved. `--size` and
-`--fps` override that; otherwise a plain background defaults to 1280x720 at 30 fps.
+Changa 2) and the BGA is passed through unscaled, so the original is preserved. That is the
+default because quality comes first — `--fps`/`--size` trade it for render time, and a plain
+background defaults to 1280x720 at 30 fps. Encoding defaults to `--crf 18`, near-transparent
+for the BGA, and label outlines scale with the frame (1 px at 720p, `--outline` to override).
 
 The overlay is drawn as RGBA frames piped straight into ffmpeg, which composites it and muxes
 the rendered audio in one pass. Rendering runs at roughly 2x realtime at 1280x720/30fps —

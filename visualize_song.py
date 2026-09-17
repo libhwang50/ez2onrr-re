@@ -28,6 +28,7 @@ Changa 2) so the BGA is passed through untouched; --size and --fps override that
 
 Requires Pillow and ffmpeg.
 """
+
 import argparse
 import json
 import os
@@ -41,17 +42,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_chart import parse_ez, parse_ezi, load  # noqa: E402
 
 MONO_CANDIDATES = (
-    '/usr/share/fonts/noto/NotoSansMono-Bold.ttf',
-    '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf',
-    '/usr/share/fonts/noto/NotoSansMono-Regular.ttf',
-    '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+    "/usr/share/fonts/noto/NotoSansMono-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+    "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
 )
 
-LANE_TRACK = range(3, 22)          # tracks that can be a playable lane
+LANE_TRACK = range(3, 22)  # tracks that can be a playable lane
 DEFAULT_ROWS = 12
-UNKNOWN_SAMPLE = 0.40              # assumed length when a keysound file is missing
+UNKNOWN_SAMPLE = 0.40  # assumed length when a keysound file is missing
 
-SHADOW = (0, 0, 0, 180)            # outline colour behind every label
+SHADOW = (0, 0, 0, 180)  # outline colour behind every label
 
 
 def font(size):
@@ -65,44 +66,63 @@ def font(size):
 
 
 def parse_size(s):
-    m = re.match(r'^(\d+)x(\d+)$', s)
+    m = re.match(r"^(\d+)x(\d+)$", s)
     if not m:
-        raise argparse.ArgumentTypeError('expected WxH, e.g. 1280x720')
+        raise argparse.ArgumentTypeError("expected WxH, e.g. 1280x720")
     return int(m.group(1)), int(m.group(2))
 
 
 def probe_video(path):
     """(width, height, fps_float, fps_arg) for a video, or None."""
     try:
-        out = subprocess.check_output(
-            ['ffprobe', '-v', 'quiet', '-select_streams', 'v:0',
-             '-show_entries', 'stream=width,height,r_frame_rate', '-of', 'csv=p=0', path],
-            stderr=subprocess.DEVNULL).decode().strip().splitlines()[0]
-        w, h, rate = out.split(',')
-        num, den = (rate.split('/') + ['1'])[:2]
+        out = (
+            subprocess.check_output(
+                [
+                    "ffprobe",
+                    "-v",
+                    "quiet",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=width,height,r_frame_rate",
+                    "-of",
+                    "csv=p=0",
+                    path,
+                ],
+                stderr=subprocess.DEVNULL,
+            )
+            .decode()
+            .strip()
+            .splitlines()[0]
+        )
+        w, h, rate = out.split(",")
+        num, den = (rate.split("/") + ["1"])[:2]
         num, den = int(num), int(den) or 1
-        return int(w), int(h), num / float(den), '%d/%d' % (num, den)
+        return int(w), int(h), num / float(den), "%d/%d" % (num, den)
     except Exception:
         return None
 
 
 def chart_label(song_dir):
     try:
-        return (json.load(open(os.path.join(song_dir, 'ident.json'))) or {}).get('label') or {}
+        return (json.load(open(os.path.join(song_dir, "ident.json"))) or {}).get(
+            "label"
+        ) or {}
     except (OSError, ValueError):
         return {}
 
 
-def build_events(song_dir, assets_root='extracted_assets'):
+def build_events(song_dir, assets_root="extracted_assets"):
     """(chart, events, names, durations); events are (start, end, track, ks, filename, long)."""
-    ch = parse_ez(load(os.path.join(song_dir, 'ez.ez'))[0])
-    insts = parse_ezi(load(os.path.join(song_dir, 'ezi.ezi'))[0])
+    ch = parse_ez(load(os.path.join(song_dir, "ez.ez"))[0])
+    insts = parse_ezi(load(os.path.join(song_dir, "ezi.ezi"))[0])
     names = {i.index: i.filename for i in insts}
 
     durations = {}
     try:
         import soundfile as sf
         import render_song
+
         filemap = {}
         assets, score = render_song.resolve_assets(names.values(), root=assets_root)
         if assets:
@@ -115,23 +135,34 @@ def build_events(song_dir, assets_root='extracted_assets'):
                     except Exception:
                         pass
         if not durations:
-            print('warning: no keysound durations resolved (best asset match %.2f%%); '
-                  'lifetime bars will use a %.2fs placeholder'
-                  % (100.0 * score, UNKNOWN_SAMPLE), flush=True)
+            print(
+                "warning: no keysound durations resolved (best asset match %.2f%%); "
+                "lifetime bars will use a %.2fs placeholder"
+                % (100.0 * score, UNKNOWN_SAMPLE),
+                flush=True,
+            )
     except Exception as e:
-        print('warning: could not read keysound durations: %s' % e, flush=True)
+        print("warning: could not read keysound durations: %s" % e, flush=True)
 
-    events = [(sec, sec + max(0.05, durations.get(n.keysound, UNKNOWN_SAMPLE)), track,
-               n.keysound, names.get(n.keysound, ''), n.is_long)
-              for sec, track, n in ch.note_seconds()]
+    events = [
+        (
+            sec,
+            sec + max(0.05, durations.get(n.keysound, UNKNOWN_SAMPLE)),
+            track,
+            n.keysound,
+            names.get(n.keysound, ""),
+            n.is_long,
+        )
+        for sec, track, n in ch.note_seconds()
+    ]
     events.sort(key=lambda e: e[0])
     return ch, events, names, durations
 
 
-def find_bga(song_dir, assets_root='extracted_assets'):
+def find_bga(song_dir, assets_root="extracted_assets"):
     stems = set()
     try:
-        insts = parse_ezi(load(os.path.join(song_dir, 'ezi.ezi'))[0])
+        insts = parse_ezi(load(os.path.join(song_dir, "ezi.ezi"))[0])
         stems = {os.path.splitext(i.filename)[0].lower() for i in insts}
     except Exception:
         pass
@@ -141,7 +172,7 @@ def find_bga(song_dir, assets_root='extracted_assets'):
             d = os.path.join(assets_root, name)
             if not os.path.isdir(d):
                 continue
-            vids = [f for f in os.listdir(d) if f.lower().endswith(('.mp4', '.webm'))]
+            vids = [f for f in os.listdir(d) if f.lower().endswith((".mp4", ".webm"))]
             if not vids:
                 continue
             have = {os.path.splitext(f)[0].lower() for f in os.listdir(d)}
@@ -152,95 +183,155 @@ def find_bga(song_dir, assets_root='extracted_assets'):
     return best
 
 
-def render_audio(song_dir, out, assets='auto'):
+def render_audio(song_dir, out, assets="auto"):
     import render_song
+
     return render_song.render_one(song_dir, assets, out)
 
 
-def txt(dr, xy, s, fnt, fill, anchor=None):
-    dr.text(xy, s, font=fnt, fill=fill, anchor=anchor, stroke_width=3, stroke_fill=SHADOW)
+def txt(dr, xy, s, fnt, fill, st, anchor=None):
+    dr.text(
+        xy, s, font=fnt, fill=fill, anchor=anchor,
+        stroke_width=st['stroke'], stroke_fill=SHADOW
+    )
 
 
 def draw_frame(img, dr, st):
-    W, H = st['W'], st['H']
-    pad = st['pad']
-    t = st['t']
+    W, H = st["W"], st["H"]
+    pad = st["pad"]
+    t = st["t"]
 
-    if st['mode'] == 'default':
-        if st['variant']:
-            txt(dr, (pad, pad - 2), st['variant'], st['f_head'], (255, 255, 255, 245))
-        bw, bh = st['lane_w'], st['lane_h']
-        y0 = pad + st['f_head'].size + 12
-        for i, track in enumerate(st['lanes']):
+    if st["mode"] == "default":
+        if st["variant"]:
+            txt(dr, (pad, pad - 2), st["variant"], st["f_head"], (255, 255, 255, 245), st)
+        bw, bh = st["lane_w"], st["lane_h"]
+        y0 = pad + st["f_head"].size + 12
+        for i, track in enumerate(st["lanes"]):
             x = pad + i * (bw + 6)
-            lit = track in st['active_tracks']
-            dr.rectangle([x, y0, x + bw, y0 + bh],
-                         fill=(120, 230, 160, 210) if lit else (0, 0, 0, 70),
-                         outline=(255, 255, 255, 130), width=2)
+            lit = track in st["active_tracks"]
+            dr.rectangle(
+                [x, y0, x + bw, y0 + bh],
+                fill=(120, 230, 160, 210) if lit else (0, 0, 0, 70),
+                outline=(255, 255, 255, 130),
+                width=2,
+            )
             if lit:
-                txt(dr, (x + bw / 2, y0 + bh / 2), str(i + 1), st['f_small'],
-                    (8, 14, 10, 255), anchor='mm')
+                txt(
+                    dr,
+                    (x + bw / 2, y0 + bh / 2),
+                    str(i + 1),
+                    st["f_small"],
+                    (8, 14, 10, 255),
+                    st,
+                    anchor="mm",
+                )
 
     # ---- keysound display: fixed slots, no panel, outlined labels ---------- #
-    row_h = st['f_mono'].size + 11
-    for i, ev in enumerate(st['slots']):
+    row_h = st["f_mono"].size + 11
+    for i, ev in enumerate(st["slots"]):
         if ev is None:
             continue
         start, end, track, ks, fname, is_long = ev
-        yy = st['top'] + i * row_h
+        yy = st["top"] + i * row_h
         frac = 1.0 if end <= start else (t - start) / (end - start)
         frac = max(0.0, min(1.0, frac))
 
-        bx, bwid = st['bx'], st['bar_w']
+        bx, bwid = st["bx"], st["bar_w"]
         by = yy + row_h / 2 - 3
         dr.rectangle([bx, by, bx + bwid, by + 6], outline=(255, 255, 255, 120), width=1)
         if frac > 0:
-            dr.rectangle([bx + 1, by + 1, bx + 1 + int((bwid - 2) * frac), by + 5],
-                         fill=(235, 245, 255, 235))
+            dr.rectangle(
+                [bx + 1, by + 1, bx + 1 + int((bwid - 2) * frac), by + 5],
+                fill=(235, 245, 255, 235),
+            )
 
-        lane = ('%d' % (track - 2)) if track in LANE_TRACK else ('T%d' % track)
-        txt(dr, (st['col_lane'], yy), lane, st['f_mono'], (190, 220, 255, 245))
-        txt(dr, (st['col_ks'], yy), '%d' % ks, st['f_mono'], (190, 220, 255, 245))
-        txt(dr, (st['col_name'], yy), fname or '(unknown)', st['f_mono'],
-            (250, 215, 130, 250) if is_long else (232, 238, 248, 250))
+        lane = ("%d" % (track - 2)) if track in LANE_TRACK else ("T%d" % track)
+        txt(dr, (st["col_lane"], yy), lane, st["f_mono"], (190, 220, 255, 245), st)
+        txt(dr, (st["col_ks"], yy), "%d" % ks, st["f_mono"], (190, 220, 255, 245), st)
+        txt(
+            dr,
+            (st["col_name"], yy),
+            fname or "(unknown)",
+            st["f_mono"],
+            (250, 215, 130, 250) if is_long else (232, 238, 248, 250),
+            st,
+        )
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('song_dir', help='capture directory holding ez.ez and ezi.ezi')
-    ap.add_argument('-o', '--out', help='output mp4 (default visualizations/<song>.mp4)')
-    ap.add_argument('--mode', choices=('default', 'keysound'), default='default',
-                    help='default: mode/difficulty + lanes + keysounds; keysound: keysounds only')
-    ap.add_argument('--size', type=parse_size,
-                    help='output WxH (default: the BGA\'s, else 1280x720)')
-    ap.add_argument('--fps', type=float,
-                    help='output frame rate (default: the BGA\'s, else 30)')
-    ap.add_argument('--offset', type=float, default=0.0,
-                    help='seconds to shift the overlay by; positive makes it lead the audio '
-                         '(use if the overlay looks late)')
-    ap.add_argument('--rows', type=int, default=DEFAULT_ROWS,
-                    help='fixed keysound slots (default %d)' % DEFAULT_ROWS)
-    ap.add_argument('--bga', help='BGA video to composite onto (default: auto-detect)')
-    ap.add_argument('--no-bga', action='store_true', help='plain background only')
-    ap.add_argument('--audio', help='rendered audio to mux (default: reuse or render one)')
-    ap.add_argument('--assets', default='auto', help="keysound dir for rendering ('auto')")
-    ap.add_argument('--render', action='store_true', help='always re-render the audio')
-    ap.add_argument('--crf', type=int, default=20, help='x264 quality (lower is better)')
-    ap.add_argument('--preset', default='veryfast')
-    ap.add_argument('--until', type=float, help='stop at this many seconds (for testing)')
-    ap.add_argument('--start', type=float, default=0.0,
-                    help='start the clip at this many seconds (for quick checks)')
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("song_dir", help="capture directory holding ez.ez and ezi.ezi")
+    ap.add_argument(
+        "-o", "--out", help="output mp4 (default visualizations/<song>.mp4)"
+    )
+    ap.add_argument(
+        "--mode",
+        choices=("default", "keysound"),
+        default="default",
+        help="default: mode/difficulty + lanes + keysounds; keysound: keysounds only",
+    )
+    ap.add_argument(
+        "--size", type=parse_size, help="output WxH (default: the BGA's, else 1280x720)"
+    )
+    ap.add_argument(
+        "--fps", type=float, help="output frame rate (default: the BGA's, else 30)"
+    )
+    ap.add_argument(
+        "--offset",
+        type=float,
+        default=0.0,
+        help="seconds to shift the overlay by; positive makes it lead the audio "
+        "(use if the overlay looks late)",
+    )
+    ap.add_argument(
+        "--rows",
+        type=int,
+        default=DEFAULT_ROWS,
+        help="fixed keysound slots (default %d)" % DEFAULT_ROWS,
+    )
+    ap.add_argument("--bga", help="BGA video to composite onto (default: auto-detect)")
+    ap.add_argument("--no-bga", action="store_true", help="plain background only")
+    ap.add_argument(
+        "--audio", help="rendered audio to mux (default: reuse or render one)"
+    )
+    ap.add_argument(
+        "--assets", default="auto", help="keysound dir for rendering ('auto')"
+    )
+    ap.add_argument("--render", action="store_true", help="always re-render the audio")
+    ap.add_argument(
+        "--crf",
+        type=int,
+        default=18,
+        help="x264 quality (lower is better; default 18, near-transparent for the BGA)",
+    )
+    ap.add_argument(
+        "--outline",
+        type=int,
+        default=None,
+        help="label outline width in px (default scales with the frame: 1 at 720p)",
+    )
+    ap.add_argument("--preset", default="veryfast")
+    ap.add_argument(
+        "--until", type=float, help="stop at this many seconds (for testing)"
+    )
+    ap.add_argument(
+        "--start",
+        type=float,
+        default=0.0,
+        help="start the clip at this many seconds (for quick checks)",
+    )
     args = ap.parse_args()
 
     song = os.path.basename(os.path.normpath(args.song_dir))
-    out = args.out or os.path.join('visualizations', '%s.mp4' % song)
+    out = args.out or os.path.join("visualizations", "%s.mp4" % song)
     if os.path.dirname(out):
         os.makedirs(os.path.dirname(out), exist_ok=True)
 
     ch, events, names, durations = build_events(args.song_dir)
     if not events:
-        sys.exit('%s has no notes' % args.song_dir)
+        sys.exit("%s has no notes" % args.song_dir)
 
     # ---- background, and the format we follow it in ----------------------- #
     bga = None if args.no_bga else (args.bga or find_bga(args.song_dir))
@@ -251,12 +342,12 @@ def main():
             W, H = args.size
         if args.fps:
             fps_f = args.fps
-            fps_arg = '%.6f' % args.fps
-        print('background: %s  (%dx%d @ %s fps)' % (bga, W, H, fps_arg))
+            fps_arg = "%.6f" % args.fps
+        print("background: %s  (%dx%d @ %s fps)" % (bga, W, H, fps_arg))
     else:
         W, H = args.size or (1280, 720)
         fps_f = args.fps or 30.0
-        fps_arg = '%.6f' % fps_f
+        fps_arg = "%.6f" % fps_f
 
     duration = max(ch.duration, max(e[0] for e in events) + 0.5)
     if args.until:
@@ -265,20 +356,21 @@ def main():
     duration = max(0.5, duration - start)
 
     label = chart_label(args.song_dir)
-    variant = ' '.join(x for x in (label.get('keymode'), label.get('difficulty')) if x)
+    variant = " ".join(x for x in (label.get("keymode"), label.get("difficulty")) if x)
 
     # ---- audio ------------------------------------------------------------ #
     audio = args.audio
     if args.render or not audio:
-        default = os.path.join('rendered_songs', song + '.flac')
+        default = os.path.join("rendered_songs", song + ".flac")
         if not args.render and os.path.exists(default):
             audio = default
         else:
-            audio = '/tmp/_viz_%s.flac' % song
-            print('rendering audio -> %s' % audio)
+            audio = "/tmp/_viz_%s.flac" % song
+            print("rendering audio -> %s" % audio)
             render_audio(args.song_dir, audio, args.assets)
     try:
         import soundfile as sf
+
         adur = sf.info(audio).duration
         if adur and adur > 1.0:
             duration = min(duration, max(0.5, adur - start))
@@ -286,41 +378,78 @@ def main():
         pass
 
     n_frames = int(duration * fps_f) + 1
-    cmd = ['ffmpeg', '-y', '-loglevel', 'error',
-           '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', '%dx%d' % (W, H),
-           '-r', fps_arg, '-i', '-']
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgba",
+        "-s",
+        "%dx%d" % (W, H),
+        "-r",
+        fps_arg,
+        "-i",
+        "-",
+    ]
     if bga:
-        cmd += ['-i', bga]
+        cmd += ["-i", bga]
     else:
-        cmd += ['-f', 'lavfi', '-i', 'color=c=0x0b0d12:s=%dx%d:r=%s:d=%.3f'
-                % (W, H, fps_arg, duration)]
-    cmd += ['-i', audio]
+        cmd += [
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=0x0b0d12:s=%dx%d:r=%s:d=%.3f" % (W, H, fps_arg, duration),
+        ]
+    cmd += ["-i", audio]
     # Keep the BGA's own rate so the overlay maps 1:1. Only touch its pixels if the caller
     # asked for a different size — otherwise it is passed through unscaled and uncropped.
     if bga and native and (W, H) != (native[0], native[1]):
-        pre = ('[1:v]fps=%s,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,'
-               'setsar=1[bg]' % (fps_arg, W, H, W, H))
+        pre = (
+            "[1:v]fps=%s,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,"
+            "setsar=1[bg]" % (fps_arg, W, H, W, H)
+        )
     else:
-        pre = '[1:v]fps=%s[bg]' % fps_arg
-    cmd += ['-filter_complex',
-            '%s;[bg][0:v]overlay=0:0:format=auto,format=yuv420p[v]' % pre,
-            '-map', '[v]', '-map', '2:a', '-r', fps_arg,
-            '-c:v', 'libx264', '-preset', args.preset, '-crf', str(args.crf),
-            '-c:a', 'aac', '-b:a', '192k', '-t', '%.3f' % duration, out]
+        pre = "[1:v]fps=%s[bg]" % fps_arg
+    cmd += [
+        "-filter_complex",
+        "%s;[bg][0:v]overlay=0:0:format=auto,format=yuv420p[v]" % pre,
+        "-map",
+        "[v]",
+        "-map",
+        "2:a",
+        "-r",
+        fps_arg,
+        "-c:v",
+        "libx264",
+        "-preset",
+        args.preset,
+        "-crf",
+        str(args.crf),
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-t",
+        "%.3f" % duration,
+        out,
+    ]
     if start:
         ai = cmd.index(audio)
-        cmd[ai - 1:ai - 1] = ['-ss', '%.3f' % start]
+        cmd[ai - 1 : ai - 1] = ["-ss", "%.3f" % start]
         if bga:
             bi = cmd.index(bga)
-            cmd[bi - 1:bi - 1] = ['-ss', '%.3f' % start]
+            cmd[bi - 1 : bi - 1] = ["-ss", "%.3f" % start]
 
     # Guard: `-y` lets ffmpeg overwrite its output, and the output must be last. A malformed
     # build once made an input path the output, truncating a 49 MB BGA to zero bytes.
     inputs = {audio} | ({bga} if bga else set())
     if out in inputs:
-        sys.exit('refusing to run: output %s is also an input' % out)
+        sys.exit("refusing to run: output %s is also an input" % out)
     if cmd[-1] != out:
-        sys.exit('refusing to run: %s is not the last ffmpeg argument' % out)
+        sys.exit("refusing to run: %s is not the last ffmpeg argument" % out)
 
     f_head = font(max(18, H // 34))
     f_small = font(max(12, H // 60))
@@ -332,47 +461,72 @@ def main():
     col_ks = col_lane + max(40, int(f_mono.size * 3.4))
     col_name = col_ks + max(56, int(f_mono.size * 5.0))
     lanes = sorted({e[2] for e in events if e[2] in LANE_TRACK})
-    lane_w = max(22, min(int(H * 0.048), (W - 2 * pad - 6 * max(1, len(lanes))) // max(1, len(lanes))))
-    st = dict(W=W, H=H, mode=args.mode, variant=variant, lanes=lanes,
-              f_head=f_head, f_small=f_small, f_mono=f_mono, pad=pad,
-              lane_w=lane_w, lane_h=max(16, f_small.size + 8),
-              bx=pad, bar_w=bar_w, col_lane=col_lane, col_ks=col_ks, col_name=col_name,
-              top=H - pad - args.rows * row_h, slots=[None] * args.rows,
-              active_tracks=set(), t=0.0)
+    lane_w = max(
+        22,
+        min(
+            int(H * 0.048), (W - 2 * pad - 6 * max(1, len(lanes))) // max(1, len(lanes))
+        ),
+    )
+    stroke = args.outline if args.outline is not None else max(1, int(round(H / 720.0)))
+    st = dict(
+        W=W,
+        H=H,
+        mode=args.mode,
+        variant=variant,
+        lanes=lanes,
+        f_head=f_head,
+        f_small=f_small,
+        f_mono=f_mono,
+        stroke=stroke,
+        pad=pad,
+        lane_w=lane_w,
+        lane_h=max(16, f_small.size + 8),
+        bx=pad,
+        bar_w=bar_w,
+        col_lane=col_lane,
+        col_ks=col_ks,
+        col_name=col_name,
+        top=H - pad - args.rows * row_h,
+        slots=[None] * args.rows,
+        active_tracks=set(),
+        t=0.0,
+    )
 
-    print('rendering %d frames at %dx%d @ %s fps (%.1fs), mode=%s -> %s'
-          % (n_frames, W, H, fps_arg, duration, args.mode, out))
+    print(
+        "rendering %d frames at %dx%d @ %s fps (%.1fs), mode=%s -> %s"
+        % (n_frames, W, H, fps_arg, duration, args.mode, out)
+    )
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-    img = Image.new('RGBA', (W, H), (0, 0, 0, 0))
-    dr = ImageDraw.Draw(img, 'RGBA')
-    empty = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    dr = ImageDraw.Draw(img, "RGBA")
+    empty = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     next_i = 0
     dropped = 0
     try:
         for fi in range(n_frames):
             vt = start + fi / fps_f + args.offset
             # slots keep a playing keysound in place until its sample ends
-            for i, s in enumerate(st['slots']):
+            for i, s in enumerate(st["slots"]):
                 if s is not None and s[1] <= vt:
-                    st['slots'][i] = None
+                    st["slots"][i] = None
             while next_i < len(events) and events[next_i][0] <= vt:
                 ev = events[next_i]
                 next_i += 1
                 if ev[1] <= vt:
                     continue
-                free = next((i for i, s in enumerate(st['slots']) if s is None), None)
+                free = next((i for i, s in enumerate(st["slots"]) if s is None), None)
                 if free is None:
                     # evict whichever has least left to run
-                    free = min(range(len(st['slots'])), key=lambda i: st['slots'][i][1])
+                    free = min(range(len(st["slots"])), key=lambda i: st["slots"][i][1])
                     dropped += 1
-                st['slots'][free] = ev
-            st['active_tracks'] = {s[2] for s in st['slots'] if s}
-            st['t'] = vt
+                st["slots"][free] = ev
+            st["active_tracks"] = {s[2] for s in st["slots"] if s}
+            st["t"] = vt
             img.paste(empty, (0, 0))
             draw_frame(img, dr, st)
             proc.stdin.write(img.tobytes())
             if fi % int(max(1, fps_f * 10)) == 0:
-                print('  %5.1f%%' % (100.0 * fi / n_frames), flush=True)
+                print("  %5.1f%%" % (100.0 * fi / n_frames), flush=True)
     except BrokenPipeError:
         pass
     finally:
@@ -382,13 +536,16 @@ def main():
             pass
         proc.wait()
     if dropped:
-        print('note: %d keysound(s) evicted for lack of a free slot (raise --rows)' % dropped)
+        print(
+            "note: %d keysound(s) evicted for lack of a free slot (raise --rows)"
+            % dropped
+        )
     if proc.returncode == 0:
-        print('wrote %s' % out)
+        print("wrote %s" % out)
     else:
-        print('ffmpeg command was:\n  %s' % ' '.join(cmd))
-        sys.exit('ffmpeg failed (%s)' % proc.returncode)
+        print("ffmpeg command was:\n  %s" % " ".join(cmd))
+        sys.exit("ffmpeg failed (%s)" % proc.returncode)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
