@@ -153,7 +153,22 @@ python3 visualize_song.py <song> \
 ```
 
 The command is echoed whenever either is used, so you can see exactly what ran. Use `=` rather
-than a space when the value starts with `-`, or argparse reads it as a flag. Rendering runs at roughly 2x realtime at 1280x720/30fps —
+than a space when the value starts with `-`, or argparse reads it as a flag.
+
+To change the encoder use `--encoder`, which also drops the x264-only `-crf`/`-preset` for
+encoders that do not take them:
+
+```bash
+python3 visualize_song.py <song> --encoder libx265                       # HEVC
+python3 visualize_song.py <song> --encoder libsvtav1 --ffmpeg-args='-preset 8 -crf 30'
+python3 visualize_song.py <song> --encoder h264_nvenc --ffmpeg-args='-preset p4 -cq 20 -rc vbr'
+```
+
+Putting `-c:v` in `--ffmpeg-args` instead mostly works, since it lands after the built-in flag —
+but the built-in `-preset veryfast -crf 18` remain and most encoders reject `veryfast`, so it
+fails for anything but another x264-family encoder. `--ffmpeg-args='-pix_fmt yuv444p'` also
+switches the overlay's output format to match, so the chroma is not subsampled and then
+upsampled again. Rendering runs at roughly 2x realtime at 1280x720/30fps —
 `--fps`, `--size` and `--until` trade that off.
 
 `parse_chart.py` also accepts an encrypted payload straight from the CDN, so

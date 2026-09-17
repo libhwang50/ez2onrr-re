@@ -341,6 +341,14 @@ def main():
     )
     ap.add_argument("--preset", default="veryfast")
     ap.add_argument(
+        "--encoder",
+        metavar="NAME",
+        help="video encoder (default libx264). Anything ffmpeg has: libx265, h264_nvenc, "
+             "hevc_vaapi, libsvtav1, ffv1... For encoders that are not x264/x265 the built-in "
+             "-crf/-preset are dropped, so pass their own rate control via --ffmpeg-args "
+             "(e.g. h264_nvenc: '-preset p4 -cq 20 -rc vbr').",
+    )
+    ap.add_argument(
         "--ffmpeg-args",
         metavar="ARGS",
         help="extra OUTPUT options for ffmpeg, e.g. "
@@ -473,6 +481,25 @@ def main():
             "color=c=0x0b0d12:s=%dx%d:r=%s:d=%.3f" % (W, H, fps_arg, duration),
         ]
     cmd += ["-i", audio]
+    # The filter's final format must match what the encoder is given. Leaving format=yuv420p
+    # in place while asking for `-pix_fmt yuv444p` would subsample the overlay to 4:2:0 and then
+    # upsample it again, which looks like 4:4:4 but has already lost the chroma.
+    extra_out = shlex.split(args.ffmpeg_args) if args.ffmpeg_args else []
+    out_pix_fmt = "yuv420p"
+    for flag in ("-pix_fmt", "-pix_fmts"):
+        if flag in extra_out and extra_out.index(flag) + 1 < len(extra_out):
+            out_pix_fmt = extra_out[extra_out.index(flag) + 1]
+
+    # x264/x265 rate control only applies to those encoders; other encoders take their own
+    vcodec = args.encoder or "libx264"
+    if vcodec.startswith(("libx264", "libx265")):
+        codec_args = ["-c:v", vcodec, "-preset", args.preset, "-crf", str(args.crf)]
+    else:
+        codec_args = ["-c:v", vcodec]
+        if args.encoder:
+            print("encoder %s: -crf/-preset omitted, pass its own rate control with "
+                  "--ffmpeg-args" % vcodec)
+
     # Keep the BGA's own rate so the overlay maps 1:1. Only touch its pixels if the caller
     # asked for a different size — otherwise it is passed through unscaled and uncropped.
     if bga and native and (W, H) != (native[0], native[1]):
@@ -484,19 +511,14 @@ def main():
         pre = "[1:v]fps=%s[bg]" % fps_arg
     cmd += [
         "-filter_complex",
-        "%s;[bg][0:v]overlay=0:0:format=auto,format=yuv420p[v]" % pre,
+        "%s;[bg][0:v]overlay=0:0:format=auto,format=%s[v]" % (pre, out_pix_fmt),
         "-map",
         "[v]",
         "-map",
         "2:a",
         "-r",
         fps_arg,
-        "-c:v",
-        "libx264",
-        "-preset",
-        args.preset,
-        "-crf",
-        str(args.crf),
+        *codec_args,
         "-c:a",
         "aac",
         "-b:a",
