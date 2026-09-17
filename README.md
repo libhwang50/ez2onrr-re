@@ -44,7 +44,7 @@ python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 10
 | `parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
 | `chart_labels.py` | decrypt captured API traffic → `chart_labels.json` (song name, key mode, difficulty) |
 | `render_song.py <song_dir>` | **render the song** — plays every note's keysound at its scheduled time; `--assets auto` matches the keysounds by content, `--all` walks every captured chart |
-| `visualize_song.py <song_dir>` | **visualise the render** — an mp4 with the keysounds, lanes and progress overlaid on the BGA (or a plain background) |
+| `visualize_song.py <song_dir>` | **visualise the render** — an mp4 with the keysounds, lanes and progress overlaid on the BGA (or a plain background). Pass a song directory or `--all` to render every variant, `--skip-existing` to leave finished ones |
 | `song_meta.py` | look up a song's title/composer from the harvested metadata table |
 | `harvest_metadata.py` | dump the game's song metadata table → `music_names.json` |
 
@@ -56,7 +56,7 @@ Then just **play songs**: `dump_song.py` captures each one on entry and writes
 | `cdn_ez_*.bin`, `cdn_ezi_*.bin` | the CDN payloads, byte-exact as served |
 | `ez.ez`, `ezi.ezi` | the decrypted chart and keysound index |
 | `mem_rjl.bin`, `mem_rjm.bin`, `mem_rjn.bin` | the buffers and transport key the game holds (the chart key is static — see below) |
-| `instrumentDic.json` | the keysound index as the game parsed it |
+| `instrumentDic.json` | the keysound index as the game parsed it — **only with `--read-instrument-dic`** (see the note below) |
 
 into `extracted_charts/<song>/<keymode>/<difficulty>/` — for example
 `extracted_charts/destr0yer/5k/hd/` — read from the running game. **Each key mode and
@@ -66,6 +66,22 @@ directory (fine if you only want the song once, since one chart renders the whol
 `--name-by id` uses the numeric music id. A song that cannot be identified falls back to
 `song_<hash>`. A `403` on a `cdn_*`
 fetch only means the signed URL expired first.
+
+The capture directory is chosen by the **chart's own identity**, not just the runtime label:
+the game updates `ez_url`/`ezi_url` in stages, so a snapshot can catch the old label with the
+new chart. If they disagree and a capture already exists, the snapshot goes to
+`<name>_mismatch/` rather than overwriting the real one.
+
+`instrumentDic.json` is **off by default** (`--read-instrument-dic` to enable). Walking the
+game's dictionary is ~4 managed invocations per entry — ~8,000 for Ultimatum's 2,014 — and
+the Frida bridge holds the enumerator and its boxed keys as raw pointers the IL2CPP GC is
+never told about, so a GC mid-loop can free them. It is only a cross-check anyway; `ezi.ezi`
+carries the same index → filename mapping.
+
+If the read path dies — the game's main thread exits (the process can linger, window frozen,
+Steam still showing it running), or the Frida script is unloaded — the watch says so and
+stops rather than polling forever. A capture interrupted that way still writes `ident.json`,
+with an `incomplete` list of what it could not read.
 
 ## Chart delivery
 
@@ -118,11 +134,18 @@ python3 parse_chart.py --backing --ezi song/ezi.ezi song/ez.ez
 ```bash
 python3 visualize_song.py extracted_charts/changa2            # -> visualizations/changa2.mp4
 python3 visualize_song.py <song> --no-bga --size 1920x1080 --fps 60
+python3 visualize_song.py extracted_charts/ultimatum         # bulk: every variant under it
+python3 visualize_song.py --all --skip-existing              # every chart, skipping ones done
 ```
 
 A video of the render. `--mode default` shows the key mode + difficulty, a lane row that
 lights as lanes fire, and a keysound display; `--mode keysound` shows only the keysound
 display. There are no panel backgrounds — labels are outlined instead so the BGA reads through.
+
+Keysound rows are coloured by who plays them: the chart's own lanes are bright white for a
+tap and bright yellow for a long note, while auto-played notes (the track-22 `MR` layer and
+the instrument layers) are dimmed grey / dim amber. `--no-auto-dim` turns that off and
+colours every row alike.
 
 The keysound display lists what is *currently sounding*, each in a fixed slot with a lifetime
 bar showing how far through its sample it is, so a long sample stays visible after its note
@@ -136,7 +159,7 @@ default because quality comes first — `--fps`/`--size` trade it for render tim
 background defaults to 1280x720 at 30 fps. Encoding defaults to `--crf 18`, near-transparent
 for the BGA, and label outlines scale with the frame (1 px at 720p, `--outline` to override).
 
-A lane lights for `--press-hold` seconds after its note fires (default 0.15) — a key press is
+A lane lights for `--press-hold` seconds after its note fires (default 0.05) — a key press is
 an event, not a duration. It is also forced dark for `--press-gap` frames before that lane's
 next note (default 2), without which fast consecutive taps run together and read as a hold;
 Change My World 4K SHD has 632 same-lane pairs within 0.2 s, so it shows the difference. A lane
