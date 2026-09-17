@@ -185,6 +185,26 @@ response, so experiments need no restart.
   `\r\n` terminated, velocity 0/1, PKCS7-padded at EOF. Corroboration — MilK: 18,192 B ÷
   807 keysounds = **22.5 B per line**; Conflict: 2,719 lines, mapping verified against the
   game's parsed `instrumentDic` 2719/2719.
+* **The `.ezi` is per song, NOT per mode or difficulty.** Comparing every variant captured
+  (Conflict at keymode 1/levelmode 4, 1/3 and 3/3; Engine at 1/4, 3/3 and two gamemodes;
+  Destr0yer at 1/4 and 3/3) each song's decrypted `.ezi` is **byte-identical** — one
+  sha256 per song. So the keysound bank is a property of the song, and a new difficulty
+  never needs a fresh keysound set.
+* **The `.ez` chart DOES differ by both keymode and difficulty — including the auto-played
+  tracks.** Conflict SHD vs HD (same keymode 1, gamemode 1) differs in the lanes
+  (450/454/461/449 vs 331/330/340/303) *and* in nearly every auto-play track (23–63), while
+  the track-22 `MR` note is the same. So each variant is a different arrangement and each
+  renders differently.
+* **Key mode is directly readable from the chart**: the number of playable lanes is the
+  count of tracks from 3 upwards that carry notes — 4 for keymode `1` (4K), **6 for keymode
+  `3` (6K)**. The API's keymode is 1-based and does not map obviously onto 4K/5K/6K/7K/8K
+  beyond that; `keymode` 2 and 4+ have not been captured.
+* **Difficulty is `levelmode`: 1=EZ, 2=NM, 3=HD, 4=SHD** (Conflict and Engine at levelmode 4
+  are both SHD; Conflict levelmode 3 is HD). `gamemode` 1 and 2 produced identical charts
+  for the same mode/difficulty, so it is not a chart selector.
+* **The CDN URL hash is not a content hash.** A song's `.ezi` URL differs per variant while
+  the decrypted bytes are identical, so the path segment cannot be used to identify
+  content — match on the decrypted payload instead.
 * **Positions are ticks; the game works in measures.** `InGameCore` divides by
   `ticksPerMeasure` (Conflict: 192), so `normalNoteData[*].seu` is measures and
   `<set>k__BackingField` is seconds (`seu × 60/BPM × 4`). Cross-check: the first 1P Key1
@@ -378,8 +398,9 @@ User-facing (repo root):
 | `harvest_chart.py` | watch `InGameCore` for chart URLs and fetch them |
 | `decrypt_chart.py` | **decrypt CDN payloads** → `.ez` / `.ezi` plaintext (library + CLI) |
 | `parse_chart.py` | **read decrypted charts** — `.ez` note charts and `.ezi` keysound indexes, as a summary, JSON, or note listing |
+| `chart_labels.py` | **name charts** — decrypt captured API traffic into `chart_labels.json` (song name, key mode, difficulty); `dump_song.py` reads it back |
 | `render_song.py` | **render a song** — plays every note's keysound at its scheduled time; `--assets auto` matches keysounds by content |
-| `dump_song.py` | **per-song snapshot** — byte-exact CDN archive, decrypted plaintext, `da.rus` buffers + `instrumentDic` |
+| `dump_song.py` | **per-song snapshot** — byte-exact CDN archive, decrypted plaintext, `da.rus` buffers + `instrumentDic`, plus the song/mode/difficulty label |
 | `run_dumper.sh` | Il2CppDumper (blocked by the missing metadata magic) |
 
 Investigation tooling — layout, build step and crash warnings: **`tools/README.md`**.
@@ -415,10 +436,11 @@ header, tracks, note events with normal/long, `.ezi` join; JSON or a note listin
 
 **Next:**
 
-1. Identify note types 5/6/9 against `InGameCore`'s `specialNoteData` / `autoNoteData`, and
-   find what the long-note `flags` value drives (judgement/visuals only).
-2. Record the song id in `ident.json` — `patternFileInfo` is empty when read, so
-   `dump_song.py` falls back to `song_<hash>` and the chart → `extracted_assets` mapping
-   has to be recovered by content matching (`render_song.py --assets auto`).
-3. Find what selects the key pair (`svk`/`svm`/`svo`) — not the payload, the CDN path, or
+1. Capture `keymode` 2 and 4+ to finish the keymode → 4K/5K/6K/7K/8K map (only 1 → 4 lanes
+   and 3 → 6 lanes are known), and check whether 7K is really course-only.
+2. Identify note types 5/6/9 against `InGameCore`'s `specialNoteData` / `autoNoteData`.
+3. Record the song id in `ident.json` directly rather than via `chart_labels.json` —
+   `patternFileInfo` reads empty at capture time, so the API traffic is currently the only
+   source for the name and difficulty.
+4. Find what selects the key pair (`svk`/`svm`/`svo`) — not the payload, the CDN path, or
    `bundleCryptKey`; it looks like an authoring/build-time choice.

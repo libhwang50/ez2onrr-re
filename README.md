@@ -42,13 +42,14 @@ python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 10
 | `harvest_key.py` | derive `true_key_1024.bin` from live memory |
 | `decrypt_chart.py <cdn_*.bin>` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
 | `parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
+| `chart_labels.py` | decrypt captured API traffic → `chart_labels.json` (song name, key mode, difficulty) |
 | `render_song.py <song_dir>` | **render the song** — plays every note's keysound at its scheduled time; `--assets auto` matches the keysounds by content, `--all` walks every captured chart |
 
 Then just **play songs**: `dump_song.py` captures each one on entry and writes
 
 | file | contents |
 |---|---|
-| `ident.json` | song identity, signed URLs, field counts, per-lane note counts |
+| `ident.json` | song identity, signed URLs, field counts, per-lane note counts, and the song/mode/difficulty label |
 | `cdn_ez_*.bin`, `cdn_ezi_*.bin` | the CDN payloads, byte-exact as served |
 | `ez.ez`, `ezi.ezi` | the decrypted chart and keysound index |
 | `mem_rjl.bin`, `mem_rjm.bin`, `mem_rjn.bin` | the buffers and transport key the game holds (the chart key is static — see below) |
