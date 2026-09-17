@@ -258,12 +258,17 @@ def safe_dir(name):
     return s[:80] or "song"
 
 
-def capture_name(rt, snap, name_by='title'):
+def capture_name(rt, snap, name_by='variant'):
     """Directory name for a capture.
 
-    `title` (default) uses the song's own name — `extracted_charts/destr0yer/` — which is
-    what the runtime request JSON gives us as `musicresourcename`. `id` uses the numeric
-    music id from the metadata table. `variant` keeps the old resource_mode_difficulty form
+    `variant` (default) appends the key mode and difficulty — `destr0yer_5k_hd` — so each
+    variant of a song keeps its own capture instead of replacing whichever was there. The
+    chart differs by mode and difficulty (only the note *assignment* does, but it is still a
+    different file), so separating them is the safe default.
+
+    `title` drops the suffix and merges every variant into one directory — fine when you only
+    want the song once, since one chart renders the whole song. `id` uses the numeric music
+    id in place of the name, keeping the variant suffix.
 
     Falls back to `song_<hash>` when the runtime label is unavailable, which is the one case
     where the song is unknown.
@@ -276,13 +281,15 @@ def capture_name(rt, snap, name_by='title'):
                 import song_meta
                 rec = song_meta.by_name(resource)
                 if rec and rec.get('id'):
-                    return safe_dir(rec['id'])
+                    resource = str(rec['id'])
             except Exception:
                 pass
-        if name_by == 'variant':
-            bits = [resource, rt.get('keymode'), rt.get('levelmode'), rt.get('gamemode')]
-            return safe('_'.join(str(b) for b in bits if b))
-        return safe_dir(resource)
+        if name_by == 'title':
+            return safe_dir(resource)
+        km = KEYMODE_LABEL.get(str(rt.get('keymode')))
+        diff = DIFF_LABEL.get(str(rt.get('levelmode')))
+        parts = [resource, km, diff]
+        return safe_dir('_'.join(str(p) for p in parts if p))
     return song_name(snap)
 
 
@@ -446,9 +453,10 @@ def main():
     ap.add_argument("--interval", type=float, default=1.0,
                     help="watch poll interval in seconds (default 1.0; the signed URL lives "
                          "~150 s so there is no need to poll fast)")
-    ap.add_argument("--name-by", choices=('title', 'id', 'variant'), default='title',
-                    help="name each capture after the song title (default), its music id, or "
-                         "the old resource_mode_difficulty form")
+    ap.add_argument("--name-by", choices=('variant', 'title', 'id'), default='variant',
+                    help="variant (default): <song>_<keymode>_<difficulty> so each mode and "
+                         "difficulty keeps its own capture; title: just the song, merging "
+                         "variants; id: the numeric music id plus the variant")
     ap.add_argument("--gadget", default=GADGET)
     a = ap.parse_args()
 

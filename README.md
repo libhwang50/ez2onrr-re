@@ -58,10 +58,12 @@ Then just **play songs**: `dump_song.py` captures each one on entry and writes
 | `mem_rjl.bin`, `mem_rjm.bin`, `mem_rjn.bin` | the buffers and transport key the game holds (the chart key is static — see below) |
 | `instrumentDic.json` | the keysound index as the game parsed it |
 
-into `extracted_charts/<song>/` — named after the song itself (`extracted_charts/destr0yer/`),
-read from the running game. Use `--name-by id` for the numeric music id or `--name-by variant`
-for the old `<resource>_<keymode>_<levelmode>_<gamemode>` form; when the song cannot be
-identified it falls back to `song_<hash>`. A `403` on a `cdn_*`
+into `extracted_charts/<song>_<keymode>_<difficulty>/` — for example
+`extracted_charts/destr0yer_5k_hd/` — read from the running game. **Each key mode and
+difficulty keeps its own capture**, so re-dumping a song at another difficulty adds a directory
+rather than replacing one. `--name-by title` merges every variant into one directory (fine if
+you only want the song once, since one chart renders the whole song); `--name-by id` uses the
+numeric music id. A song that cannot be identified falls back to `song_<hash>`. A `403` on a `cdn_*`
 fetch only means the signed URL expired first.
 
 ## Chart delivery
