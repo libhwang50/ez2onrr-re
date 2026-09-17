@@ -33,11 +33,28 @@ SVQ = bytes.fromhex('31a3e172df7b44db465c84ad28f5a5a5'
                     '41e68ecdb8ccdfcce716c5268f097549'
                     '04192c9912759d1780a7a7705737fc6ca')
 SVR = bytes.fromhex('d0d9223422c56c6ce10496cc0a44777d')
-SVO = bytes.fromhex('7dbb2047f7def50c7c30a7709f6b4bac'
-                    '1dc3aebee52f455fe801a32b29518b1d')  # AES key
-SVP = bytes.fromhex('0d1a6bcb9c80f1b53bdaf766ed40012f')  # AES IV
 
-assert len(SVQ) == 64 and len(SVR) == 16 and len(SVO) == 32 and len(SVP) == 16
+# Three static (key, IV) pairs. The game records no indication of which one a payload
+# uses; exactly one of them yields valid PKCS7 for any given chart, so we select by
+# validation. Observed: svk/svl -> Engine, svo/svp -> Conflict and Rebind.
+# svm/svn is unobserved so far.
+KEYPAIRS = {
+    'svk/svl': (bytes.fromhex('b6267ea195763df32ec91ed39d7f6603'
+                              '5ca002de4dee12fff9cf93ed92163e0d'),
+                bytes.fromhex('8c8e78a8cae9885cc5438b58e2931609')),
+    'svm/svn': (bytes.fromhex('1c041e8ebb58fdb485deb781fa756696'
+                              'a45ff1bf1ba7d9e85663a01c62bb1f2b'),
+                bytes.fromhex('8e763cd2a4d409d62658d626c06f027c')),
+    'svo/svp': (bytes.fromhex('7dbb2047f7def50c7c30a7709f6b4bac'
+                              '1dc3aebee52f455fe801a32b29518b1d'),
+                bytes.fromhex('0d1a6bcb9c80f1b53bdaf766ed40012f')),
+}
+
+# Back-compat aliases (the pair identified first).
+SVO, SVP = KEYPAIRS['svo/svp']
+
+assert len(SVQ) == 64 and len(SVR) == 16
+assert all(len(k) == 32 and len(iv) == 16 for k, iv in KEYPAIRS.values())
 
 # S[i] = svr[svq[i] & 0xf] ^ svq[i]
 _SBOX = bytes(SVR[SVQ[i] & 0xF] ^ SVQ[i] for i in range(64))
@@ -68,8 +85,46 @@ def unmask(buf: bytes) -> bytes:
     return bytes(b ^ m[i] for i, b in enumerate(buf))
 
 
-def decrypt(buf: bytes) -> bytes:
-    return AES.new(SVO, AES.MODE_CBC, SVP).decrypt(unmask(buf))
+def valid_pkcs7(buf: bytes) -> bool:
+    pad = buf[-1] if buf else 0
+    return 1 <= pad <= 16 and buf[-pad:] == bytes([pad]) * pad
+
+
+def plausible(pt: bytes) -> bool:
+    """Does this look like a chart (EZFF) or a keysound index?"""
+    return pt[:4] == b'EZFF' or looks_like_ezi(pt)
+
+
+def decrypt(buf: bytes, keypair: str = None) -> bytes:
+    """Decrypt a CDN payload.
+
+    `keypair` names an entry of KEYPAIRS (e.g. 'svk/svl'). When omitted, each pair is
+    tried and the one whose plaintext has valid PKCS7 padding *and* looks like a chart
+    or index is returned. Raises ValueError if none matches.
+    """
+    data = unmask(buf)
+    if keypair is not None:
+        key, iv = KEYPAIRS[keypair]
+        return AES.new(key, AES.MODE_CBC, iv).decrypt(data)
+    padded = []
+    for name, (key, iv) in KEYPAIRS.items():
+        pt = AES.new(key, AES.MODE_CBC, iv).decrypt(data)
+        if valid_pkcs7(pt):
+            padded.append(name)
+            if plausible(pt):
+                return pt
+    raise ValueError('no static key pair produced a plausible plaintext'
+                     + (' (valid padding but implausible: %s)' % ', '.join(padded)
+                        if padded else ''))
+
+
+def decrypt_named(buf: bytes):
+    """Like decrypt(), but returns (plaintext, keypair_name)."""
+    for name, (key, iv) in KEYPAIRS.items():
+        pt = AES.new(key, AES.MODE_CBC, iv).decrypt(unmask(buf))
+        if valid_pkcs7(pt) and plausible(pt):
+            return pt, name
+    raise ValueError('no static key pair produced a plausible plaintext')
 
 
 def looks_like_ezi(pt: bytes) -> bool:
@@ -112,23 +167,42 @@ def main():
     ap.add_argument('files', nargs='+')
     ap.add_argument('--out', metavar='DIR', help='write results here instead of <file>.dec')
     ap.add_argument('--inspect', action='store_true', help='report only, write nothing')
+    ap.add_argument('--keypair', choices=sorted(KEYPAIRS), help='force a static key pair')
     args = ap.parse_args()
 
     for path in args.files:
         raw = open(path, 'rb').read()
         already = is_plaintext(raw)
-        pt = raw if already else decrypt(raw)
-        print('%-46s %s %6d -> %s'
+        pair = ''
+        if already:
+            pt = raw
+        else:
+            try:
+                if args.keypair:
+                    pt, pair = decrypt(raw, args.keypair), args.keypair
+                else:
+                    pt, pair = decrypt_named(raw)
+            except ValueError as e:
+                print('%-46s %6d -> FAILED: %s' % (os.path.basename(path), len(raw), e))
+                continue
+        print('%-46s %s %6d -> %-9s %s'
               % (os.path.basename(path), 'PT ' if already else 'dec', len(raw),
-                 summarize(pt)))
+                 pair or '-', summarize(pt)))
         if args.inspect:
+            continue
+        # only ever write a payload we could actually decode
+        if not already and not plausible(pt):
+            print('   !! refusing to write implausible plaintext')
             continue
         if args.out:
             os.makedirs(args.out, exist_ok=True)
-            # keep the original .ez/.ezi extension so reference tooling accepts it
+            # keep the original extension so reference tooling accepts it
             dest = os.path.join(args.out, os.path.basename(path))
         else:
             dest = path + '.dec'
+        if os.path.abspath(dest) == os.path.abspath(path):
+            print('   !! refusing to overwrite the input file (use a different --out)')
+            continue
         with open(dest, 'wb') as f:
             f.write(pt)
 

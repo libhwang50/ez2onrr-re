@@ -95,12 +95,17 @@ def capture(sc, snap, out_root):
 
         # decrypt the payload we just archived
         try:
-            pt = body if decrypt_chart.is_plaintext(body) else decrypt_chart.decrypt(body)
+            if decrypt_chart.is_plaintext(body):
+                pt, pair = body, '-'
+            else:
+                pt, pair = decrypt_chart.decrypt_named(body)
+            if not decrypt_chart.plausible(pt):
+                raise ValueError('plaintext is neither a chart nor an index')
             with open(os.path.join(d, "%s.%s" % (tag, ext)), "wb") as f:
                 f.write(pt)
-            print("   %-4s plaintext: %s" % (tag, decrypt_chart.summarize(pt)))
+            print("   %-4s plaintext [%s]: %s" % (tag, pair, decrypt_chart.summarize(pt)))
         except Exception as e:
-            print("   !! %s decrypt failed: %s" % (tag, e))
+            print("   !! %s decrypt failed: %s  (cdn_*.bin kept for later)" % (tag, e))
 
     # 2) the in-memory buffers the game actually decrypts
     try:

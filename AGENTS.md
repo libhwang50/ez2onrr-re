@@ -82,9 +82,11 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
 | `zf.wx` = `C2S_GET_PATTERN_FILE` | `appid`, `musicresourcename`, `keymode`, `levelmode`, `gamemode` |
 | `zf.wz` | `appid`, `steamId:UInt64[]` |
 
-* **`bundleCryptKey`** — 64-char base64 → **48 bytes**; stored as `da.rus.rjn`.
-  **Per-song**, not per-session *(supersedes the earlier per-session claim — entering a
-  different song changes it completely)*.
+* **`bundleCryptKey`** — a **96-character hex** string; `da.rus.rjn` is exactly
+  `bytes.fromhex(bundleCryptKey)` (48 bytes). **Session-scoped**: byte-identical for both
+  songs sampled in one session, so the earlier “per-song” reading is superseded — which
+  also retracts the note that had superseded the original per-session claim. It is **not**
+  the chart key (§3.3).
 * **`CRYPT_KEY`** — a per-song 16-element `{1,2,3}` sequence; a chart/note-obfuscation
   parameter, **not** cipher key material.
 * **Naming is correct**: `final_url_ez` = the **chart**, `final_url_ezi` = the
@@ -96,7 +98,7 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
 Decryptor: `decrypt_chart.py` (repo root).
 
 ```
-plaintext = AES_256_CBC_decrypt( unmask(ciphertext), key=InGameCore.svo, iv=InGameCore.svp )
+plaintext = AES_256_CBC_decrypt( unmask(ciphertext), key=<svk|svm|svo>, iv=<svl|svn|svp> )
 ```
 
 **Stage 1 — `unmask`.** A data-independent, one-pass XOR mask, exactly 64 rounds per
@@ -109,7 +111,21 @@ r_i = (ebx * i) % 255 ;  if r_i % 10 == 0: r_i = 12      # the `cmove` at 0xac72
 mask(ebx) = XOR over i in 0..63 of ( S[i] ^ r_i ^ (ebx & 0xff) )
 ```
 
-**Stage 2 — AES-256-CBC/PKCS7**, key `InGameCore.svo` (32 B), IV `InGameCore.svp` (16 B).
+**Stage 2 — AES-256-CBC/PKCS7**, key and IV from one of **three static pairs**, all in
+`InGameCore`:
+
+| pair | decodes | observed on |
+|---|---|---|
+| `svk`/`svl` | Engine | |
+| `svm`/`svn` | *(not yet observed)* | |
+| `svo`/`svp` | Conflict, Rebind | |
+
+**The pair is selected per payload by validation, not recorded anywhere.** The game does
+not store a key index, and `bundleCryptKey` is identical for songs that use *different*
+pairs — so it is not the selector. For any given payload exactly one pair yields valid
+PKCS7 padding, so `decrypt_chart.decrypt()` tries all three and accepts the one whose
+plaintext has valid padding **and** looks like a chart (`EZFF`) or an index (printable
+`[index] [velocity] [filename]` lines). `decrypt_named()` also returns which pair matched.
 Both stages work **in place** on the whole buffer.
 
 **Where it lives.** `InGameCore.dcf` (RVA `0xac71b0`) is the entry point: it runs the
@@ -121,7 +137,9 @@ Callers: the `ft.MoveNext` coroutine and `ff.cuc`.
 **Verification (end-to-end).** `cur_conflict_ez_url.ez` → `EZFF` magic, name `4-shd`,
 BPM `160.0`, 64 tracks, 64 `EZTR` blocks, valid PKCS7. `cur_conflict_ezi_url.ezi` →
 2719 plaintext keysound lines whose `index → filename` mapping matches the game's own
-parsed `instrumentDic` **2719/2719**.
+parsed `instrumentDic` **2719/2719**. Engine (`svk`/`svl`) → `EZFF` v7, BPM `174.0`,
+64 tracks, 865 keysounds matching an `instrumentDic` count of 865. Four payloads across
+three songs, two key pairs, all four decoded correctly.
 
 #### Corrections to earlier conclusions
 
@@ -130,17 +148,21 @@ parsed `instrumentDic` **2719/2719**.
 | "per-song key" (`bundleCryptKey` / `da.rus.rjn`) | **No.** The chart key/IV are the **static** `svo`/`svp`. `rjn` is a transport/audit record (§4.2) and is not the chart key. |
 | "static analysis cannot find the decryptor; no construction site" | The site is `dcf → dcg`, reachable by scanning for **direct `E8` calls** to the `dc*` cluster. The earlier scan only looked for `RijndaelManaged`/`Aes.Create` ctors, and `dcg` instantiates `AesCryptoServiceProvider` — a site that *was* found but misread. |
 | "`dcg` is inert — sets `BlockSize=256`, CNG rejects it" | **Two errors.** The `0x100` goes to `set_KeySize` (AES-256), not `set_BlockSize` (`0x80` = 128). `dcg` is fully live. Slots are resolved via `SymmetricAlgorithm`'s vtable: `0x238`=`set_KeySize`, `0x1a8`=`set_BlockSize`, `0x1f8`=`set_Key`, `0x1d8`=`set_IV`, `0x258`=`set_Mode`, `0x278`=`set_Padding`. |
-| "`svk`–`svr` are dismissed, not key material" | **They are the cipher.** `svo`/`svp` are the chart key/IV; `svq`/`svr` are the mask tables. |
+| "`svk`–`svr` are dismissed, not key material" | **They are the cipher.** `svq`/`svr` are the mask tables; `svk`/`svl`, `svm`/`svn` and `svo`/`svp` are three alternative chart key/IV pairs. |
+| "16-byte constant header" — `ct₁ ⊕ ct₂` is zero for bytes 0–15 | **Not reproducible.** Conflict and Rebind use the *same* key pair yet differ from byte 0. The earlier observation must have compared two charts sharing both key and a plaintext preamble. |
 
 **Why the ~2.7 M-key sweep failed:** it searched the wrong key space (`rjn`/`bundleCryptKey`
 derivations) and, crucially, tested AES directly against the ciphertext — without the
 stage-1 mask, no key can ever produce `EZFF`.
 
-**Still open:** the roles of the sibling 32/16-byte pairs `svk`/`svl` and `svm`/`svn`.
-They are wired identically to `svo`/`svp` but do not decrypt `.ez`/`.ezi`; likely they
-guard a different payload type (replay / pattern / other mode). The "16-byte constant
-header" observation (identical `ct[0:16]` across songs) is now explained: a fixed key **and**
-IV over a fixed plaintext preamble.
+**Resolution of an earlier open item:** the sibling statics `svk`/`svl` and `svm`/`svn`
+are **not** guarding a different payload type (as §3.3 previously speculated) — they are
+alternative chart keys. Its corollary is that a decryptor which hardcodes one pair will
+silently produce garbage for a chart that uses another, so always validate.
+
+**Still open:** which songs map to which pair is not understood — the choice looks like a
+build-time/authoring decision rather than anything in the payload. `svm`/`svn` has not
+been observed at all yet.
 
 ### 3.4 MITM oracle — `tools/mitm/_cdn_rewrite.py`
 
@@ -335,8 +357,8 @@ cipher, and the CDN chart/index cipher (§3.3, `decrypt_chart.py`).
 
 **Done:** located the chart decryptor by scanning for direct calls into the `dc*` cluster
 (`tools/il2cpp/_callers.js`), identified `dcf → dcg` as `mask ∘ AES-256-CBC`, extracted the
-static key material (`svq`/`svr` mask tables, `svo`/`svp` key/IV), and verified the result
-end-to-end (Conflict: `EZFF` header + 2719/2719 keysound-name match). `parse_chart.py` reads
+static key material (`svq`/`svr` mask tables, three key/IV pairs), and verified the result
+end-to-end (Conflict + Rebind + Engine, 4 payloads, 2 key pairs). `parse_chart.py` reads
 the result: header, tracks, note events, `.ezi` join; JSON or a note listing.
 `dump_song.py` now decrypts on capture, so a song lands readable.
 
@@ -345,6 +367,7 @@ the result: header, tracks, note events, `.ezi` join; JSON or a note listing.
 1. Establish the track index → lane/mode map (§3.5) so note listings can name lanes
    instead of raw track numbers — needs a match against a freshly dumped `normalNoteData`.
 2. Identify note types 5/6/9 against `InGameCore`'s `specialNoteData` / `autoNoteData`.
-3. Determine what the sibling statics `svk`/`svl` and `svm`/`svn` protect.
+3. Find what selects the key pair (`svk`/`svm`/`svo`) — it is not in the payload; more
+   samples would show whether it tracks something observable (e.g. CDN path prefix).
 4. Join `parse_chart.py` output against `extract_assets.py` output so a chart's keysounds
    can be resolved by name across the whole archive (a bulk "make it readable" mode).

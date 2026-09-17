@@ -77,10 +77,12 @@ Both are served **encrypted** — see below.
 ### Decrypting and reading a payload
 
 The CDN cipher is a fixed keystream XOR followed by AES-256-CBC/PKCS7, with the key and IV
-baked into the binary as static fields of `InGameCore` (`svo`/`svp`, mask tables
-`svq`/`svr`). It is **not** per-song — an earlier per-song-key theory came from
-`bundleCryptKey`, which is a transport record and not the chart key. Full derivation in
-`AGENTS.md` §3.3.
+baked into the binary as static fields of `InGameCore` (mask tables `svq`/`svr`; three
+alternative key/IV pairs `svk`/`svl`, `svm`/`svn`, `svo`/`svp`). **Which pair a payload uses
+is not recorded anywhere** — exactly one of them gives valid PKCS7 padding, so the
+decryptor tries all three and keeps the one that yields a real chart or index. It is *not*
+per-song: an earlier per-song-key theory came from `bundleCryptKey`, which is a session
+record and not the chart key. Full derivation in `AGENTS.md` §3.3.
 
 ```bash
 # decrypt a captured payload (dump_song.py already writes these decrypted)
