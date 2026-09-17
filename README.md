@@ -117,9 +117,18 @@ python3 visualize_song.py extracted_charts/changa2            # -> visualization
 python3 visualize_song.py <song> --no-bga --size 1920x1080 --fps 60
 ```
 
-A video of the render: a top bar with the title/variant/composer and a progress bar, a lane
-row that lights as lanes fire, and a ticker of the most recent keysounds with lane, index and
-filename. It uses the song's BGA when one has been extracted, otherwise a plain background.
+A video of the render. `--mode default` shows the key mode + difficulty, a lane row that
+lights as lanes fire, and a keysound display; `--mode keysound` shows only the keysound
+display. There are no panel backgrounds — labels are outlined instead so the BGA reads through.
+
+The keysound display lists what is *currently sounding*, each in a fixed slot with a lifetime
+bar showing how far through its sample it is, so a long sample stays visible after its note
+fired. A playing keysound keeps its slot until it ends and new ones fill the gaps, so nothing
+shifts under the reader. Sample lengths are read from the keysound files, not guessed.
+
+When a BGA is used the overlay adopts its resolution and frame rate (1280x720 at 60 fps for
+Changa 2) and the BGA is passed through unscaled, so the original is preserved. `--size` and
+`--fps` override that; otherwise a plain background defaults to 1280x720 at 30 fps.
 
 The overlay is drawn as RGBA frames piped straight into ffmpeg, which composites it and muxes
 the rendered audio in one pass. Rendering runs at roughly 2x realtime at 1280x720/30fps —

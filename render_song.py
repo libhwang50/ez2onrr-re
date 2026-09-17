@@ -114,8 +114,13 @@ def build_filemap(asset_dir):
 
 
 def resolve_assets(stems, root='extracted_assets', min_score=0.9):
-    """Find the extracted_assets/<song_id> whose files match this chart's keysounds."""
-    want = {s.lower() for s in stems}
+    """Find the extracted_assets/<song_id> whose files match this chart's keysounds.
+
+    Accepts keysound stems or full filenames — the extension is stripped either way. Passing
+    `.ezi` filenames verbatim used to score 0 against every directory and silently yield no
+    match.
+    """
+    want = {os.path.splitext(s)[0].lower() for s in stems}
     best = (0.0, None)
     if not os.path.isdir(root):
         return None, 0.0
