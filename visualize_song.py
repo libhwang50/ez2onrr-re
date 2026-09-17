@@ -34,6 +34,7 @@ import bisect
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -340,6 +341,20 @@ def main():
     )
     ap.add_argument("--preset", default="veryfast")
     ap.add_argument(
+        "--ffmpeg-args",
+        metavar="ARGS",
+        help="extra OUTPUT options for ffmpeg, e.g. "
+             "--ffmpeg-args='-tune animation -movflags +faststart -profile:v high'. Quote the "
+             "whole string (shell-split). Use = when the value starts with '-', or argparse "
+             "reads it as an option.",
+    )
+    ap.add_argument(
+        "--ffmpeg-global-args",
+        metavar="ARGS",
+        help="extra GLOBAL/input options for ffmpeg, placed before the first input, e.g. "
+             "--ffmpeg-global-args='-hide_banner -filter_threads 2'",
+    )
+    ap.add_argument(
         "--until", type=float, help="stop at this many seconds (for testing)"
     )
     ap.add_argument(
@@ -496,6 +511,16 @@ def main():
         if bga:
             bi = cmd.index(bga)
             cmd[bi - 1 : bi - 1] = ["-ss", "%.3f" % start]
+
+    # Extra ffmpeg options, split with shell rules so quoting works as typed. Output options go
+    # just before the output path; global ones go before the first input, where ffmpeg requires
+    # them. Inserting rather than replacing keeps the output last, which the guard below checks.
+    if args.ffmpeg_global_args:
+        cmd[4:4] = shlex.split(args.ffmpeg_global_args)
+    if args.ffmpeg_args:
+        cmd[-1:-1] = shlex.split(args.ffmpeg_args)
+    if args.ffmpeg_args or args.ffmpeg_global_args:
+        print("ffmpeg command:\n  %s" % " ".join(shlex.quote(a) for a in cmd))
 
     # Guard: `-y` lets ffmpeg overwrite its output, and the output must be last. A malformed
     # build once made an input path the output, truncating a 49 MB BGA to zero bytes.

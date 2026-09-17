@@ -144,7 +144,16 @@ they cannot run into a neighbour. The visualizer also warns loudly if no BGA has
 extracted, since a blank background is easy to mistake for a dark one.
 
 The overlay is drawn as RGBA frames piped straight into ffmpeg, which composites it and muxes
-the rendered audio in one pass. Rendering runs at roughly 2x realtime at 1280x720/30fps —
+the rendered audio in one pass. Anything ffmpeg can do beyond the built-in flags is reachable
+with `--ffmpeg-args` (output options) and `--ffmpeg-global-args` (before the first input):
+
+```bash
+python3 visualize_song.py <song> \
+    --ffmpeg-args='-tune animation -movflags +faststart -pix_fmt yuv444p'
+```
+
+The command is echoed whenever either is used, so you can see exactly what ran. Use `=` rather
+than a space when the value starts with `-`, or argparse reads it as a flag. Rendering runs at roughly 2x realtime at 1280x720/30fps —
 `--fps`, `--size` and `--until` trade that off.
 
 `parse_chart.py` also accepts an encrypted payload straight from the CDN, so
