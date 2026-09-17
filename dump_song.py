@@ -9,11 +9,30 @@ the keysound dictionary and the parsed note data.
 
 Usage
 -----
-    python3 dump_song.py                # watch, ~2 Hz, output under extracted_charts/
+    python3 dump_song.py                # watch, ~1 Hz, output under extracted_charts/
     python3 dump_song.py --out dir --interval 0.4
+    python3 dump_song.py --read-instrument-dic   # opt into the risky cross-check read
 
-Then just play songs; each one is captured on entry.  Safe: read-only memory
-reads plus one HTTP GET per chart — no hooks, no guard pages.
+Then just play songs; each one is captured on entry.  Read-only memory reads
+plus one HTTP GET per chart — no hooks, no guard pages.
+
+If the read path dies
+---------------------
+The memory reads are safe; the *managed invocations* are what is fragile.  Every
+read runs on the game's main thread (so a call into the OS crypto provider stays
+on the thread Wine/CNG expects) via `Il2Cpp.perform` + `Process.runOnThread`.
+That has two failure modes, and both are terminal:
+
+* the main thread exits while the process lingers — the window keeps showing its
+  last frame and Steam still counts the game as running, but every read fails
+  with `failed to run on thread` / `couldn't collect attached threads`;
+* the Frida script is unloaded (the gadget tearing it down, or the host process
+  going away) — reads fail with `script has been destroyed`.
+
+Neither recovers, so after `WEDGE_LIMIT` consecutive failed polls the watch
+stops and says so, instead of polling a corpse and writing half-empty snapshots
+that look successful.  A capture interrupted this way still writes `ident.json`
+(and an `incomplete` list) from what it has, then stops the watch.
 
 Notes
 -----
@@ -22,8 +41,18 @@ Notes
 * Both the byte-exact payload as served (`cdn_ez_*.bin`) and the decrypted
   plaintext (`ez.ez` / `ezi.ezi`) are written, so the archive is reproducible
   without re-visiting the CDN.
-* The in-memory parse (`instrumentDic.json`, `*_chart.json`) is a cross-check on
-  the decrypted files, not the source of truth.
+* The in-memory parse (`instrumentDic.json`) is a cross-check on the decrypted
+  files, not the source of truth, and is **off by default**: walking the
+  dictionary is ~4 managed invocations per entry (~8,000 for Ultimatum's 2,014)
+  and the bridge holds the enumerator and its boxed keys as raw pointers the
+  IL2CPP GC is never told about, so a GC mid-loop frees them and the next invoke
+  touches freed memory.  `ezi.ezi` already carries the same mapping.  Use
+  `--read-instrument-dic` when you want the cross-check.
+* The output directory is decided by the *chart's own* identity, not only by the
+  runtime label: the game updates `ez_url`/`ezi_url` in stages, so a snapshot
+  taken mid-transition can pair the old label with the new chart.  Writing that
+  eagerly previously overwrote a real capture with the wrong chart.  Such a
+  snapshot now goes to `<name>_mismatch/` instead.
 """
 import argparse, atexit, json, os, re, signal, sys, time, urllib.request, urllib.error
 
@@ -85,9 +114,10 @@ def safe(name):
 
 LANE_LABEL = {4: '4K', 5: '5K', 6: '6K', 7: '7K', 8: '8K'}
 DIFF_LABEL = {'1': 'EZ', '2': 'NM', '3': 'HD', '4': 'SHD'}
-# The API's keymode is 1-based over the key modes. 1, 2 and 3 are confirmed (4K, 5K, 6K);
-# 4+ is unobserved, so it is reported as-is rather than guessed.
-KEYMODE_LABEL = {'1': '4K', '2': '5K', '3': '6K'}
+# The API's keymode is 1-based over the key modes: 1->4K, 2->5K, 3->6K, 4->8K (all four
+# confirmed). 7K is unobserved (course-only), so any other value is reported as-is rather
+# than guessed.
+KEYMODE_LABEL = {'1': '4K', '2': '5K', '3': '6K', '4': '8K'}
 LABELS_FILE = 'chart_labels.json'
 
 
@@ -147,6 +177,62 @@ def chart_variant(ez_path):
         return ch.keymode, ch.difficulty, ch.lane_count
     except Exception:
         return None, None, None
+
+
+def chart_identity(ez_bytes):
+    """Same as `chart_variant` but for a payload already in memory."""
+    if not ez_bytes:
+        return None, None, None
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from parse_chart import parse_ez
+        ch = parse_ez(ez_bytes)
+        return ch.keymode, ch.difficulty, ch.lane_count
+    except Exception:
+        return None, None, None
+
+
+# --- read-path liveness -----------------------------------------------------
+# Every managed read runs on the game's main thread (see tools/il2cpp/_dumpsong.js):
+# `Il2Cpp.perform` + `Process.runOnThread`.  When that thread dies the process can linger
+# with its worker threads, the window keeps showing its last frame, and Steam still counts
+# the game as running — but every read fails.  The Frida script itself can also be torn down
+# (the gadget unloading it, or the host process going away), which reports differently.  In
+# both cases there is nothing left to capture, so the watch stops instead of polling a
+# corpse and writing half-empty snapshots that look successful.
+WEDGE_MARKERS = (
+    'failed to run on thread',
+    "couldn't collect attached threads",
+    'script has been destroyed',
+    'script is destroyed',
+    'process has been destroyed',
+    'process is gone',
+    'session is detached',
+    'the connection is closed',
+)
+WEDGE_LIMIT = 3  # consecutive failed polls before the game is declared gone
+
+
+class GameWedged(Exception):
+    """The read path is gone (main thread exited, script unloaded, host process dead)."""
+
+
+def is_wedged(exc):
+    msg = str(exc)
+    return any(m in msg for m in WEDGE_MARKERS)
+
+
+def rpc(sc, name, *args):
+    """Call a driver export, surfacing a dead-main-thread failure as GameWedged."""
+    fn = getattr(sc.exports_sync, name, None)
+    if fn is None:
+        raise AttributeError('driver has no %s()' % name)
+    try:
+        return fn(*args)
+    except Exception as e:
+        if is_wedged(e):
+            raise GameWedged(str(e)) from None
+        raise
 
 
 def label_for(ezi_url, root='.'):
@@ -309,8 +395,10 @@ def settle(sc, timeout=20.0, interval=1.0):
     last, best = None, None
     while True:
         try:
-            snap = sc.exports_sync.ident()          # cheap: no lane invocations
+            snap = rpc(sc, 'ident')                 # cheap: no lane invocations
             best = snap
+        except GameWedged:
+            raise
         except Exception:
             snap = None
         if snap:
@@ -318,7 +406,9 @@ def settle(sc, timeout=20.0, interval=1.0):
             if all(isinstance(c, int) and c > 0 for c in counts):
                 if counts == last:
                     try:
-                        return sc.exports_sync.ident(True)   # read the lanes once
+                        return rpc(sc, 'ident', True)   # read the lanes once
+                    except GameWedged:
+                        raise
                     except Exception:
                         return snap
                 last = counts
@@ -327,7 +417,7 @@ def settle(sc, timeout=20.0, interval=1.0):
         time.sleep(interval)
 
 
-def capture(sc, snap, out_root, name_by='title'):
+def capture(sc, snap, out_root, name_by='title', read_dic=False):
     t0 = time.time()
 
     def mark(label, extra=''):
@@ -348,7 +438,7 @@ def capture(sc, snap, out_root, name_by='title'):
             existing = (json.load(open(os.path.join(d, 'ident.json'))) or {}).get('label') or {}
         except Exception:
             existing = {}
-    os.makedirs(d, exist_ok=True)
+    incomplete = []   # artifact names we could not write; printed at the end
 
     print("\n=== %s ===" % name)
     if existing:
@@ -363,25 +453,26 @@ def capture(sc, snap, out_root, name_by='title'):
         snap.get("normalLanes"), snap.get("instrumentDicCount"),
         snap.get("bpmNoteDataCount"), snap.get("MeasureScaleDataCount")))
 
-    # 1) the CDN payloads — grab them before the signed URL expires, then decrypt
+    # 1) the CDN payloads — grab them before the signed URL expires, then decrypt.  Both
+    #    are decrypted in memory before anything is written, because the chart's own
+    #    identity decides the output directory: the game updates ez_url/ezi_url in stages, so
+    #    a snapshot taken mid-transition can pair the old runtime label with the new chart.
+    #    Writing that eagerly is what overwrote Ultimatum's real 5K SHD chart with a 4K one.
+    payloads = []
     for field, tag, ext in (("ez_url", "ez", "ez"), ("ezi_url", "ezi", "ezi")):
         url = snap.get(field)
         if not url:
             continue
         try:
             body = fetch(url)
-            fn = os.path.join(d, "cdn_%s_%d.bin" % (tag, len(body)))
-            with open(fn, "wb") as f:
-                f.write(body)
-            print("   saved %-4s %7d bytes  <- %s" % (tag, len(body), field))
         except urllib.error.HTTPError as e:
             print("   !! %s fetch failed: HTTP %s (signed URL likely expired)" % (tag, e.code))
+            incomplete.append("cdn_%s_*.bin" % tag)
             continue
         except Exception as e:
             print("   !! %s fetch failed: %s" % (tag, e))
+            incomplete.append("cdn_%s_*.bin" % tag)
             continue
-
-        # decrypt the payload we just archived
         try:
             if decrypt_chart.is_plaintext(body):
                 pt, pair = body, '-'
@@ -389,16 +480,41 @@ def capture(sc, snap, out_root, name_by='title'):
                 pt, pair = decrypt_chart.decrypt_named(body)
             if not decrypt_chart.plausible(pt):
                 raise ValueError('plaintext is neither a chart nor an index')
-            with open(os.path.join(d, "%s.%s" % (tag, ext)), "wb") as f:
-                f.write(pt)
-            print("   %-4s plaintext [%s]: %s" % (tag, pair, decrypt_chart.summarize(pt)))
         except Exception as e:
             print("   !! %s decrypt failed: %s  (cdn_*.bin kept for later)" % (tag, e))
+            incomplete.append("%s.%s" % (tag, ext))
+            payloads.append((tag, ext, body, None, None))
+            continue
+        payloads.append((tag, ext, body, pt, pair))
+
+    # If the chart disagrees with the runtime label and a capture is already there, keep this
+    # one aside rather than overwriting the real one.
+    ez_pt = next((pt for tag, _e, _b, pt, _p in payloads if tag == "ez" and pt), None)
+    chart_km, _chart_diff, chart_lanes = chart_identity(ez_pt)
+    rt_km = KEYMODE_LABEL.get(str((rt or {}).get('keymode')))
+    if ez_pt is not None and rt_km and chart_km and chart_km != rt_km and existing:
+        d = os.path.join(out_root, name + '_mismatch')
+        print("   !! chart is %s (%s lanes) but the runtime label says %s; keeping it in %s "
+              "instead of overwriting" % (chart_km, chart_lanes, rt_km,
+                                           os.path.relpath(d, out_root)))
+        existing = None
+    os.makedirs(d, exist_ok=True)
+
+    for tag, ext, body, pt, pair in payloads:
+        with open(os.path.join(d, "cdn_%s_%d.bin" % (tag, len(body))), "wb") as f:
+            f.write(body)
+        print("   saved %-4s %7d bytes  <- %s_url" % (tag, len(body), tag))
+        if pt is None:
+            continue
+        with open(os.path.join(d, "%s.%s" % (tag, ext)), "wb") as f:
+            f.write(pt)
+        print("   %-4s plaintext [%s]: %s" % (tag, pair, decrypt_chart.summarize(pt)))
 
     # 2) the in-memory buffers the game actually decrypts
+    wedged = False
     mark('reading da.rus buffers')
     try:
-        rus = sc.exports_sync.da_rus_full()
+        rus = rpc(sc, 'da_rus_full')
         if rus:
             for k, hexv in rus.items():
                 if not hexv:
@@ -406,13 +522,26 @@ def capture(sc, snap, out_root, name_by='title'):
                 with open(os.path.join(d, "mem_%s.bin" % k), "wb") as f:
                     f.write(bytes.fromhex(hexv))
             print("   saved mem_rjl/rjm/rjn (in-memory buffers + key)")
+    except GameWedged as e:
+        wedged = True
+        print("   !! read path is gone (%s)" % e)
+        incomplete.append('mem_*')
     except Exception as e:
         print("   !! da.rus read failed: %s" % e)
+        incomplete.append('mem_*')
 
-    # 2) wait for the game to finish parsing, then snapshot the parsed state.
+    # 3) wait for the game to finish parsing, then snapshot the parsed state.
     #    The ident() taken on entry races the parse and reports zeros.
-    mark('waiting for the game to finish parsing')
-    settled = settle(sc)
+    settled = None
+    if not wedged:
+        mark('waiting for the game to finish parsing')
+        try:
+            settled = settle(sc)
+        except GameWedged as e:
+            wedged = True
+            print("   !! read path is gone (%s)" % e)
+        except Exception as e:
+            print("   !! settle failed: %s" % e)
     if settled:
         lanes = settled.get("normalLanes")
         print("   parsed  : lanes=%s  dic=%s  bpm=%s  measures=%s" % (
@@ -423,28 +552,54 @@ def capture(sc, snap, out_root, name_by='title'):
     else:
         print("   !! could not re-read ident; writing the entry-time snapshot")
 
-    # name the song and its mode/difficulty
+    # name the song and its mode/difficulty.  Pure Python, so it still works when the game
+    # is gone — the entry-time snapshot plus the decrypted chart are enough to label it.
     try:
         text, label = describe(settled or snap, d, rt)
         print(text)
         base = settled or snap
         base['label'] = label
+        if incomplete or wedged:
+            base['incomplete'] = list(incomplete)
         with open(os.path.join(d, "ident.json"), "w") as f:
             json.dump(base, f, indent=1)
     except Exception as e:
         print("   !! labelling failed: %s" % e)
 
-    # 3) the decrypted, parsed chart as the game holds it
-    try:
+    # 4) the decrypted, parsed chart as the game holds it.  OFF by default: walking a
+    #    Dictionary with get_Keys/GetEnumerator/MoveNext/get_Current/get_Item is ~4 managed
+    #    invocations per entry (~8,000 for Ultimatum's 2,014), and the bridge holds the
+    #    enumerator and its boxed keys as raw pointers the IL2CPP GC is never told about.
+    #    A GC during the loop frees them and the next invoke touches freed memory.  It is
+    #    only a cross-check anyway — `ezi.ezi` carries the same index -> filename mapping.
+    if read_dic and not wedged:
         mark('reading instrumentDic')
-        dic = sc.exports_sync.instrument_dic()
-        with open(os.path.join(d, "instrumentDic.json"), "w") as f:
-            json.dump(dic, f)
-        print("   saved instrumentDic.json (%d entries)" % len(dic))
-    except Exception as e:
-        print("   !! instrumentDic read failed: %s" % e)
-    mark('capture complete')
-    return d
+        try:
+            dic = rpc(sc, 'instrument_dic')
+            with open(os.path.join(d, "instrumentDic.json"), "w") as f:
+                json.dump(dic, f)
+            print("   saved instrumentDic.json (%d entries)" % len(dic))
+        except GameWedged as e:
+            wedged = True
+            print("   !! read path is gone (%s)" % e)
+            incomplete.append('instrumentDic.json')
+        except Exception as e:
+            print("   !! instrumentDic read failed: %s" % e)
+            incomplete.append('instrumentDic.json')
+
+    if wedged:
+        mark('capture ABORTED')
+        print("   !! the read path is gone (main thread exited, or the Frida script was\n"
+              "      unloaded); no further read can succeed. Restart the game, then the dumper.")
+    elif incomplete:
+        mark('capture complete (incomplete)')
+        print("   !! missing: %s" % ', '.join(incomplete))
+    else:
+        mark('capture complete')
+    if not read_dic:
+        print("   note    : instrumentDic.json skipped (--read-instrument-dic to include; "
+              "ezi.ezi has the same mapping)")
+    return d, wedged
 
 
 def main():
@@ -458,6 +613,14 @@ def main():
                          "difficulty keeps its own capture; title: just the song, merging "
                          "variants; id: the numeric music id plus the variant")
     ap.add_argument("--gadget", default=GADGET)
+    ap.add_argument(
+        "--read-instrument-dic",
+        action="store_true",
+        help="also walk the game's instrumentDic through managed invocations and save it "
+             "as a cross-check on the decrypted .ezi. Off by default: it is ~4 managed "
+             "invocations per entry, which is the riskiest thing this tool does, and the "
+             ".ezi already carries the same mapping.",
+    )
     a = ap.parse_args()
 
     import frida
@@ -482,12 +645,27 @@ def main():
     probe = getattr(sc.exports_sync, 'probe', None)
     if probe is None:
         print('note: driver has no probe(); falling back to the heavy ident() poll')
+    wedges = 0
     while True:
         try:
             # probe() is ~3x cheaper than ident(): three field reads instead of reflecting over
             # patternFileInfo, reading the da.rus buffers and counting five lists. The full
             # snapshot is only needed once a song is actually being captured.
-            snap = probe() if probe is not None else sc.exports_sync.ident()
+            snap = rpc(sc, 'probe') if probe is not None else rpc(sc, 'ident')
+            wedges = 0
+        except GameWedged as e:
+            # Every read goes through the game's main thread and its Frida script, so a
+            # failure here means one of them is gone. A single one can be transient; a run
+            # cannot.
+            wedges += 1
+            print('   !! game read failed (%s) [%d/%d]' % (e, wedges, WEDGE_LIMIT), flush=True)
+            if wedges >= WEDGE_LIMIT:
+                print("\nthe read path is gone. The game may still be listed as running and\n"
+                      "its window may still show the last frame, but nothing can be read from\n"
+                      "it and it will not recover. Restart the game, then the dumper.")
+                return
+            time.sleep(1.0)
+            continue
         except Exception:
             time.sleep(1.0)
             continue
@@ -495,8 +673,18 @@ def main():
         if url and url not in seen:
             seen.add(url)
             try:
-                full = sc.exports_sync.ident()      # the real snapshot, once
-                capture(sc, full, a.out, a.name_by)
+                full = rpc(sc, 'ident')             # the real snapshot, once
+                _d, wedged = capture(sc, full, a.out, a.name_by,
+                                     read_dic=a.read_instrument_dic)
+                if wedged:
+                    print("\nread path is gone — stopping the watch.\n"
+                          "Restart the game, then the dumper.")
+                    return
+            except GameWedged as e:
+                print("   !! read path is gone (%s)" % e)
+                print("\nread path is gone — stopping the watch.\n"
+                      "Restart the game, then the dumper.")
+                return
             except Exception as e:
                 print("   !! capture error: %s" % e)
         time.sleep(a.interval)
