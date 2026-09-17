@@ -372,6 +372,11 @@ def main():
              "(e.g. h264_nvenc: '-preset p4 -cq 20 -rc vbr').",
     )
     ap.add_argument(
+        "--vaapi-device",
+        default="/dev/dri/renderD128",
+        help="DRM render node for VAAPI encoders (default /dev/dri/renderD128)",
+    )
+    ap.add_argument(
         "--ffmpeg-args",
         metavar="ARGS",
         help="extra OUTPUT options for ffmpeg, e.g. "
@@ -515,6 +520,7 @@ def main():
 
     # x264/x265 rate control only applies to those encoders; other encoders take their own
     vcodec = args.encoder or "libx264"
+    is_vaapi = vcodec.endswith("_vaapi")
     if vcodec.startswith(("libx264", "libx265")):
         codec_args = ["-c:v", vcodec, "-preset", args.preset, "-crf", str(args.crf)]
     else:
@@ -522,6 +528,13 @@ def main():
         if args.encoder:
             print("encoder %s: -crf/-preset omitted, pass its own rate control with "
                   "--ffmpeg-args" % vcodec)
+
+    if is_vaapi:
+        if out_pix_fmt == "yuv420p":
+            out_pix_fmt = "nv12"
+        filter_out = "format=%s,hwupload" % out_pix_fmt
+    else:
+        filter_out = "format=%s" % out_pix_fmt
 
     # Keep the BGA's own rate so the overlay maps 1:1. Only touch its pixels if the caller
     # asked for a different size — otherwise it is passed through unscaled and uncropped.
@@ -534,7 +547,7 @@ def main():
         pre = "[1:v]fps=%s[bg]" % fps_arg
     cmd += [
         "-filter_complex",
-        "%s;[bg][0:v]overlay=0:0:format=auto,format=%s[v]" % (pre, out_pix_fmt),
+        "%s;[bg][0:v]overlay=0:0:format=auto,%s[v]" % (pre, filter_out),
         "-map",
         "[v]",
         "-map",
@@ -560,11 +573,22 @@ def main():
     # Extra ffmpeg options, split with shell rules so quoting works as typed. Output options go
     # just before the output path; global ones go before the first input, where ffmpeg requires
     # them. Inserting rather than replacing keeps the output last, which the guard below checks.
+    global_opts = []
+    if is_vaapi:
+        va_dev = getattr(args, "vaapi_device", "/dev/dri/renderD128")
+        if not os.path.exists(va_dev) and os.path.exists("/dev/dri"):
+            renders = [os.path.join("/dev/dri", f) for f in os.listdir("/dev/dri") if "renderD" in f]
+            if renders:
+                va_dev = sorted(renders)[0]
+        if not args.ffmpeg_global_args or "-init_hw_device" not in args.ffmpeg_global_args:
+            global_opts += ["-init_hw_device", "vaapi=va:%s" % va_dev, "-filter_hw_device", "va"]
     if args.ffmpeg_global_args:
-        cmd[4:4] = shlex.split(args.ffmpeg_global_args)
+        global_opts += shlex.split(args.ffmpeg_global_args)
+    if global_opts:
+        cmd[4:4] = global_opts
     if args.ffmpeg_args:
         cmd[-1:-1] = shlex.split(args.ffmpeg_args)
-    if args.ffmpeg_args or args.ffmpeg_global_args:
+    if args.ffmpeg_args or args.ffmpeg_global_args or is_vaapi:
         print("ffmpeg command:\n  %s" % " ".join(shlex.quote(a) for a in cmd))
 
     # Guard: `-y` lets ffmpeg overwrite its output, and the output must be last. A malformed
