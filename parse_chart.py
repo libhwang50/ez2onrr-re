@@ -18,6 +18,7 @@ Usage
     python3 parse_chart.py --notes <file.ez>          # per-note listing
     python3 parse_chart.py --ezi <file.ezi>           # keysound listing
     python3 parse_chart.py --dir extracted_charts     # every chart in a tree
+    python3 parse_chart.py --backing --ezi f.ezi f.ez # just the full-song keysound
 
 Verified vs. inferred
 ---------------------
@@ -183,6 +184,21 @@ class Chart:
         tpm = self.header['ticksPerMeasure']
         return self.header['totalTicks'] / tpm if tpm else 0.0
 
+    @property
+    def backing_note(self):
+        """The note that triggers the song's pre-mixed backing track, if any.
+
+        Track 22 holds a single type-1 note whose keysound is the whole song (the `MR`
+        sample). Verified on all 5 captured songs, all of which place it at track 22 —
+        positions 0, 96 or 192 ticks. Its filename varies (`00-MR.wav`, `MR.wav`,
+        `99-BG.wav`, and for ae_illusion `mrt22Fix.wav`), so resolve it from the chart,
+        not by name.
+        """
+        if len(self.tracks) <= 22:
+            return None
+        notes = self.tracks[22].notes_of_type(1)
+        return notes[0] if notes else None
+
     def as_dict(self):
         return {'header': self.header,
                 'tracks': [t.as_dict() for t in self.tracks]}
@@ -273,6 +289,13 @@ def summarize_chart(ch):
         '%s=%d' % (NOTE_TYPE_NAMES.get(k, 'type%d' % k), v)
         for k, v in sorted(types.items())))
 
+    bn = ch.backing_note
+    if bn:
+        lines.append('  backing track : keysound %d, %d ticks (%.3f measures) [track 22]'
+                     % (bn.keysound, bn.position, bn.position / (ch.header['ticksPerMeasure'] or 1)))
+    else:
+        lines.append('  backing track : none found (track 22 empty)')
+
     lines.append('  tracks carrying notes:')
     for t in ch.tracks:
         if not t.notes:
@@ -292,6 +315,8 @@ def note_lines(ch, instruments=None):
     yield '# track  role        pos(ticks)  measure  keysound  vel  kind  filename'
     for t in ch.tracks:
         lane = 'lane%d' % (t.index - 3) if 3 <= t.index <= 6 else '-'
+        if t.index == 22:
+            lane = 'BACKING'
         for n in t.notes_of_type(1):
             yield '%-8d %-11s %10d %8.3f %9d %4d  %-4s  %s' % (
                 t.index, lane, n.position, n.position / tpm,
@@ -319,6 +344,8 @@ def main():
     ap.add_argument('--json', metavar='FILE', help='write the parse as JSON')
     ap.add_argument('--notes', action='store_true', help='print a per-note listing')
     ap.add_argument('--ezi', metavar='FILE', help='.ezi to join note listings against')
+    ap.add_argument('--backing', action='store_true',
+                    help='print just the backing-track keysound (the full song)')
     args = ap.parse_args()
 
     files = list(args.paths)
@@ -363,6 +390,19 @@ def main():
 
         ch = parse_ez(data)
         total = sum(len(t.notes) for t in ch.tracks)
+        if args.backing:
+            bn = ch.backing_note
+            if not bn:
+                print('%-52s no backing track (track 22 empty)' % rel)
+            else:
+                name = ''
+                if args.ezi:
+                    name = next((i.filename for i in parse_ezi(load(args.ezi)[0])
+                                 if i.index == bn.keysound), '')
+                print('%-52s keysound %-5d %s' % (rel, bn.keysound, name))
+            results[rel] = {'backing': None if not bn else
+                            {'keysound': bn.keysound, 'position': bn.position}}
+            continue
         if bulk:
             print('%-52s %-10s v%d  %6.2f BPM  %5d events  %3d tracks'
                   % (rel, repr(ch.header['name']), ch.header['version'],

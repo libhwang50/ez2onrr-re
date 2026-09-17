@@ -204,12 +204,24 @@ response, so experiments need no restart.
   * a type-1 note is a **long note iff `flags not in (0, 6)`**; `flags` is the uint16 at
     `params[5:7]`. Normal + long per lane reproduced `normalLanes` exactly.
   The unit of the long-note `flags` value is unknown (it is *not* a tick count).
-* **The `name` field at `0x06` is not the song name** — it is an authoring tag. Observed
-  values: `4-shd`, `#PTMAKE` (presumably built with the in-game pattern maker), and empty.
+* **`name` at `0x06` is not the song name** — it is an authoring tag. Observed values:
+  `4-shd`, `#PTMAKE` (presumably built with the in-game pattern maker), and empty.
   Conflict and Hyper Magic are different songs that both carry `4-shd`.
-* **Tracks other than 3–6 are still unexplained.** Indices 0–21 match the arcade roles and
-  22–63 should be BGM per EZ2AC, but they carry hundreds of note events each (e.g. Conflict
-  track 27 = 694). Their meaning is open; note listings report raw track indices for them.
+* **Track 22 triggers the song's pre-mixed backing track — this is where the full song is.**
+  Every one of the 5 captured songs holds a single type-1 note there (positions 0, 96 or
+  192 ticks) whose keysound is the whole song. Verified by duration: Conflict's MR is
+  159.8 s against a chart-implied 153.8 s, Rebind's 161.8 s against 162.6 s.
+  **The filename varies and cannot be used to find it** — `00-MR.wav`, `MR.wav`,
+  `99-BG.wav`, and for `ae_illusion` `mrt22Fix.wav` ("MR, track 22, fixed", 105.8 s).
+  Resolve it from the chart: `parse_chart.py --backing --ezi f.ezi f.ez`.
+* **Tracks 23–63 are additional auto-played keysound triggers.** Indices 0–21 keep the
+  arcade roles; 22 is the backing trigger. Beyond that they carry hundreds of type-1
+  events each across most of the song (Conflict: track 27 = 694 notes, 229 distinct
+  keysounds, 94 % span; track 28 = 886/200). Every keysound declared in a `.ezi` is
+  referenced by some track — `declared-but-unplayed` is 0 for both songs checked — so
+  the bank is fully sequenced by the chart. Whether the in-game mix is the backing track
+  alone (keysounds being player-hit sounds only) or backing *plus* these layers is **not
+determined**; that needs listening or engine-side audio routing analysis.
 * **Open: note types 5/6/9** (and 8 in some files) are undocumented; the reference
   `ezinfo` reports them as unhandled. Exposed raw by `parse_chart.py`.
 

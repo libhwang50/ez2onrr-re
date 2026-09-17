@@ -97,10 +97,19 @@ python3 parse_chart.py --notes --ezi extracted_charts/_decrypted/cur_conflict_ez
 # every chart under a tree, decrypting captures as needed
 python3 parse_chart.py --dir extracted_charts
 python3 parse_chart.py --dir extracted_charts --json archive.json
+
+# which keysound is the full song? (track 22's note — the filename varies)
+python3 parse_chart.py --backing --ezi song/ezi.ezi song/ez.ez
 ```
 
 `parse_chart.py` also accepts an encrypted payload straight from the CDN, so
 `python3 parse_chart.py extracted_charts/_live/cur_conflict_ez_url.ez` works too.
+
+> **Where is the full song?** Each song's complete audio is the keysound triggered once by
+> **track 22**. For Conflict and Rebind that is `00-MR.flac`, but for `ae_illusion` it is
+> `mrt22Fix.flac` (105.8 s) — so do not search by filename. `--backing` resolves it from
+> the chart. Tracks 23-63 additionally trigger instrument keysounds; whether the in-game
+> mix layers those on top of the backing track is not yet determined (`AGENTS.md` §3.5).
 
 ## ⚠️ Two rules for the Frida tooling
 
