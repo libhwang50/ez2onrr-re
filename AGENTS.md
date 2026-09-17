@@ -241,7 +241,10 @@ the difference between 175.41 s and 153.75 s.
 Both videos run slightly longer than the chart, consistent with a lead-out. Treating the
 time-signature change as a real tempo change would be off by 21 s on Conflict.
 
-`Chart.seconds_at(tick)` and `Chart.note_seconds()` in `parse_chart.py` implement this.
+`Chart.seconds_at(tick)` and `Chart.note_seconds()` in `parse_chart.py` implement this, and
+`render_song.py` uses it to mix every note's keysound into an audio file. All 5 captured
+songs render; Conflict (6393 events, 2719 distinct keysounds) takes ~3 s and comes out
+with a normal mix profile (mean ≈ −17 dB, normalised peak).
 * **Open: note types 5/6/9** (and 8 in some files) are undocumented; the reference
   `ezinfo` reports them as unhandled. Exposed raw by `parse_chart.py`.
 
@@ -371,6 +374,7 @@ User-facing (repo root):
 | `harvest_chart.py` | watch `InGameCore` for chart URLs and fetch them |
 | `decrypt_chart.py` | **decrypt CDN payloads** → `.ez` / `.ezi` plaintext (library + CLI) |
 | `parse_chart.py` | **read decrypted charts** — `.ez` note charts and `.ezi` keysound indexes, as a summary, JSON, or note listing |
+| `render_song.py` | **render a song** — plays every note's keysound at its scheduled time; `--assets auto` matches keysounds by content |
 | `dump_song.py` | **per-song snapshot** — byte-exact CDN archive, decrypted plaintext, `da.rus` buffers + `instrumentDic` |
 | `run_dumper.sh` | Il2CppDumper (blocked by the missing metadata magic) |
 
@@ -407,9 +411,11 @@ header, tracks, note events with normal/long, `.ezi` join; JSON or a note listin
 
 **Next:**
 
-1. Identify note types 5/6/9 against `InGameCore`'s `specialNoteData` / `autoNoteData`.
-2. Explain tracks 22–63 (hundreds of note events each; arcade calls them BGM).
-3. Find what selects the key pair (`svk`/`svm`/`svo`) — it is not in the payload, the CDN
-   path, or `bundleCryptKey`; it looks like an authoring/build-time choice.
-4. Join `parse_chart.py` output against `extract_assets.py` output so a chart's keysounds
-   can be resolved by name across the whole archive (a bulk "make it readable" mode).
+1. Verify a render by ear against the in-game audio, and check whether a long note should
+   sustain its sample (currently it plays once, like a normal note).
+2. Identify note types 5/6/9 against `InGameCore`'s `specialNoteData` / `autoNoteData`.
+3. Record the song id in `ident.json` — `patternFileInfo` is empty when read, so
+   `dump_song.py` falls back to `song_<hash>` and the chart → `extracted_assets` mapping
+   has to be recovered by content matching (`render_song.py --assets auto`).
+4. Find what selects the key pair (`svk`/`svm`/`svo`) — not the payload, the CDN path, or
+   `bundleCryptKey`; it looks like an authoring/build-time choice.

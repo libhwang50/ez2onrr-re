@@ -42,6 +42,7 @@ python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 10
 | `harvest_key.py` | derive `true_key_1024.bin` from live memory |
 | `decrypt_chart.py <cdn_*.bin>` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
 | `parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
+| `render_song.py <song_dir>` | **render the song** — plays every note's keysound at its scheduled time; `--assets auto` matches the keysounds by content |
 
 Then just **play songs**: `dump_song.py` captures each one on entry and writes
 
@@ -110,8 +111,18 @@ python3 parse_chart.py --backing --ezi song/ezi.ezi song/ez.ez
 > The keysound triggered once by **track 22** (`00-MR.flac`, `MR.flac`, or for
 > `ae_illusion` `mrt22Fix.flac`) is **not** the full song — it holds only the instruments
 > too long or too incidental to sample as keysounds (for Rebind, just ambience).
-> `parse_chart.py --backing` finds that layer, and `--notes` lists everything that must be
-> played to reconstruct the song. See `AGENTS.md` §3.5.
+> `parse_chart.py --backing` finds that layer, and `render_song.py` builds the song. See
+> `AGENTS.md` §3.5.
+
+### Rendering a song
+
+```bash
+python3 render_song.py extracted_charts/<song> --assets auto -o song.flac
+```
+
+`--assets auto` resolves which `extracted_assets/<song_id>` belongs to a chart by
+matching the `.ezi` keysound filenames against the files on disk (exact, 100%, for every
+song here). Rendering is fast — Conflict, the largest sample, takes about 3 s.
 
 ## ⚠️ Two rules for the Frida tooling
 
@@ -134,6 +145,7 @@ true_key_1024.bin    master bundle XOR key
 song_index.json      bundle-hash → song index
 extract_assets.py  find_bundle.py  decrypt_all.py
 harvest_key.py  harvest_chart.py  dump_song.py  decrypt_chart.py  parse_chart.py  run_dumper.sh
+render_song.py
 tools/               investigation tooling — see tools/README.md
   il2cpp/  probes/  mitm/  crypto/  legacy/
 data/  logs/  mitm_live/  mitm_parsed/  il2cpp_code/    ignored capture artefacts

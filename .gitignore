@@ -31,3 +31,6 @@ extracted_charts/
 il2cpp_code/
 tools/legacy/*_out.json
 tools/**/*_out.json
+
+# rendered audio (derived from extracted_assets + charts)
+rendered_songs/
