@@ -126,7 +126,8 @@ display. There are no panel backgrounds — labels are outlined instead so the B
 
 The keysound display lists what is *currently sounding*, each in a fixed slot with a lifetime
 bar showing how far through its sample it is, so a long sample stays visible after its note
-fired. A playing keysound keeps its slot until it ends and new ones fill the gaps, so nothing
+fired. The bar is a dark track under a light fill, so it reads on a bright BGA as well as a
+dark one. A playing keysound keeps its slot until it ends and new ones fill the gaps, so nothing
 shifts under the reader. Sample lengths are read from the keysound files, not guessed.
 
 When a BGA is used the overlay adopts its resolution and frame rate (1280x720 at 60 fps for
@@ -134,6 +135,11 @@ Changa 2) and the BGA is passed through unscaled, so the original is preserved. 
 default because quality comes first — `--fps`/`--size` trade it for render time, and a plain
 background defaults to 1280x720 at 30 fps. Encoding defaults to `--crf 18`, near-transparent
 for the BGA, and label outlines scale with the frame (1 px at 720p, `--outline` to override).
+
+A lane lights for `--press-hold` seconds after its note fires (default 0.15) — a key press is
+an event, not a duration. It used to stay lit while the note's *sample* was still sounding, and
+lane samples run up to 7.7 s, so a press could hold a key down for seconds; on chords several
+lanes stuck at once.
 
 `--rows auto` (the default) sizes the keysound display to the chart's peak simultaneous
 keysounds **sampled at the frames actually rendered**, so nothing visible is dropped and no

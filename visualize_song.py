@@ -262,11 +262,18 @@ def draw_frame(img, dr, st):
 
         bx, bwid = x0, st["bar_w"]
         by = yy + row_h / 2 - 3
-        dr.rectangle([bx, by, bx + bwid, by + 6], outline=(255, 255, 255, 120), width=1)
+        # A dark track under a light fill reads on a bright BGA and on a dark one; the old
+        # white outline was invisible against any light passage.
+        dr.rectangle(
+            [bx, by, bx + bwid, by + 6],
+            fill=(0, 0, 0, 120),
+            outline=(0, 0, 0, 200),
+            width=1,
+        )
         if frac > 0:
             dr.rectangle(
                 [bx + 1, by + 1, bx + 1 + int((bwid - 2) * frac), by + 5],
-                fill=(235, 245, 255, 235),
+                fill=(242, 249, 255, 245),
             )
 
         lane = ("%d" % (track - 2)) if track in LANE_TRACK else ("T%d" % track)
@@ -317,6 +324,12 @@ def main():
         default="auto",
         help="keysound slots: an integer, or 'auto' (default) to size them to the chart's "
         "peak simultaneous keysounds, capped so the display fits the frame",
+    )
+    ap.add_argument(
+        "--press-hold",
+        type=float,
+        default=0.15,
+        help="seconds a lane stays lit after its note fires (default 0.15)",
     )
     ap.add_argument("--bga", help="BGA video to composite onto (default: auto-detect)")
     ap.add_argument("--no-bga", action="store_true", help="plain background only")
@@ -639,6 +652,8 @@ def main():
     empty = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     next_i = 0
     dropped = 0
+    press_hold = max(0.0, args.press_hold)
+    recent_presses = []          # (onset, track) for the lane highlight
     try:
         for fi in range(n_frames):
             vt = start + fi / fps_f + args.offset
@@ -649,6 +664,8 @@ def main():
             while next_i < len(events) and events[next_i][0] <= vt:
                 ev = events[next_i]
                 next_i += 1
+                if ev[2] in LANE_TRACK:
+                    recent_presses.append((ev[0], ev[2]))
                 if ev[1] <= vt:
                     continue
                 free = next((i for i, s in enumerate(st["slots"]) if s is None), None)
@@ -657,7 +674,13 @@ def main():
                     free = min(range(len(st["slots"])), key=lambda i: st["slots"][i][1])
                     dropped += 1
                 st["slots"][free] = ev
-            st["active_tracks"] = {s[2] for s in st["slots"] if s}
+            # A key press is an event, not a duration. This used to light a lane while any of
+            # its notes was still *sounding*, so a long sample (a sustained pad, or anything
+            # with a slow release) held the key down for seconds — worst on chords, where
+            # several lanes stuck at once.
+            cutoff = vt - press_hold
+            recent_presses = [(s, t) for s, t in recent_presses if s >= cutoff]
+            st["active_tracks"] = {t for _s, t in recent_presses}
             st["t"] = vt
             img.paste(empty, (0, 0))
             draw_frame(img, dr, st)
