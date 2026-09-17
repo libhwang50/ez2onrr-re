@@ -30,6 +30,7 @@ Requires Pillow and ffmpeg.
 """
 
 import argparse
+import bisect
 import json
 import os
 import re
@@ -49,10 +50,10 @@ MONO_CANDIDATES = (
 )
 
 LANE_TRACK = range(3, 22)  # tracks that can be a playable lane
-DEFAULT_ROWS = 12
 UNKNOWN_SAMPLE = 0.40  # assumed length when a keysound file is missing
 
 SHADOW = (0, 0, 0, 180)  # outline colour behind every label
+MAX_COLS = 4  # keysound display columns, used when one column cannot fit the chart
 
 
 def font(size):
@@ -159,6 +160,25 @@ def build_events(song_dir, assets_root="extracted_assets"):
     return ch, events, names, durations
 
 
+def max_simultaneous(events, times=None):
+    """Peak number of keysounds sounding at once.
+
+    With `times`, only those instants are sampled — normally the frames actually rendered. That
+    matters because a spike can be narrower than a frame: Rebind's true peak is 37 keysounds
+    for about 30 ms, which at 24 fps no frame ever shows, so sizing slots to it would add a
+    column that is always empty. Without `times`, the true peak over the timeline.
+    """
+    starts = sorted(e[0] for e in events)
+    ends = sorted(e[1] for e in events)
+
+    def at(t):
+        return bisect.bisect_right(starts, t) - bisect.bisect_right(ends, t)
+
+    if times is None:
+        return max((at(t) for t in sorted(set(starts) | set(ends))), default=0)
+    return max((at(t) for t in times), default=0)
+
+
 def find_bga(song_dir, assets_root="extracted_assets"):
     stems = set()
     try:
@@ -227,16 +247,19 @@ def draw_frame(img, dr, st):
                 )
 
     # ---- keysound display: fixed slots, no panel, outlined labels ---------- #
-    row_h = st["f_mono"].size + 11
+    row_h = st["row_h"]
     for i, ev in enumerate(st["slots"]):
         if ev is None:
             continue
         start, end, track, ks, fname, is_long = ev
-        yy = st["top"] + i * row_h
+        # column-major: newer keysounds fill the first column before spilling right
+        c, r = divmod(i, st["rows_per_col"])
+        x0 = st["pad"] + c * st["colw"]
+        yy = st["top"] + r * row_h
         frac = 1.0 if end <= start else (t - start) / (end - start)
         frac = max(0.0, min(1.0, frac))
 
-        bx, bwid = st["bx"], st["bar_w"]
+        bx, bwid = x0, st["bar_w"]
         by = yy + row_h / 2 - 3
         dr.rectangle([bx, by, bx + bwid, by + 6], outline=(255, 255, 255, 120), width=1)
         if frac > 0:
@@ -246,12 +269,15 @@ def draw_frame(img, dr, st):
             )
 
         lane = ("%d" % (track - 2)) if track in LANE_TRACK else ("T%d" % track)
-        txt(dr, (st["col_lane"], yy), lane, st["f_mono"], (190, 220, 255, 245), st)
-        txt(dr, (st["col_ks"], yy), "%d" % ks, st["f_mono"], (190, 220, 255, 245), st)
+        txt(dr, (x0 + st["off_lane"], yy), lane, st["f_mono"], (190, 220, 255, 245), st)
+        txt(dr, (x0 + st["off_ks"], yy), "%d" % ks, st["f_mono"], (190, 220, 255, 245), st)
+        name = fname or "(unknown)"
+        if len(name) > st["name_chars"]:
+            name = name[: max(1, st["name_chars"] - 2)] + ".."
         txt(
             dr,
-            (st["col_name"], yy),
-            fname or "(unknown)",
+            (x0 + st["off_name"], yy),
+            name,
             st["f_mono"],
             (250, 215, 130, 250) if is_long else (232, 238, 248, 250),
             st,
@@ -287,9 +313,9 @@ def main():
     )
     ap.add_argument(
         "--rows",
-        type=int,
-        default=DEFAULT_ROWS,
-        help="fixed keysound slots (default %d)" % DEFAULT_ROWS,
+        default="auto",
+        help="keysound slots: an integer, or 'auto' (default) to size them to the chart's "
+        "peak simultaneous keysounds, capped so the display fits the frame",
     )
     ap.add_argument("--bga", help="BGA video to composite onto (default: auto-detect)")
     ap.add_argument("--no-bga", action="store_true", help="plain background only")
@@ -340,7 +366,29 @@ def main():
         sys.exit("%s has no notes" % args.song_dir)
 
     # ---- background, and the format we follow it in ----------------------- #
-    bga = None if args.no_bga else (args.bga or find_bga(args.song_dir))
+    if args.no_bga:
+        bga = None
+    elif args.bga:
+        if not os.path.exists(args.bga):
+            sys.exit("--bga file not found: %s" % args.bga)
+        bga = args.bga
+    else:
+        bga = find_bga(args.song_dir)
+        if not bga:
+            # Say so loudly: this used to fall through to a plain background silently, and a
+            # black frame is easy to mistake for a dark BGA.
+            hint = (chart_label(args.song_dir).get("song") or "").lower()
+            print("!! no extracted BGA found for this chart - the background will be blank.")
+            print("   extract it, then re-run:")
+            print("       python3 extract_assets.py %s --bga"
+                  % (hint or "<song_id>"))
+            print("   (--no-bga silences this, --bga FILE points at one directly)")
+            if os.path.isdir("extracted_assets") and hint:
+                have = [d for d in os.listdir("extracted_assets")
+                        if os.path.isdir(os.path.join("extracted_assets", d))]
+                near = [d for d in have if hint and (hint in d or d in hint)]
+                if near:
+                    print("   extracted asset dirs that look related: %s" % ", ".join(sorted(near)))
     native = probe_video(bga) if bga else None
     if native:
         W, H, fps_f, fps_arg = native
@@ -462,10 +510,6 @@ def main():
     f_mono = font(max(11, H // 58))
     row_h = f_mono.size + 11
     pad = max(14, H // 40)
-    bar_w = max(70, int(W * 0.085))
-    col_lane = pad + bar_w + 12
-    col_ks = col_lane + max(40, int(f_mono.size * 3.4))
-    col_name = col_ks + max(56, int(f_mono.size * 5.0))
     lanes = sorted({e[2] for e in events if e[2] in LANE_TRACK})
     lane_w = max(
         22,
@@ -473,6 +517,43 @@ def main():
             int(H * 0.048), (W - 2 * pad - 6 * max(1, len(lanes))) // max(1, len(lanes))
         ),
     )
+    # ---- keysound slots: size to the chart, in columns if one will not fit ----- #
+    frame_times = [start + i / fps_f for i in range(n_frames)]
+    peak_on_frames = max_simultaneous(events, times=frame_times)
+    peak_true = max_simultaneous(events)
+    if peak_on_frames < peak_true:
+        print("note: true peak is %d keysound(s) but only %d coincide on a rendered frame at "
+              "%.4g fps; sizing to %d." % (peak_true, peak_on_frames, fps_f, peak_on_frames))
+    peak = peak_on_frames
+    fit = max(1, int(H * 0.60 / row_h))              # rows that fit in a single column
+    if str(args.rows).lower() == "auto":
+        wanted = peak
+    else:
+        try:
+            wanted = max(1, int(args.rows))
+        except (TypeError, ValueError):
+            sys.exit("--rows must be an integer or 'auto'")
+    # Rather than dropping keysounds when they exceed the height, spill into more columns.
+    cols = max(1, min(MAX_COLS, (wanted + fit - 1) // fit))
+    rows_per_col = max(1, (wanted + cols - 1) // cols)
+    total = cols * rows_per_col
+    if total < wanted:
+        print("note: %d slots wanted but only %d fit in %d column(s); raise --size for more."
+              % (wanted, total, cols))
+    if total < peak:
+        print("note: %d keysounds sound at once at peak but %d slot(s) are shown, so some are "
+              "evicted." % (peak, total))
+    print("peak simultaneous keysounds: %d -> %d row(s) x %d column(s) = %d slots"
+          % (peak, rows_per_col, cols, total))
+
+    colw = W / float(cols)
+    bar_w = max(40, int(min(W * 0.085, colw * 0.14)))
+    off_lane = bar_w + max(8, int(f_mono.size * 0.7))
+    off_ks = off_lane + max(28, int(f_mono.size * 2.9))
+    off_name = off_ks + max(44, int(f_mono.size * 4.4))
+    # keep names inside their column instead of running into the next one
+    char_w = max(1.0, f_mono.getlength("M") or 1.0)
+    name_chars = max(8, int((colw - pad - off_name - 4) / char_w))
     stroke = args.outline if args.outline is not None else max(1, int(round(H / 720.0)))
     st = dict(
         W=W,
@@ -487,13 +568,16 @@ def main():
         pad=pad,
         lane_w=lane_w,
         lane_h=max(16, f_small.size + 8),
-        bx=pad,
+        colw=colw,
+        rows_per_col=rows_per_col,
         bar_w=bar_w,
-        col_lane=col_lane,
-        col_ks=col_ks,
-        col_name=col_name,
-        top=H - pad - args.rows * row_h,
-        slots=[None] * args.rows,
+        off_lane=off_lane,
+        off_ks=off_ks,
+        off_name=off_name,
+        name_chars=name_chars,
+        row_h=row_h,
+        top=H - pad - rows_per_col * row_h,
+        slots=[None] * total,
         active_tracks=set(),
         t=0.0,
     )

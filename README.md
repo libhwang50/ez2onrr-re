@@ -135,6 +135,14 @@ default because quality comes first — `--fps`/`--size` trade it for render tim
 background defaults to 1280x720 at 30 fps. Encoding defaults to `--crf 18`, near-transparent
 for the BGA, and label outlines scale with the frame (1 px at 720p, `--outline` to override).
 
+`--rows auto` (the default) sizes the keysound display to the chart's peak simultaneous
+keysounds **sampled at the frames actually rendered**, so nothing visible is dropped and no
+column is wasted on a spike the video never shows — Rebind's true peak is 37 keysounds for
+about 30 ms, which at 24 fps no frame catches, so it sizes to 26. When one column cannot fit
+the chart the display spills into up to 4 columns, and key names are truncated per column so
+they cannot run into a neighbour. The visualizer also warns loudly if no BGA has been
+extracted, since a blank background is easy to mistake for a dark one.
+
 The overlay is drawn as RGBA frames piped straight into ffmpeg, which composites it and muxes
 the rendered audio in one pass. Rendering runs at roughly 2x realtime at 1280x720/30fps —
 `--fps`, `--size` and `--until` trade that off.
