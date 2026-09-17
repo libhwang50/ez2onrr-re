@@ -14,7 +14,7 @@ from its CDN. The full technical write-up is in **`AGENTS.md`**.
 | ✅ AssetBundles | first 1,024 bytes XOR-encrypted (`true_key_1024.bin`); everything after is plaintext Unity data |
 | ✅ Keysounds & BGA | extracted byte-exact from raw `TextAsset` / `VideoClip` objects |
 | ✅ API traffic | `game1-play.ez2game.co.kr` decrypted (AES-CBC, live session key) |
-| ⚠️ Charts & keysound index | still encrypted on the CDN — `dump_song.py` archives the payloads byte-exact and snapshots the parsed chart |
+| ✅ Charts & keysound index | **cracked** — `decrypt_chart.py` decrypts CDN payloads offline |
 
 ## Setup
 
@@ -40,6 +40,7 @@ python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 10
 | `harvest_chart.py` | watch `InGameCore` for signed CDN URLs and fetch the chart + index |
 | `dump_song.py [--out DIR] [--interval S]` | **recommended** — per-song byte-exact CDN archive + in-memory snapshot |
 | `harvest_key.py` | derive `true_key_1024.bin` from live memory |
+| `decrypt_chart.py <cdn_*.bin>` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
 
 Then just **play songs**: `dump_song.py` captures each one on entry and writes
 
@@ -47,7 +48,7 @@ Then just **play songs**: `dump_song.py` captures each one on entry and writes
 |---|---|
 | `ident.json` | song identity, signed URLs, field counts, per-lane note counts |
 | `cdn_ez_*.bin`, `cdn_ezi_*.bin` | the CDN payloads, byte-exact as served |
-| `mem_rjl.bin`, `mem_rjm.bin`, `mem_rjn.bin` | the buffers and per-song key the game holds |
+| `mem_rjl.bin`, `mem_rjm.bin`, `mem_rjn.bin` | the buffers and transport key the game holds (the chart key is static — see below) |
 | `instrumentDic.json` | the keysound index as the game parsed it |
 
 into `extracted_charts/<name>_<keymode>_<levelmode>_<gamemode>/`. A `403` on a `cdn_*`
@@ -69,7 +70,19 @@ actually URL expiry, not headers):
 
 Naming follows the EZ2AC arcade convention: **`.ez` is the note chart** (`EZFF` magic) and
 **`.ezi` is the keysound index, which is plain text** (`<index> <velocity> <filename>`).
-Both are served **encrypted**.
+Both are served **encrypted** — see below.
+
+### Decrypting a payload
+
+```bash
+python3 decrypt_chart.py --out extracted_charts/_decrypted extracted_charts/_live/*.ez
+```
+
+The CDN cipher is a fixed keystream XOR followed by AES-256-CBC/PKCS7, with the key and IV
+baked into the binary as static fields of `InGameCore` (`svo`/`svp`, mask tables
+`svq`/`svr`). It is **not** per-song — an earlier per-song-key theory came from
+`bundleCryptKey`, which is a transport record and not the chart key. Full derivation in
+`AGENTS.md` §3.3.
 
 ## ⚠️ Two rules for the Frida tooling
 
@@ -91,7 +104,7 @@ README.md
 true_key_1024.bin    master bundle XOR key
 song_index.json      bundle-hash → song index
 extract_assets.py  find_bundle.py  decrypt_all.py
-harvest_key.py  harvest_chart.py  dump_song.py  run_dumper.sh
+harvest_key.py  harvest_chart.py  dump_song.py  decrypt_chart.py  run_dumper.sh
 tools/               investigation tooling — see tools/README.md
   il2cpp/  probes/  mitm/  crypto/  legacy/
 data/  logs/  mitm_live/  mitm_parsed/  il2cpp_code/    ignored capture artefacts

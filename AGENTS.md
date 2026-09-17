@@ -48,7 +48,8 @@ The full list of crash-causing scripts lives in `tools/README.md`.
 ## 3. Chart delivery
 
 Charts are **not** in the client. On song entry `InGameCore` calls the HTTPS API,
-receives signed CDN URLs plus a per-song key, then downloads and decrypts locally.
+receives signed CDN URLs, then downloads and decrypts locally with a **static** key
+baked into the binary (§3.3).
 
 | | |
 |---|---|
@@ -89,55 +90,57 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
 * **Naming is correct**: `final_url_ez` = the **chart**, `final_url_ezi` = the
   **keysound index** *(supersedes the earlier “inverted” claim)*.
 
-### 3.3 CDN payload cipher — OPEN
+### 3.3 CDN payload cipher — SOLVED
 
-| Proven fact | Evidence |
+**The cipher is `mask ∘ AES-256-CBC/PKCS7`, with the key and IV baked into the binary.**
+Decryptor: `decrypt_chart.py` (repo root).
+
+```
+plaintext = AES_256_CBC_decrypt( unmask(ciphertext), key=InGameCore.svo, iv=InGameCore.svp )
+```
+
+**Stage 1 — `unmask`.** A data-independent, one-pass XOR mask, exactly 64 rounds per
+byte. It depends only on the byte index `ebx`, never on the key or the data, so it is a
+fixed keystream. Tables are the statics `InGameCore.svq` (64 B) and `InGameCore.svr`
+(16 B): `S[i] = svr[svq[i] & 0xf] ^ svq[i]`, and for each `ebx`
+
+```
+r_i = (ebx * i) % 255 ;  if r_i % 10 == 0: r_i = 12      # the `cmove` at 0xac729b
+mask(ebx) = XOR over i in 0..63 of ( S[i] ^ r_i ^ (ebx & 0xff) )
+```
+
+**Stage 2 — AES-256-CBC/PKCS7**, key `InGameCore.svo` (32 B), IV `InGameCore.svp` (16 B).
+Both stages work **in place** on the whole buffer.
+
+**Where it lives.** `InGameCore.dcf` (RVA `0xac71b0`) is the entry point: it runs the
+64-round mask and then **tail-`jmp`s** into `InGameCore.dcg` (RVA `0xac7380`), which
+configures `AesCryptoServiceProvider` — `set_BlockSize(0x80)`, `set_KeySize(0x100)`,
+`set_Key`, `set_IV`, `set_Mode(CBC=1)`, `set_Padding(PKCS7=2)`, `CreateDecryptor()`.
+Callers: the `ft.MoveNext` coroutine and `ff.cuc`.
+
+**Verification (end-to-end).** `cur_conflict_ez_url.ez` → `EZFF` magic, name `4-shd`,
+BPM `160.0`, 64 tracks, 64 `EZTR` blocks, valid PKCS7. `cur_conflict_ezi_url.ezi` →
+2719 plaintext keysound lines whose `index → filename` mapping matches the game's own
+parsed `instrumentDic` **2719/2719**.
+
+#### Corrections to earlier conclusions
+
+| Earlier claim | Reality |
 |---|---|
-| Encrypted, not a native container | XOR of two different charts is random (entropy 7.996; 0 zero-bytes in the first 256) |
-| **Block cipher: CBC + PKCS7, 16-byte block** | zeroing the final 16 B → decrypt error `ErrCode: NIQQ0`; zeroing 16 B at offset 4096 → loads with one localized note change |
-| No integrity check | mid-file corruption is tolerated |
-| Deterministic per song, fixed IV | re-downloading a song yields byte-identical ciphertext |
-| 16-byte constant header | `ct₁ ⊕ ct₂` for two songs is random **except bytes 0x00–0x0F = exactly zero** |
-| Not compressed | post-decrypt deflate/gzip/bz2/lzma/lz4/brotli sweeps → 0 hits |
+| "per-song key" (`bundleCryptKey` / `da.rus.rjn`) | **No.** The chart key/IV are the **static** `svo`/`svp`. `rjn` is a transport/audit record (§4.2) and is not the chart key. |
+| "static analysis cannot find the decryptor; no construction site" | The site is `dcf → dcg`, reachable by scanning for **direct `E8` calls** to the `dc*` cluster. The earlier scan only looked for `RijndaelManaged`/`Aes.Create` ctors, and `dcg` instantiates `AesCryptoServiceProvider` — a site that *was* found but misread. |
+| "`dcg` is inert — sets `BlockSize=256`, CNG rejects it" | **Two errors.** The `0x100` goes to `set_KeySize` (AES-256), not `set_BlockSize` (`0x80` = 128). `dcg` is fully live. Slots are resolved via `SymmetricAlgorithm`'s vtable: `0x238`=`set_KeySize`, `0x1a8`=`set_BlockSize`, `0x1f8`=`set_Key`, `0x1d8`=`set_IV`, `0x258`=`set_Mode`, `0x278`=`set_Padding`. |
+| "`svk`–`svr` are dismissed, not key material" | **They are the cipher.** `svo`/`svp` are the chart key/IV; `svq`/`svr` are the mask tables. |
 
-**Ruled out** — ~2.7 M candidate decryptions against six independent oracles (magic,
-printability, PKCS7 padding validity, `sha256 == url_hash`, entropy/zero-fraction,
-decompress-then-check, and a text oracle for `.ezi`):
+**Why the ~2.7 M-key sweep failed:** it searched the wrong key space (`rjn`/`bundleCryptKey`
+derivations) and, crucially, tested AES directly against the ciphertext — without the
+stage-1 mask, no key can ever produce `EZFF`.
 
-* **Keys:** every 16/24/32-byte window of `rjn`/`bundleCryptKey` (raw, base64, hex) and
-  their MD5/SHA1/SHA256/SHA512 derivations; the 26-blob `a.rn*` table; `svk`–`svr`; all
-  `da`/`qe`/`zf`/`bbk` constants; 517 metadata literals; 325 `CRYPT_KEY` derivations.
-* **Algorithms:** AES-128/192/256 CBC/ECB/CFB/OFB/CTR, ChaCha20, Salsa20,
-  DES/3DES/Blowfish/CAST/RC2/RC4, Rijndael-128/256 (verified implementation).
-* The arcade EZ2AC scheme (subtract a repeating 512-byte keystream, reverse the file) —
-  tested in all modes; no `EZFF`.
-
-**Why the decryptor is invisible to static analysis.** A complete call-site scan for
-`RijndaelManaged..ctor` / `AesCryptoServiceProvider..ctor` / `Aes.Create` /
-`CryptoConfig.CreateFromName` / `CreateDecryptor` finds only 12 sites — all accounted for,
-**none the chart decrypt**:
-
-| Site | Role |
-|---|---|
-| `da.AESEncrypt/Decrypt` | local save files (`LOAD_LOCAL_DATA`, course records, favourites) |
-| `zf.AESEncrypt/Decrypt` | API / TCP session layer |
-| `qe.cal/fal/fam/gvf/jqv`, `bcg/bcf/bch` | **Rewired** `UserDataStore_File` (zip + CLZF2 + AES) |
-| `bbk.*` | game **string** cipher — `Aes.Create()` + base64; key `wdp` / IV `wdq`; does **not** decrypt the chart |
-| `InGameCore.dcg` | inert — sets `BlockSize=256`, which CNG rejects, so it aborts on every input |
-| `ZipAESTransform..ctor` | SharpZipLib |
-
-Crypto is invoked **virtually** (`ICryptoTransform`), so call sites are structurally
-unresolvable from static code; the in-process AES S-box resolves to the **managed BCL**
-`mscorlib/RijndaelManagedTransform.s_Sbox` *(supersedes the “bespoke managed AES” theory)*.
-
-**Also dismissed:** `InGameCore` statics `svk`–`svr`; `da.chn/cin/cik/cqo` (they are
-`Int32->String` table getters); class `a` (a **SHA-256 hash table** — all 10,986 base64
-values decode to exactly 32 bytes, so earlier sweeps that treated it as key material were
-testing hashes).
-
-**Remaining routes:** (a) breakpoint the **virtual** cipher dispatch, out-of-process
-preferably, since in-process hooking crashes the game; (b) reconstruct per song from
-parsed memory; (c) archive the CDN bytes as served.
+**Still open:** the roles of the sibling 32/16-byte pairs `svk`/`svl` and `svm`/`svn`.
+They are wired identically to `svo`/`svp` but do not decrypt `.ez`/`.ezi`; likely they
+guard a different payload type (replay / pattern / other mode). The "16-byte constant
+header" observation (identical `ct[0:16]` across songs) is now explained: a fixed key **and**
+IV over a fixed plaintext preamble.
 
 ### 3.4 MITM oracle — `tools/mitm/_cdn_rewrite.py`
 
@@ -150,12 +153,15 @@ response, so experiments need no restart.
 
 ### 3.5 EZ2AC format lineage
 
-* **`.ez` = note chart**: magic `EZFF`, `0x05` version, `0x06–0x45` internal name,
-  `0x86` ticks/measure, **`0x88` initial BPM (float)**, `0x8C` track count, `0x8E` total
-  ticks, `0x92` other BPM; `EZTR` per-track blocks follow.
+* **`.ez` = note chart**: magic `EZFF`, version byte at `0x05` (observed `0x08`), `0x06–0x45`
+  internal name (NUL-terminated), `0x86` ticks/measure (observed `0xC0`), **`0x88` initial
+  BPM (float)**, `0x8C` track count (u16), `0x8E` total ticks (u32), `0x92` other BPM
+  (float); `EZTR` per-track blocks follow, `count == track count`.
+  Reference sample — Conflict: `4-shd`, BPM 160.0, 64 tracks, 19,680 ticks, 64 `EZTR`.
 * **`.ezi` = keysound index, and it is TEXT**: `[index] [velocity] [filename]` per line,
-  velocity 0/1. Corroboration — MilK: 18,192 B ÷ 807 keysounds = **22.5 B per line**, so
-  the plaintext is uncompressed text exactly as long as its ciphertext.
+  `\r\n` terminated, velocity 0/1, PKCS7-padded at EOF. Corroboration — MilK: 18,192 B ÷
+  807 keysounds = **22.5 B per line**; Conflict: 2,719 lines, mapping verified against the
+  game's parsed `instrumentDic` 2719/2719.
 
 ## 4. Runtime internals
 
@@ -179,7 +185,8 @@ function onMain(fn) {
 ### 4.2 `da.rus` — a transport/audit record, not the parse source
 
 * Static `da.co` at **static offset 840 (0x348)**; fields `rjl`@0x10 (`.ez` ciphertext),
-  `rjm`@0x18 (`.ezi` ciphertext), `rjn`@0x20 (the 48-byte key).
+  `rjm`@0x18 (`.ezi` ciphertext), `rjn`@0x20 (the 48-byte transport key — **not** the chart
+  cipher key; see §3.3).
 * Built at the only `da.co..ctor` caller; `rjn` comes straight from
   `InGameCore.bundleCryptKey` (0x830).
 * `da.co.fhj` `Array.Clear`s all three fields, then the caller sets `da.rus = null` — which
@@ -206,17 +213,61 @@ function onMain(fn) {
   `wdq` (16 B) = `a5cf61a270f467ca7611cfae8bd364a5`.
 * `da.rpr` = API base; `da.ror` / `da.ros` = client version / build.
 
-### 4.4 Symbolication
+### 4.4 Symbolication & code scanning
 
 * `tools/il2cpp/_sym.js` — enumerate all 176,021 methods (97 assemblies) →
   `virtualAddress → Class.method` (~8 s).
-* `tools/il2cpp/_findcallers.js` — scan the ~76 MB code region for `E8 rel32` call sites
-  (~100 s); target keys must be `parseInt(…, 16)`-ed.
+* `tools/il2cpp/_callers.js` — **the workhorse.** Scans the whole module for direct `E8`/`E9`
+  rel32 call/jmp sites targeting given VAs, builds its own 176,021-method symbol map, and
+  attributes every hit to its enclosing method (nearest preceding method VA). Full sweep
+  ≈40 s. This is what located the chart decryptor (`dcf`, and its `jmp` to `dcg`).
+  Supersedes `_findcallers.js`, which had a hardcoded, per-launch-stale module base.
+* `tools/il2cpp/_findcallers.js` — older fixed-base variant; kept for reference.
 * `tools/il2cpp/_staticscan.js` — the correct IL2CPP static-access signature:
   `mov r64,[r64+0xb8]` then `add r64, imm32`. Scanning the displacement form instead
   yields ~90× false positives.
-* `tools/il2cpp/_encl.js` — enclosing-method attribution; a hint only (it reports nonsense
-  for sites far into a large method).
+* `tools/il2cpp/_encl.js` — standalone enclosing-method attribution; `_callers.js` now
+  does this inline.
+
+### 4.4.1 Virtual dispatch is resolvable after all
+
+IL2CPP virtual calls do **not** go through an opaque thunk. The codegen loads a
+`(methodPtr, methodInfo)` pair straight out of the klass struct:
+
+```asm
+mov r8, [obj]            ; klass  (object header @ +0)
+mov r9, [r8 + SLOT]      ; methodPtr
+mov r8, [r8 + SLOT + 8]  ; methodInfo
+call r9
+```
+
+So a virtual call site is a plain `mov reg,[reg+disp32]` — scannable, given the slot.
+Slots are **not** globally unique (they are per-class), but **inherited slots keep their
+offset in derived classes**. For anything deriving from `SymmetricAlgorithm`:
+
+| slot | method |
+|---|---|
+| `0x1a8` | `set_BlockSize` |
+| `0x1d8` | `set_IV` |
+| `0x1f8` | `set_Key` |
+| `0x238` | `set_KeySize` |
+| `0x258` | `set_Mode` |
+| `0x278` | `set_Padding` |
+
+Find a slot with `tools/il2cpp/_slotfind.js` (dumps the klass struct and locates a method’s
+VA at its 8-byte-aligned offset). Reading a klass correctly requires the Il2CppClass layout
+— `name`@0x10, `namespaze`@0x18, `static_fields`@0xb8 — via `_probe_cls.js` / `_mem.js`.
+
+> **JS gotcha that cost time:** `x >>> 32` is `x >>> 0` in JavaScript (shift counts are mod
+> 32). Use `Math.floor(x / 4294967296)` for the high word of a 64-bit address.
+
+### 4.4.2 Static fields
+
+`tools/il2cpp/_statics.js` lists a class’s static fields with static-region offset, type,
+and live length/head for `Byte[]` values. This is how the chart key was extracted:
+`InGameCore` statics `svq`(64)/`svr`(16) are the mask tables and `svo`(32)/`svp`(16) are the
+AES key/IV. Related: `_mem.js` (raw reads, klass name, byte-array dumps),
+`_methods.js` (method VA + field offset listing), `_vt.js` (crypto-class VAs + module base).
 
 ### 4.5 Metadata
 
@@ -257,19 +308,21 @@ Notable: `tools/probes/_poll_da.py` (safe 4 Hz `da.rus` watcher — the pattern 
 | `song_index.json` | bundle-hash → song/asset index |
 | `true_key_1024.bin` | master bundle XOR key |
 
-## 7. Blockers & next steps
+## 7. Status & next steps
 
-**Blocker:** the CDN chart/index cipher. The family is known (CBC + PKCS7, 16-byte block,
-per-song key, fixed IV) and the key is live in `da.rus.rjn` / `InGameCore.bundleCryptKey`,
-but no construction site for the transform exists in the binary and ~2.7 M candidate keys
-failed. Corrupting a chart is tolerated mid-file but rejected at the final block, so a
-padding oracle exists — at one crafted body per query it is not a practical recovery route.
+**No blockers.** Every layer is now solved: AssetBundles, keysounds/BGA, the API session
+cipher, and the CDN chart/index cipher (§3.3, `decrypt_chart.py`).
+
+**Done this session:** located the chart decryptor by scanning for direct calls into the
+`dc*` cluster (`tools/il2cpp/_callers.js`), identified `dcf → dcg` as `mask ∘ AES-256-CBC`,
+extracted the static key material (`svq`/`svr` mask tables, `svo`/`svp` key/IV), and
+verified the result end-to-end (Conflict: `EZFF` header + 2719/2719 keysound-name match).
 
 **Next:**
 
-1. Breakpoint the **virtual** cipher dispatch (out-of-process preferred, given that
-   in-process hooking crashes the game).
-2. Ship value meanwhile: `dump_song.py` for byte-exact CDN archiving, plus per-song
-   reconstruction from parsed memory.
-3. Validate reconstructed output against the reference EZ2AC tooling
-   (`reference/ez2stuff/`, `ezinfo` / `ezins`).
+1. Bulk-decrypt the archived `extracted_charts/` payloads and drop the `.dec` step from
+   the extraction pipeline.
+2. Determine what the sibling statics `svk`/`svl` and `svm`/`svn` protect.
+3. Validate decrypted charts against the reference EZ2AC tooling
+   (`reference/ez2stuff/`, `ezinfo` / `ezins`) and emit `ezinfo`-style note listings.
+4. Fold `decrypt_chart.py` into `dump_song.py` so a captured song lands already plaintext.
