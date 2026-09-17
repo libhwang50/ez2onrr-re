@@ -259,16 +259,16 @@ def safe_dir(name):
 
 
 def capture_name(rt, snap, name_by='variant'):
-    """Directory name for a capture.
+    """Relative directory path for a capture, under the charts root.
 
-    `variant` (default) appends the key mode and difficulty — `destr0yer_5k_hd` — so each
-    variant of a song keeps its own capture instead of replacing whichever was there. The
-    chart differs by mode and difficulty (only the note *assignment* does, but it is still a
+    `variant` (default) nests key mode and difficulty — `destr0yer/5k/hd` — so each variant
+    of a song keeps its own capture instead of replacing whichever was there. The chart
+    differs by mode and difficulty (only the note *assignment* does, but it is still a
     different file), so separating them is the safe default.
 
-    `title` drops the suffix and merges every variant into one directory — fine when you only
-    want the song once, since one chart renders the whole song. `id` uses the numeric music
-    id in place of the name, keeping the variant suffix.
+    `title` drops the nesting and merges every variant into one directory — fine when you only
+    want the song once, since one chart renders the whole song. `id` uses the numeric music id
+    in place of the name, keeping the nesting.
 
     Falls back to `song_<hash>` when the runtime label is unavailable, which is the one case
     where the song is unknown.
@@ -284,12 +284,12 @@ def capture_name(rt, snap, name_by='variant'):
                     resource = str(rec['id'])
             except Exception:
                 pass
+        title = safe_dir(resource)
         if name_by == 'title':
-            return safe_dir(resource)
-        km = KEYMODE_LABEL.get(str(rt.get('keymode')))
-        diff = DIFF_LABEL.get(str(rt.get('levelmode')))
-        parts = [resource, km, diff]
-        return safe_dir('_'.join(str(p) for p in parts if p))
+            return title
+        km = (KEYMODE_LABEL.get(str(rt.get('keymode'))) or '').lower()
+        diff = (DIFF_LABEL.get(str(rt.get('levelmode'))) or '').lower()
+        return os.path.join(*([title] + [p for p in (km, diff) if p]))
     return song_name(snap)
 
 

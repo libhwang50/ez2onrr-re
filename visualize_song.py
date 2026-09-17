@@ -324,8 +324,14 @@ def main():
     )
     args = ap.parse_args()
 
-    song = os.path.basename(os.path.normpath(args.song_dir))
+    # a capture is nested as <song>/<keymode>/<difficulty>, so the basename alone would be
+    # just "shd" — keep the path components in the output name
+    import render_song
+    song = render_song.chart_name(args.song_dir)
     out = args.out or os.path.join("visualizations", "%s.mp4" % song)
+    # `-o somedir/` is a natural thing to type; ffmpeg needs a file, so append the default
+    if out.endswith(os.sep) or os.path.isdir(out):
+        out = os.path.join(out, "%s.mp4" % song)
     if os.path.dirname(out):
         os.makedirs(os.path.dirname(out), exist_ok=True)
 

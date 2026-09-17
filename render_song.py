@@ -223,19 +223,34 @@ def render_one(song_dir, assets, out, rate=44100, gain=1.0, normalize=True, only
     if tag and not written:
         warn += ' [untagged: song not resolved]'
     return ('%-16s %5d events / %4d keysounds  chart %6.2fs -> %6.2fs%s'
-            % (os.path.basename(os.path.normpath(song_dir)), used, len(cache),
+            % (chart_name(song_dir), used, len(cache),
                seconds, len(mix) / rate, warn))
 
 
 def discover_charts(root):
-    """Every subdirectory of `root` that holds both ez.ez and ezi.ezi."""
+    """Every directory under `root` holding both ez.ez and ezi.ezi.
+
+    Returns [(path, name)] where `name` is the path relative to `root` with separators
+    flattened — captures are nested as <song>/<keymode>/<difficulty>, so the basename alone
+    would be just "shd" and collide across songs.
+    """
     found = []
-    for name in sorted(os.listdir(root)):
-        d = os.path.join(root, name)
-        if os.path.isdir(d) and os.path.exists(os.path.join(d, 'ez.ez')) \
-                and os.path.exists(os.path.join(d, 'ezi.ezi')):
-            found.append(d)
-    return found
+    for dirpath, _dirs, files in os.walk(root):
+        if 'ez.ez' in files and 'ezi.ezi' in files:
+            rel = os.path.relpath(dirpath, root)
+            found.append((dirpath, rel.replace(os.sep, '_')))
+    return sorted(found)
+
+
+def chart_name(song_dir, root='extracted_charts'):
+    """A unique, readable name for one capture directory."""
+    try:
+        rel = os.path.relpath(os.path.normpath(song_dir), os.path.normpath(root))
+    except ValueError:
+        rel = os.path.basename(os.path.normpath(song_dir))
+    if rel.startswith('..'):
+        rel = os.path.basename(os.path.normpath(song_dir))
+    return rel.replace(os.sep, '_')
 
 
 def main():
@@ -268,8 +283,8 @@ def main():
             sys.exit('no charts with ez.ez + ezi.ezi under %s' % args.charts)
         print('rendering %d chart(s) -> %s\n' % (len(charts), outdir))
         ok = skipped = 0
-        for d in charts:
-            out = os.path.join(outdir, os.path.basename(os.path.normpath(d)) + '.flac')
+        for d, name in charts:
+            out = os.path.join(outdir, name + '.flac')
             try:
                 print(render_one(d, args.assets, out, **kw))
                 ok += 1
