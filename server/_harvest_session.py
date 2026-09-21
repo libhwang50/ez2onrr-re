@@ -138,15 +138,18 @@ def main():
             misses += 1
             if misses == 3:
                 log(f'reads failing ({e}) — game closed or gadget wedged?')
-            # 3 consecutive failures -> drop the session; the re-attach is
-            # gated on the port-stability grace, so a relaunching game is
-            # never touched mid-startup
+            # 3 consecutive failures -> the game is gone; drop the session AND
+            # the stale key (a relaunch generates a new one - serving the old
+            # key made the client fail its login instantly with the NRE popup)
             if misses >= 3 and script is not None:
                 try:
                     session.detach()
                 except Exception:
                     pass
                 session = script = None
+                if os.path.exists(OUT):
+                    os.remove(OUT)
+                    log('game gone - removed stale session_key.json')
                 log('detached; will re-attach once the next game is past '
                     'its startup window')
                 time.sleep(COOLDOWN)

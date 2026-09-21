@@ -1,0 +1,8 @@
+[05:25:40] errwatch started (attaches once the game is past its startup window)
+[05:25:58] attached; watching for error popups
+[05:26:00] watch error: script has been destroyed
+[05:27:17] game vanished during the grace window; waiting
+[05:27:40] game vanished during the grace window; waiting
+[05:29:18] game vanished during the grace window; waiting
+[05:29:40] attached; watching for error popups
+[05:33:07] watch error: script has been destroyed

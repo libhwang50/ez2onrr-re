@@ -274,6 +274,22 @@ def norm(s):
     return re.sub(r'[^a-z0-9]', '', (s or '').lower())
 
 
+def cloudfront_shaped_signature():
+    """A Signature query-param with the exact shape of a real CloudFront one:
+    base64 of a 2048-bit RSA signature (+->-, /->~, ==->__). The client cannot
+    verify it without CloudFront's private key, but a malformed shape could
+    trip a local sanity check - so we keep the shape honest."""
+    b = base64.b64encode(os.urandom(256)).decode()
+    return b.translate(str.maketrans('+/=', '-~_'))
+
+
+def cdn_url(path):
+    expires = int(time.time()) + 150
+    return (f'https://{CDN_HOST}{path}?Expires={expires}'
+            f'&Signature={cloudfront_shaped_signature()}'
+            f'&Key-Pair-Id=K2L5B5JS5W46ST')
+
+
 def pattern_response(req_json):
     """c2s_get_pattern_file: (musicresourcename, keymode, levelmode) -> URLs.
 
@@ -296,8 +312,8 @@ def pattern_response(req_json):
         return {'result': 0}
     base = f'https://{CDN_HOST}'
     resp = {
-        'final_url_ez': f"{base}{hit['ez_path']}?Expires=4102444800&Signature=private&Key-Pair-Id=K2L5B5JS5W46ST",
-        'final_url_ezi': f"{base}{hit['ezi_path']}?Expires=4102444800&Signature=private&Key-Pair-Id=K2L5B5JS5W46ST",
+        'final_url_ez': cdn_url(hit['ez_path']),
+        'final_url_ezi': cdn_url(hit['ezi_path']),
         'bundleCryptKey': bundle_crypt_key(),
         'result': 1,
     }
