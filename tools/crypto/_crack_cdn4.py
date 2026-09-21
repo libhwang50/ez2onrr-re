@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Test prepended-IV hypotheses + XOR variants for the CDN cipher."""
 import base64, glob
+import os
 from Crypto.Cipher import AES
 
-BCK = "BgpE/G7d3K5q/q831Rp0Zat6X7EepFML+RA13+CDHYoJorvN1YAxfb/Ousio2djw"
+BCK = os.environ.get('EZ2_BUNDLE_CRYPT_KEY', '')
 RAW = base64.b64decode(BCK + '=' * (-len(BCK) % 4))
 ASC = BCK.encode()
-ZF_KEY = b'C7E3C35D846086B6610CF7DEE4F0A192'
-ZF_IV = b'BAE5707397612215'
+ZF_KEY = os.environ.get('EZ2_API_SESSION_KEY', '').encode()
+ZF_IV = os.environ.get('EZ2_API_SESSION_IV', '').encode()
 
 KEYS = [('zf_key', ZF_KEY), ('bck[0:32]', RAW[:32]), ('bck[16:48]', RAW[16:48]),
         ('bck_asc[0:32]', ASC[:32]), ('bck_asc[32:64]', ASC[32:]),

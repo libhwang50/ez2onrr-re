@@ -4,7 +4,7 @@ import json, base64, glob, os, re
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 
-BCK = "BgpE/G7d3K5q/q831Rp0Zat6X7EepFML+RA13+CDHYoJorvN1YAxfb/Ousio2djw"
+BCK = os.environ.get('EZ2_BUNDLE_CRYPT_KEY', '')
 bck_raw = base64.b64decode(BCK + '=' * (-len(BCK) % 4))
 print(f"bundleCryptKey: {len(BCK)} chars -> {len(bck_raw)} bytes")
 print(f"  hex: {bck_raw.hex()}")

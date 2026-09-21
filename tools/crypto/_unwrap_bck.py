@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Hypothesis: bundleCryptKey (48 B) is an ENCRYPTED AesKeyJson, unwrapped with a
 static key (da/qe/zf) to yield [32-byte CDN key][16-byte CDN IV]. Then decrypt CDN."""
-import base64, glob, itertools
+import base64, glob, itertools, os
 from Crypto.Cipher import AES
 
-BCK = "BgpE/G7d3K5q/q831Rp0Zat6X7EepFML+RA13+CDHYoJorvN1YAxfb/Ousio2djw"
+BCK = os.environ.get('EZ2_BUNDLE_CRYPT_KEY', '')
 BCK_RAW = base64.b64decode(BCK + '=' * (-len(BCK) % 4))
 def hx(s): return bytes.fromhex(s)
 
@@ -12,8 +12,11 @@ def hx(s): return bytes.fromhex(s)
 WRAP = {
     'da_ascii': (b'91534567190123456709012745679903', b'0173456089512849'),
     'qe_ascii': (b'31274527810126456489012345678909', b'9824450789003347'),
-    'zf_ascii_old': (b'C7E3C35D846086B6610CF7DEE4F0A192', b'BAE5707397612215'),
-    'zf_hex_old': (hx('C7E3C35D846086B6610CF7DEE4F0A192'), hx('BAE5707397612215')),
+    # old-session zf key: supply via EZ2_API_SESSION_KEY / EZ2_API_SESSION_IV
+    'zf_ascii_old': (os.environ.get('EZ2_API_SESSION_KEY', '').encode(),
+                     os.environ.get('EZ2_API_SESSION_IV', '').encode()),
+    'zf_hex_old': (hx(os.environ.get('EZ2_API_SESSION_KEY', '')),
+                   hx(os.environ.get('EZ2_API_SESSION_IV', ''))),
     'zf_default_ascii': (b'4A6469F1358147858EFD430E44FD8A57', b'F8BECB8836AFA814'),
     'zf_default_hex': (hx('4A6469F1358147858EFD430E44FD8A57'), hx('F8BECB8836AFA814')),
 }

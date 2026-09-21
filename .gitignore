@@ -44,3 +44,11 @@ music_names.json
 
 # visualiser output (derived from charts + BGAs)
 visualizations/
+
+# --- private server (server/) runtime artifacts — never publish ---
+# session_key.json holds the live API session key; data/ holds decrypted
+# templates from your own captures (personal profile, play history, the music
+# DB) and the chart-cipher blob cache. Regenerate with server/_build_data.py.
+server/session_key.json
+server/pserver.log
+server/data/

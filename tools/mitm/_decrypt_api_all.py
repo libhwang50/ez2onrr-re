@@ -4,8 +4,12 @@ import base64, json, os, gzip, zlib
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 
-KEY = b'C7E3C35D846086B6610CF7DEE4F0A192'
-IV  = b'BAE5707397612215'
+# Session keys rotate per launch and are never committed; supply the session
+# that produced your captures:
+#   EZ2_API_SESSION_KEY / EZ2_API_SESSION_IV   (ASCII zf.aes_key / zf.aes_iv)
+#   EZ2_BUNDLE_CRYPT_KEY                       (base64 bundleCryptKey)
+KEY = os.environ.get('EZ2_API_SESSION_KEY', '').encode()
+IV  = os.environ.get('EZ2_API_SESSION_IV', '').encode()
 
 def b64d(s):
     s = ''.join(s.split())

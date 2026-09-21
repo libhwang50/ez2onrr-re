@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Exhaustive key/iv window search over bundleCryptKey for the CDN cipher."""
 import base64, glob
+import os
 from Crypto.Cipher import AES
 
-BCK = "BgpE/G7d3K5q/q831Rp0Zat6X7EepFML+RA13+CDHYoJorvN1YAxfb/Ousio2djw"
+BCK = os.environ.get('EZ2_BUNDLE_CRYPT_KEY', '')
 RAW = base64.b64decode(BCK + '=' * (-len(BCK) % 4))
 ASC = BCK.encode()
-ZF_KEY = b'C7E3C35D846086B6610CF7DEE4F0A192'
-ZF_IV = b'BAE5707397612215'
+ZF_KEY = os.environ.get('EZ2_API_SESSION_KEY', '').encode()
+ZF_IV = os.environ.get('EZ2_API_SESSION_IV', '').encode()
 
 def windows(blob, lens=(16, 24, 32)):
     out = []

@@ -1,8 +1,8 @@
 # EZ2ON REBOOT: R — Reverse Engineering Technical Report
 
-Current state as of 2026-09-18. `README.md` is the user-facing guide; `tools/README.md`
-covers the investigation harness. Superseded conclusions are marked *(supersedes …)*
-rather than kept as narrative.
+Current state as of 2026-09-22. `README.md` is the user-facing guide; `tools/README.md`
+covers the investigation harness; `server/README.md` covers the private server. Superseded
+conclusions are marked *(supersedes …)* rather than kept as narrative.
 
 ## 1. Environment
 
@@ -76,6 +76,7 @@ baked into the binary (§3.3).
 | | |
 |---|---|
 | API | `https://game1-play.ez2game.co.kr/api/` (test host `game1-test99…`) |
+| Rank | `https://game1-rank.ez2game.co.kr/` — plaintext `GET ?data=…`: leaderboards, score upload, battle-server lookup (§3.7) |
 | CDN | CloudFront `game1-cdn.ez2game.co.kr` (`Key-Pair-Id=K2L5B5JS5W46ST`); signed URLs with a **~150 s TTL** |
 | Transport | WinHTTP. `mitmproxy` sees everything (Wine prefix has `ProxyEnable=1`, `ProxyServer=127.0.0.1:8080`) |
 | Control channel | proprietary TCP to `3.37.247.33:4649`, `zf` RSA+AES — not needed for extraction |
@@ -86,10 +87,24 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
 
 * **Key** = the **32 ASCII bytes** of `zf.aes_key` (not hex-decoded); **IV** = the
   **16 ASCII bytes** of `zf.aes_iv`.
-* Both are statics **overwritten at login** → session-scoped, rotating per launch. Read
-  the live values with `il2cpp_field_static_get_value`, never the metadata defaults.
-* Requests share a fixed 16-byte prefix (`d3ad76d3adb846d599fae4c451509c06`) — irrelevant
-  for extraction.
+* **The client generates both itself, per launch** *(supersedes "overwritten at login" as
+  the mechanism)*: `zf.gnf()` draws 32/16 bytes from `RNGCryptoServiceProvider` and
+  hex-encodes them (`BitConverter.ToString` → strip `-`; uppercase). Pre-generation
+  defaults are the metadata placeholders `01234567890123456789012345678901` /
+  `0123456789012345`. Read the live values with `il2cpp_field_static_get_value`, never
+  the metadata defaults.
+* **The key never crosses HTTPS.** `c2s_login` carries no key material: the encrypted
+  `data=` part is `RSA-2048/PKCS1v1.5("")` — an *empty* plaintext, `zf.publicKey` being
+  the baked-in server key (`<RSAKeyValue>` literal; `zf` = `WebManager`) — followed by
+  plaintext form fields `ticket=<Steam auth session ticket, hex>` and
+  `identity=<SteamID or a constant>`. The real server must learn the AES key
+  out-of-band (presumably the raw-TCP control/battle channels, `zf` RSA+AES); a private
+  server reads it from the running game instead (`server/_harvest_session.py`).
+* Request bodies = b64( **magic `d3ad76d3adb8` (6 B)** ‖ AES-CBC-PKCS7(json) )
+  *(supersedes the “fixed 16-byte prefix” reading — that was the magic plus the first
+  ciphertext block, shared across requests only because those requests shared their
+  first plaintext block)*. Responses are plain b64(AES-CBC-PKCS7(json)) — verified
+  byte-for-byte by re-encrypting captured payloads.
 * Decrypted endpoints: `c2s_login`, `c2s_get_myinfo`, `c2s_get_gameinfo` (the
   **1,201-entry music list**) and `c2s_get_pattern_file`.
   Music-list fields: `MUSIC_ID, TITLE, TEMPO, MIN_TEMPO, MAX_TEMPO, VERSION, LEVEL, NOTE,
@@ -104,8 +119,9 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
 | `zf.wx` = `C2S_GET_PATTERN_FILE` | `appid`, `musicresourcename`, `keymode`, `levelmode`, `gamemode` |
 | `zf.wz` | `appid`, `steamId:UInt64[]` |
 
-* **`bundleCryptKey`** — a **96-character hex** string; `da.rus.rjn` is exactly
-  `bytes.fromhex(bundleCryptKey)` (48 bytes). **Session-scoped**: byte-identical for both
+* **`bundleCryptKey`** — a **64-char base64 string decoding to 48 raw bytes** *(supersedes
+  the “96-character hex” reading; `da.rus.rjn` is its base64-decode, not `bytes.fromhex`*,
+  same 48 bytes). **Session-scoped**: byte-identical for both
   songs sampled in one session, so the earlier “per-song” reading is superseded — which
   also retracts the note that had superseded the original per-session claim. It is **not**
   the chart key (§3.3).
@@ -150,7 +166,7 @@ mask(ebx) = XOR over i in 0..63 of ( S[i] ^ r_i ^ (ebx & 0xff) )
 
 | pair | observed on |
 |---|---|
-| `svk`/`svl` | Engine 4K SHD |
+| `svk`/`svl` | Engine 4K SHD, Finite 5K HD |
 | `svm`/`svn` | Change My World 4K SHD, Hyper Magic 4K SHD |
 | `svo`/`svp` | Conflict 4K SHD, Rebind 4K SHD |
 
@@ -354,6 +370,29 @@ in bulk — 5 songs in 11 s (`render_song.py --all`).
 * **Open: note types 5/6/9** (and 8 in some files) are undocumented; the reference
   `ezinfo` reports them as unhandled. Exposed raw by `parse_chart.py`.
 
+### 3.7 Rank server & score upload — partially decoded
+
+`game1-rank.ez2game.co.kr` serves plaintext `GET`s (`?data=…`); requests carry a
+per-request base64 blob (a signature — semantics unverified). Responses are either empty
+(200, `Content-Length: 0`) or a flat CSV.
+
+| query | response |
+|---|---|
+| `get_battle_server_ip` | the battle-server address as plain text (`3.37.247.33:9902`) — raw TCP, bypasses the HTTP proxy entirely |
+| `rating,<steamid>,<sig>` / `totalranking,<steamid>,<sig>` | empty; the in-game rating display survives an empty reply |
+| `plf…` | empty — **the score upload**; the whole record is in the URL |
+| `get<rank_id><keymode><levelmode>,<page>[,<steamid>]` | leaderboard CSV of `rank,score,steamid` triplets |
+
+`plf` fields observed for a Finite 5K HD NEW-RECORD play (placeholders for the personal
+parts): `plf<steamid>,<nickname>,27948,0,5,2,1,-1,<score>,<kool>,<cool>,<good>,<miss>,
+<fail>,0,1,1,4,0,0,50,0,9045`. `27948` is the **rank-server's own song id** (the API's
+`MUSIC_ID` for Finite is 9916 — two separate ID spaces; the leaderboard query uses the
+same id, and its `23` suffix = keymode 2 / levelmode 3). The judgement counts sum to the
+chart's total notes (`NOTE[6]` = 985 for Finite 5K HD — result screen, upload and music
+list all agree), and `9045` = accuracy ×100 (90.45). The middle fields (`0,5,2,1,-1`,
+`0,1,1,4,0,0,50,0`) are unmapped — one play is not enough to pin them; `5` looks like
+the key-mode's key count.
+
 ## 4. Runtime internals
 
 ### 4.1 Managed invocation
@@ -489,6 +528,14 @@ User-facing (repo root):
 | `dump_song.py` | **per-song snapshot** — byte-exact CDN archive, decrypted plaintext, `da.rus` buffers, plus the song/mode/difficulty label read from the running game. `instrumentDic.json` only with `--read-instrument-dic`; a capture is redirected to `<name>_mismatch/` when the chart disagrees with the runtime label; stops the watch when the read path dies |
 | `run_dumper.sh` | Il2CppDumper (blocked by the missing metadata magic) |
 
+Private server (see **`server/README.md`** for the full guide):
+
+| Tool | Purpose |
+|---|---|
+| `server/_pserver.py` | **the private server** — a mitmproxy addon that stubs `game1-play` / `game1-rank` / `game1-cdn` server-side; no extra certs, no hosts edits (the Wine prefix already proxies through mitmproxy and trusts its CA) |
+| `server/_harvest_session.py` | Frida bridge: polls `zf.aes_key`/`aes_iv` at 1 Hz → `server/session_key.json` (the client generates the API session key locally and never sends it — §3.1) |
+| `server/_build_data.py` | rebuild `server/data/` from local captures — decrypted API templates, the chart→CDN map (47 variants / 15 songs), profile overrides |
+
 Investigation tooling — layout, build step and crash warnings: **`tools/README.md`**.
 Drivers are loaded as `bridge + driver` and regenerated with
 `bash tools/il2cpp/build_run.sh`.
@@ -506,6 +553,7 @@ Notable: `tools/probes/_poll_da.py` (safe 4 Hz `da.rus` watcher — the pattern 
 | `EZ2ON REBOOT R/decrypted_bundles/` | decrypted `.unity3d` containers |
 | `song_index.json` | bundle-hash → song/asset index |
 | `true_key_1024.bin` | master bundle XOR key |
+| `server/data/` | generated locally by `server/_build_data.py` — decrypted API response templates, chart→CDN path map, profile overrides. **Git-ignored**: personal data, the music DB, and key material; regenerate from your own captures |
 
 ## 7. Status & next steps
 
@@ -519,6 +567,10 @@ end-to-end (5 songs, 3 key pairs). The 4K lane map and the long-note rule are ve
 against the game's own `normalLanes`, 12/12 lanes exact. `parse_chart.py` reads the result:
 header, tracks, note events with normal/long, `.ezi` join; JSON or a note listing.
 `dump_song.py` now decrypts on capture and waits for the parse before snapshotting.
+The login/session-key protocol is fully mapped (§3.1) and a **basic private server**
+(`server/`) serves a complete online session — login, music list, profile, pattern files,
+CDN charts, rank stubs — with the session key bridged from the running game; wire formats
+verified end-to-end offline, in-game validation in progress.
 
 **Next:**
 
@@ -530,3 +582,9 @@ header, tracks, note events with normal/long, `.ezi` join; JSON or a note listin
    key mode (7K unobserved; 8K seen as `8-ez` but no API label yet).
 4. Find what selects the key pair (`svk`/`svm`/`svo`) — not the payload, the CDN path, or
    `bundleCryptKey`; it looks like an authoring/build-time choice.
+5. Capture one bridge-keyed session (`mitmdump -w` **plus** `server/_harvest_session.py`)
+   to decrypt `c2s_set_game_clear` (48-B response; the server currently guesses
+   `{"result":1}`) and `c2s_get_userinfo` (leaderboard profile fetch), and to pin the
+   unmapped `plf` fields (§3.7).
+6. Make the server Frida-free: patch `zf.gnf` to a fixed session key, or RE the raw-TCP
+   control/battle channel (`zf` RSA+AES) the real server presumably uses to learn the key.

@@ -15,6 +15,30 @@ from its CDN. The full technical write-up is in **`AGENTS.md`**.
 | ✅ Keysounds & BGA | extracted byte-exact from raw `TextAsset` / `VideoClip` objects |
 | ✅ API traffic | `game1-play.ez2game.co.kr` decrypted (AES-CBC, live session key) |
 | ✅ Charts & keysound index | **cracked** — `decrypt_chart.py` decrypts CDN payloads offline |
+| ✅ Basic private server | login → music list → profile → chart download → score upload, all served locally (`server/`) |
+| 🔧 Server in-game validation | wire formats verified offline; first live test pending |
+
+## Private server
+
+`server/` implements a basic private server as a **mitmproxy addon**: the Wine prefix
+already routes the game through mitmproxy and trusts its CA, so the addon simply stubs
+`game1-play` (the AES-CBC API), `game1-rank` (leaderboards, score upload) and
+`game1-cdn` (chart payloads) server-side — no hosts edits, no certificates, no root.
+The one thing the client never puts on the wire is its own API session key, so a small
+Frida bridge reads it from the running game:
+
+```bash
+# terminal 1 — session-key bridge (before starting the game!)
+.venv/bin/python server/_harvest_session.py
+
+# terminal 2 — the server
+mitmdump -s server/_pserver.py
+```
+
+Then start the game as usual; `server/pserver.log` shows every request. Songs with a
+captured chart are playable (47 variants across 15 songs so far); regenerate the data
+from your own captures with `server/_build_data.py`. Full details and caveats:
+**`server/README.md`**.
 
 ## Setup
 
@@ -283,6 +307,7 @@ song_index.json      bundle-hash → song index
 extract_assets.py  find_bundle.py  decrypt_all.py
 harvest_key.py  harvest_chart.py  dump_song.py  decrypt_chart.py  parse_chart.py  run_dumper.sh
 render_song.py
+server/              basic private server (mitmproxy addon + Frida key bridge) — see server/README.md
 tools/               investigation tooling — see tools/README.md
   il2cpp/  probes/  mitm/  crypto/  legacy/
 data/  logs/  mitm_live/  mitm_parsed/  il2cpp_code/    ignored capture artefacts

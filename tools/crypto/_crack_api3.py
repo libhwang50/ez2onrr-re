@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Crack the API session cipher with the RUNTIME zf.aes_key/aes_iv session keys."""
-import json, base64, urllib.parse, glob
+import json, base64, urllib.parse, glob, os
 from Crypto.Cipher import AES
 
 def hx(s): return bytes.fromhex(s)
 
-ZF_KEY_HEX = 'C7E3C35D846086B6610CF7DEE4F0A192'
-ZF_IV_HEX  = 'BAE5707397612215'
+# Session keys rotate per launch and are never committed; supply the session
+# that produced your captures:
+#   EZ2_API_SESSION_KEY / EZ2_API_SESSION_IV   (ASCII zf.aes_key / zf.aes_iv)
+#   EZ2_BUNDLE_CRYPT_KEY                       (base64 bundleCryptKey)
+ZF_KEY_HEX = os.environ.get('EZ2_API_SESSION_KEY', '')
+ZF_IV_HEX  = os.environ.get('EZ2_API_SESSION_IV', '')
 FIXED_IV   = hx('d3ad76d3adb846d599fae4c451509c06')
 
 KEYS = {

@@ -3,10 +3,10 @@
 import base64, glob, os, gzip, zlib, lzma, bz2
 from Crypto.Cipher import AES
 
-BCK = "BgpE/G7d3K5q/q831Rp0Zat6X7EepFML+RA13+CDHYoJorvN1YAxfb/Ousio2djw"
+BCK = os.environ.get('EZ2_BUNDLE_CRYPT_KEY', '')
 BCK_RAW = base64.b64decode(BCK + '=' * (-len(BCK) % 4))
-ZF_KEY = b'C7E3C35D846086B6610CF7DEE4F0A192'   # ascii, 32 bytes
-ZF_IV  = b'BAE5707397612215'                  # ascii, 16 bytes
+ZF_KEY = os.environ.get('EZ2_API_SESSION_KEY', '').encode()
+ZF_IV  = os.environ.get('EZ2_API_SESSION_IV', '').encode()
 
 def hx(s): return bytes.fromhex(s)
 SV = {

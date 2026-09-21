@@ -12,7 +12,7 @@ Usage
 -----
     python3 label_charts.py                       # writes chart_labels.json
     python3 label_charts.py --mitm mitm_parsed -o chart_labels.json
-    python3 label_charts.py --key C7E3... --iv BAE5...
+    python3 label_charts.py --key <EZ2_API_SESSION_KEY> --iv <EZ2_API_SESSION_IV>
 
 Note the session key/IV: they are static fields on `zf`, overwritten at login, so captures
 from a different session need that session's values. Harvest them live with
@@ -29,9 +29,12 @@ import urllib.parse
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 
-# values from the session that produced the captures in mitm_parsed/
-DEFAULT_KEY = 'C7E3C35D846086B6610CF7DEE4F0A192'
-DEFAULT_IV = 'BAE5707397612215'
+# Session keys rotate per launch and are never committed; supply the session
+# that produced your captures:
+#   EZ2_API_SESSION_KEY / EZ2_API_SESSION_IV   (ASCII zf.aes_key / zf.aes_iv)
+#   EZ2_BUNDLE_CRYPT_KEY                       (base64 bundleCryptKey)
+DEFAULT_KEY = os.environ.get('EZ2_API_SESSION_KEY', '')
+DEFAULT_IV = os.environ.get('EZ2_API_SESSION_IV', '')
 
 # Request bodies carry a 6-byte header before the AES-CBC ciphertext.
 REQ_HEADER = 6
