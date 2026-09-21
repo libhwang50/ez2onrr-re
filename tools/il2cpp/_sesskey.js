@@ -59,15 +59,15 @@ rpc.exports.hunt = function (korean) {
     // 2. parse each thunk body for (idx, off, len)
     const parseThunk = (va) => {
       const b = new Uint8Array(va.readByteArray(0x40));
-      let idx = null, off = null, len = null, callRel = null;
+      let idx = null, off = null, len = null, callRel = null, callOff = null;
       for (let i = 0; i + 5 <= b.length; i++) {
         if (b[i] === 0xb9) idx = b[i+1] | (b[i+2] << 8) | (b[i+3] << 16) | ((b[i+4] << 24) >>> 0);
         if (b[i] === 0xba) off = (b[i+1] | (b[i+2] << 8) | (b[i+3] << 16) | ((b[i+4] << 24) >>> 0)) >>> 0;
         if (b[i] === 0x41 && b[i+1] === 0xb8) len = b[i+2] | (b[i+3] << 8) | (b[i+4] << 16) | ((b[i+5] << 24) >>> 0);
         if (b[i] === 0x45 && b[i+1] === 0x31 && b[i+2] === 0xc0) len = 0;
-        if (b[i] === 0xe8) { callRel = b[i+1] | (b[i+2] << 8) | (b[i+3] << 16) | (b[i+4] << 24); break; }
+        if (b[i] === 0xe8) { callRel = b[i+1] | (b[i+2] << 8) | (b[i+3] << 16) | (b[i+4] << 24); callOff = i; break; }
       }
-      return { idx, off, len, helper: callRel === null ? null : va.add(i + 5 + callRel) };
+      return { idx, off, len, helper: callOff === null ? null : va.add(callOff + 5 + callRel) };
     };
     const parsed = thunks.map(t => ({ va: t.va.toString(16), ...parseThunk(t.va) }));
     out.cctorParsed = parsed;
