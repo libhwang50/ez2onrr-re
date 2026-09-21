@@ -98,17 +98,37 @@ rpc.exports.hunt = function (korean) {
     }
     out.literalSites = sites.length;
 
-    // 2. the Korean literal data: scan module-adjacent readable ranges
-    const kPat = utf16hex(korean).match(/../g).join(' ');
+    // 2. the Korean literal data. The literal region was located in a previous
+    //    session at 0x6ffff96ba736 (same module base every launch), so verify
+    //    that address first; the general bounded scan is the fallback.
+    const KOREAN_HINT = '0x6ffff96ba736';
     const kHits = [];
-    for (const r of Process.enumerateRanges({ protection: 'r--', coalesce: true })
-        .concat(Process.enumerateRanges({ protection: 'rw-', coalesce: true }))) {
-      if (r.base.compare(base) < 0 || r.base.compare(base.add(0x10000000)) >= 0) continue;
-      try { for (const m of Memory.scanSync(r.base, r.size, kPat)) {
-        kHits.push(m.address); if (kHits.length >= 8) break;
-      } } catch (e) {}
+    try {
+      const t = ptr(KOREAN_HINT).readUtf16String(24);
+      if (t && t.startsWith(korean.slice(0, 8))) kHits.push(ptr(KOREAN_HINT));
+    } catch (e) {}
+    if (kHits.length === 0) {
+      const kPat = utf16hex(korean).match(/../g).join(' ');
+      const W0 = base, W1 = base.add(0x10000000);
+      let budget = 400000000;
+      for (const r of Process.enumerateRanges({ protection: 'r--', coalesce: true })
+          .concat(Process.enumerateRanges({ protection: 'rw-', coalesce: true }))) {
+        if (budget <= 0) break;
+        // INTERSECT the range with the window - never scan a whole giant range
+        const s = r.base.compare(W0) > 0 ? r.base : W0;
+        const eEnd = r.base.add(r.size);
+        const e = eEnd.compare(W1) > 0 ? W1 : eEnd;
+        if (s.compare(e) >= 0) continue;
+        const n = e.sub(s).toInt32();
+        budget -= n;
+        try { for (const m of Memory.scanSync(s, n, kPat)) {
+          kHits.push(m.address); if (kHits.length >= 8) break;
+        } } catch (e) {}
+        if (kHits.length >= 8) break;
+      }
     }
     out.koreanHits = kHits.map(a => a.toString(16));
+    if (kHits.length === 0) return JSON.stringify({ ...out, err: 'korean literal not found' });
 
     // 3. dump the data region around each Korean hit (clamped to its mapping)
     //    so the neighbouring literals and their exact offsets can be resolved
