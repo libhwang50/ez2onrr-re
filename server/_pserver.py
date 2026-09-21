@@ -62,8 +62,25 @@ TEMPLATES = {}
 CDN_PATHS = {}
 CHARTS = []
 PROFILE = {}
+_profile_mtime = 0
 BATTLE_SERVER = '3.37.247.33:9902'
 RANK_CSV_SAMPLE = ''
+
+
+def get_profile():
+    """Re-read profile.json whenever its mtime changes, so edits apply live."""
+    global PROFILE, _profile_mtime
+    p = os.path.join(DATA, 'profile.json')
+    try:
+        m = os.stat(p).st_mtime
+        if m != _profile_mtime:
+            d = json.load(open(p))
+            PROFILE = {k: v for k, v in d.items() if not k.startswith('_')}
+            _profile_mtime = m
+            log(f'profile.json reloaded: {PROFILE}')
+    except Exception:
+        pass
+    return PROFILE
 
 
 def log(*a):
@@ -85,6 +102,7 @@ def load_data():
     p = os.path.join(DATA, 'rank_sample.csv')
     if os.path.exists(p):
         RANK_CSV_SAMPLE = open(p).read().strip()
+    get_profile()
     log(f'data loaded: templates={sorted(TEMPLATES)} cdn={len(CDN_PATHS)} charts={len(CHARTS)}')
 
 
@@ -166,11 +184,13 @@ def encrypt_response(json_obj) -> bytes:
 
 def apply_profile(d):
     """Merge profile overrides into a member/memberinfo dict (recursive)."""
+    prof = get_profile()
+
     def walk(o):
         if isinstance(o, dict):
             for k, v in o.items():
-                if k in PROFILE:
-                    o[k] = PROFILE[k]
+                if k in prof:
+                    o[k] = prof[k]
                 else:
                     walk(v)
         elif isinstance(o, list):
@@ -339,7 +359,10 @@ def handle_rank(flow: http.HTTPFlow):
         log(f'score upload: {urllib.parse.unquote(q)[:200]}')
         body = b''
     else:
-        # rating / totalranking / misc — captured as Content-Length: 0
+        # rating / totalranking / getcoursedata / misc — empty matches the
+        # official servers' own responses
+        if not q.startswith(('rating', 'totalranking')):
+            log(f'rank query served empty: {q[:120]}')
         body = b''
     flow.response = http.Response.make(
         200, body, {'Content-Type': 'application/json'})
