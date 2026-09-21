@@ -88,6 +88,10 @@ def log(*a):
 
 
 def load_data():
+    global BATTLE_SERVER
+    p = os.path.join(DATA, 'battle_server.txt')
+    if os.path.exists(p):
+        BATTLE_SERVER = open(p).read().strip() or BATTLE_SERVER
     for name in ('login', 'myinfo', 'gameinfo'):
         p = os.path.join(DATA, name + '.json')
         if os.path.exists(p):
