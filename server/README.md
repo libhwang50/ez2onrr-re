@@ -94,6 +94,13 @@ login request; without a key the login can only fail — the client pops
 "Object reference not set…" and OK quits the game, because a response
 cannot be encrypted without the key.)
 
+⚠ The harvester never attaches while the game is starting up: an attach during
+the early startup window kills the process instantly (no crash handler). It
+watches the Gadget's TCP port and attaches only after it has been listening
+continuously for `EZ2_HARVEST_GRACE` seconds (default 15; raise it if you ever
+see a launch die silently, lower it if the private-server login ever times out
+on a cold launch).
+
 Notes:
 
 * The Wine proxy must point at the mitmdump instance (`ProxyEnable=1`,

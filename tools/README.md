@@ -67,6 +67,12 @@ evidence, not as tools:
   *cold* cipher constructors that run once per cipher.
 * **High-frequency in-process polling** (the 10 ms `Il2Cpp.perform` loop) on top
   of either of the above.
+* **Attaching during the game's early startup** (before the main window exists)
+  — even a read-only bridge script kills the process instantly, no crash
+  handler. This bit the private server's auto-re-attaching key harvester, which
+  now waits for the Gadget's TCP port to be listening continuously for a grace
+  period (`EZ2_HARVEST_GRACE`, 15 s default) before attaching
+  (`server/_harvest_session.py`).
 
 Two further hazards, learned later, that are **not** about hooking:
 
