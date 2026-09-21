@@ -408,6 +408,22 @@ response length **varies** (48 B after a new-record play, 64 B without). `rating
 `totalranking` were empty in every captured session, and `plf` uploads happen for
 non-record plays too.
 
+**Chart-load failure 8CN26 — the files are NOT the problem.** A private-server
+chart load that fails with "게임 파일이 손상되었습니다 … ErrCode: 8CN26" has, at the
+error popup, already **downloaded, decrypted and parsed everything**: live-state
+reads showed 5 lanes with notes populated, `instrumentDic` = 1131 = exactly the
+served `.ezi` line count, and `da.rus` holding the exact ciphertext sizes. The
+verdict is a **post-parse, session-dependent check**. Ruled out by experiment:
+the URL shape (fresh Expires + well-formed 344-char signature still fails) and
+the control channel *audit being skippable when blackholed* (`battle_server.txt`
+→ `127.0.0.1:1` produced zero connections to the real server and the same
+error). The remaining difference vs a working load: a genuine server session
+over the **control channel (TCP 4649)** — where `da.rus` (ciphertexts + key) is
+relayed and/or keysound audio flows. The in-game error popup embeds a
+Bugsnag-style reporter (`event.applecrashreport`, `event.view_hierarchy`) and
+its full text (Unity TMP rich text, `<size=28>로딩 실패</size>`) is capturable
+from memory but memory scanning proved non-deterministically crash-prone.
+
 **Private-server trap:** an unhandled exception inside a mitmproxy addon hook does *not*
 abort the request — mitmproxy logs it and **forwards the request to the real upstream**.
 The first `server/_pserver.py` test therefore mixed real and private responses
@@ -613,7 +629,12 @@ verified end-to-end offline, in-game validation in progress.
    control/battle channel (`zf` RSA+AES) the real server presumably uses to learn the key.
 7. Broaden chart coverage in `server/data/` (uncaptured songs fail with `result:0` and
    the client retries 5× before booting to the main screen — e.g. Hyper Magic 5K HD).
-8. Persist progression: feed accepted `plf` uploads back into the served myinfo
+8. **RE the control channel (TCP 4649, `zf` RSA+AES)** — the last blocker for chart
+   loads on a private session (see the 8CN26 findings in §3.7). Capture with
+   `sudo tcpdump -i any -w control.pcap host 3.37.247.33` during official *and* private
+   sessions (harvester running - the AES layer is likely keyed with the harvested
+   `zf.aes_key`/`aes_iv`), then diff.
+9. Persist progression: feed accepted `plf` uploads back into the served myinfo
    `clearlist` so scores/records survive across sessions (the client computes its
    per-key-mode rating from that data — §3.7), and RE the exact per-mode rating
    formula if precise control is wanted.
