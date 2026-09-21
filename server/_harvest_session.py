@@ -117,6 +117,7 @@ def main():
     session = script = None
     last = None
     misses = 0
+    hunt_done = False
     while _running:
         time.sleep(1.0)
         try:
@@ -133,6 +134,18 @@ def main():
             if len(key) == 32 and len(iv) == 16 and (key, iv) != last:
                 write_key(key, iv)
                 last = (key, iv)
+                # one-shot error-site hunt (env-gated): runs the heavy literal
+                # scan INSIDE this session - never open a second Frida session
+                if os.environ.get('EZ2_HUNT') and not hunt_done:
+                    hunt_done = True
+                    log('EZ2_HUNT: hunting the error site (this blocks key '
+                        'polling for a couple of minutes)…')
+                    try:
+                        res = script.exports_sync.hunt('게임 파일이 손상되었습니다')
+                        open(os.path.join(ROOT, 'server', 'hunt_result.json'), 'w').write(res)
+                        log('hunt result -> server/hunt_result.json')
+                    except Exception as e:
+                        log(f'hunt failed: {e}')
             misses = 0
         except Exception as e:
             misses += 1
