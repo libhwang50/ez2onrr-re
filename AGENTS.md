@@ -398,6 +398,16 @@ the key-mode's key count — but one mode pair is not enough to pin them.
 **The client fetches the `.ezi` and `.ez` in either order**, and retries a failing
 chart download **5 times** (3 s apart) before booting the song to the main screen.
 
+**Leaderboard structure** (from a full official-server session): one query returns the
+**whole Top100** (`get2794823,0` ≈ 2890 B ≈ 100 × 29 B of `rank,score,steamid`) — the
+client pages it locally. **MyRange** = `get<rank_id><km><lm>,1,<steamid>` (~3105 B
+covering the requester's own region) and is re-queried on every view. Each displayed
+page of 10 players triggers one `c2s_get_userinfo` (response ≈ 832 B for 10 profiles ≈
+80 B/profile — a compact profile list, fields still uncaptured). `set_game_clear`
+response length **varies** (48 B after a new-record play, 64 B without). `rating` /
+`totalranking` were empty in every captured session, and `plf` uploads happen for
+non-record plays too.
+
 **Private-server trap:** an unhandled exception inside a mitmproxy addon hook does *not*
 abort the request — mitmproxy logs it and **forwards the request to the real upstream**.
 The first `server/_pserver.py` test therefore mixed real and private responses
@@ -594,9 +604,11 @@ verified end-to-end offline, in-game validation in progress.
 4. Find what selects the key pair (`svk`/`svm`/`svo`) — not the payload, the CDN path, or
    `bundleCryptKey`; it looks like an authoring/build-time choice.
 5. Capture a bridge-keyed session **of the real servers** (plain `mitmdump -w` **plus**
-   `server/_harvest_session.py`, addon disabled) to decrypt the real `c2s_set_game_clear`
-   response (48 B) and the real `c2s_get_userinfo` response (list shape) — the private
-   server currently guesses both. Also pins the unmapped `plf` fields (§3.7).
+   `server/_harvest_session.py` running — the auto-reattach harvester makes the ordering
+   irrelevant) to decrypt the real `c2s_set_game_clear` response (48/64 B, length varies)
+   and the real `c2s_get_userinfo` response (≈832 B / 10 profiles). A first attempt
+   captured the traffic but not the key — the API bodies of that dump are sealed. Also
+   pins the constant `plf` fields (§3.7).
 6. Make the server Frida-free: patch `zf.gnf` to a fixed session key, or RE the raw-TCP
    control/battle channel (`zf` RSA+AES) the real server presumably uses to learn the key.
 7. Broaden chart coverage in `server/data/` (uncaptured songs fail with `result:0` and

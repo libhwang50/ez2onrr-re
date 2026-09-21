@@ -191,10 +191,13 @@ def handle_api(flow: http.HTTPFlow):
 
     if endpoint == 'c2s_login':
         # wait briefly for the harvester — the client generates the key just
-        # before this request lands
-        for _ in range(20):
+        # before this request lands, and the harvester may still be re-
+        # attaching after a game restart. The client's own timeout is the limit.
+        waited = False
+        for _ in range(60):          # up to 15 s
             if session_key():
                 break
+            waited = True
             time.sleep(0.25)
         sk = session_key()
         if sk is None:
@@ -204,6 +207,8 @@ def handle_api(flow: http.HTTPFlow):
                 502, b'private server: no session key',
                 {'Content-Type': 'text/plain'})
             return
+        if waited:
+            log('login: key arrived while waiting')
         log(f"login: serving template under key {sk[0][:8].decode()}... "
             f"(key file {sk[2]:.0f}s old)")
         tpl = TEMPLATES.get('login')
@@ -326,7 +331,10 @@ def handle_rank(flow: http.HTTPFlow):
     if arg == 'get_battle_server_ip':
         body = BATTLE_SERVER.encode()
     elif q.startswith('get') and q != 'get_battle_server_ip' and arg[3:].isdigit():
-        body = RANK_CSV_SAMPLE.encode()
+        # a leaderboard query — serve the real captured CSV when we have it
+        # (Top100 / MyRange for a captured song), else the static sample
+        csv = os.path.join(DATA, 'rank_csv', q.replace(',', '_') + '.csv')
+        body = open(csv).read().encode() if os.path.exists(csv) else RANK_CSV_SAMPLE.encode()
     elif q.startswith('plf'):
         log(f'score upload: {urllib.parse.unquote(q)[:200]}')
         body = b''

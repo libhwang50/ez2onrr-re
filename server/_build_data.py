@@ -151,6 +151,28 @@ def main():
     for c in charts:
         print(f"  {c['song']:14s} keymode={c['keymode']} levelmode={c['levelmode']}")
 
+    # ---- real leaderboard CSVs from an official-server capture (if present) ----
+    rp = os.path.join(ROOT, 'mitm_parsed', 'replay_official', 'flows.jsonl')
+    if os.path.exists(rp):
+        import urllib.parse
+        seen = {}
+        for line in open(rp):
+            rec = json.loads(line)
+            if 'game1-rank' not in rec['host'] or rec['status'] != 200:
+                continue
+            q = rec['path'].split('data=', 1)[1] if 'data=' in rec['path'] else ''
+            q = urllib.parse.unquote(q)
+            body = rec.get('resp_body_text')
+            if not body or q.startswith('plf') or q == 'get_battle_server_ip':
+                continue
+            if q not in seen or len(seen[q]) < len(body):
+                seen[q] = body
+        os.makedirs(os.path.join(OUT, 'rank_csv'), exist_ok=True)
+        for q, body in seen.items():
+            fn = 'rank_csv/' + q.replace(',', '_').replace('/', '') + '.csv'
+            open(os.path.join(OUT, fn), 'w').write(body)
+        print(f'rank_csv/: {len(seen)} real leaderboard responses')
+
 
 if __name__ == '__main__':
     sys.exit(main())

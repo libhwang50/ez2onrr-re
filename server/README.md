@@ -58,7 +58,8 @@ exit; tune `data/userinfo_entry.json` if that appears.
 | `data/profile.json` | your member-field overrides (`NICKNAME`, `LEVEL`, `RATING`, …) |
 | `data/charts.json` | (song, keymode, levelmode) → CDN paths, 47 variants / 15 songs |
 | `data/cdn_paths.json` | CDN path → local ciphertext file (126 paths) |
-| `data/rank_sample.csv` | leaderboard body served for `get<id><km><lm>,<page>` |
+| `data/rank_sample.csv` | fallback leaderboard body when no exact capture matches |
+| `data/rank_csv/` | real leaderboard CSVs per query (Top100 / MyRange of captured songs), served exactly |
 | `data/userinfo_entry.json` | one leaderboard-profile entry, cloned per requested SteamID (shape = best guess until a real capture) |
 | `data/bundleCryptKey.txt` | value served as `bundleCryptKey` (transport/audit record, §4.2) |
 | `data/set_game_clear.json` | optional override for `c2s_set_game_clear` (default `{"result":1}`) |
@@ -77,7 +78,7 @@ export EZ2_API_SESSION_IV=<16-char ASCII zf.aes_iv of that session>
 ## Running
 
 ```bash
-# terminal 1 — session-key bridge (before starting the game!)
+# terminal 1 — session-key bridge (start once, leave running)
 .venv/bin/python server/_harvest_session.py
 
 # terminal 2 — the server
@@ -86,19 +87,25 @@ mitmdump -s server/_pserver.py
 
 Then start the game normally. Watch `server/pserver.log`.
 
+**Ordering no longer matters** — the harvester auto-re-attaches when the game
+restarts, and the login handler waits up to 15 s for the key. Start the
+harvester once and forget it. (The game generates its session key before the
+login request; without a key the login can only fail — the client pops
+"Object reference not set…" and OK quits the game, because a response
+cannot be encrypted without the key.)
+
 Notes:
 
 * The Wine proxy must point at the mitmdump instance (`ProxyEnable=1`,
   `ProxyServer=127.0.0.1:8080`) — the same setting used for every capture so far.
-* The harvester deletes a stale `session_key.json` on startup and re-attaches
-  when the game restarts — start it once and leave it running.
 * Pattern lookup is **exact-match only** (song + keymode + levelmode): serving a
   different difficulty's chart would load wrong notes. Uncaptured songs fail
   with `result:0`; the client retries 5× then boots to the main screen.
 * Only songs with a captured chart are playable (see `charts.json`); add more by
   running `dump_song.py`/captures and re-running `_build_data.py`.
-* Score uploads (`plf…`) are logged but stored nowhere yet; the leaderboard
-  served is a static sample.
+* Score uploads (`plf…`) are logged but stored nowhere yet; leaderboards serve
+  real captured CSVs when available (`data/rank_csv/`, Top100 + MyRange for
+  Finite) and fall back to a static sample.
 
 ## Known simplifications / next steps
 
