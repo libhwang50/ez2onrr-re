@@ -379,7 +379,7 @@ per-request base64 blob (a signature — semantics unverified). Responses are ei
 | query | response |
 |---|---|
 | `get_battle_server_ip` | the battle-server address as plain text (`3.37.247.33:9902`) — raw TCP, bypasses the HTTP proxy entirely |
-| `rating,<steamid>,<sig>` / `totalranking,<steamid>,<sig>` | empty; the in-game rating display survives an empty reply |
+| `rating,<steamid>,<sig>` / `totalranking,<steamid>,<sig>` | empty; the in-game rating display survives an empty reply — because the displayed rating is **computed client-side and is per key mode** (a server serving one static myinfo `RATING` still shows distinct per-mode values, e.g. 4K ≠ 5K, that drift as you play; most likely derived from the `clearlist` best-rates × chart levels). The myinfo `RATING` field is not the displayed number |
 | `plf…` | empty — **the score upload**; the whole record is in the URL |
 | `get<rank_id><keymode><levelmode>,<page>[,<steamid>]` | leaderboard CSV of `rank,score,steamid` triplets |
 
@@ -613,3 +613,7 @@ verified end-to-end offline, in-game validation in progress.
    control/battle channel (`zf` RSA+AES) the real server presumably uses to learn the key.
 7. Broaden chart coverage in `server/data/` (uncaptured songs fail with `result:0` and
    the client retries 5× before booting to the main screen — e.g. Hyper Magic 5K HD).
+8. Persist progression: feed accepted `plf` uploads back into the served myinfo
+   `clearlist` so scores/records survive across sessions (the client computes its
+   per-key-mode rating from that data — §3.7), and RE the exact per-mode rating
+   formula if precise control is wanted.

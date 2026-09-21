@@ -55,7 +55,7 @@ exit; tune `data/userinfo_entry.json` if that appears.
 | `data/login.json` | `c2s_login` response template (real, captured) |
 | `data/myinfo.json` | `c2s_get_myinfo` template — `clearlist`, `memberinfo`, … |
 | `data/gameinfo.json` | `c2s_get_gameinfo` template — the 1,201-entry music list |
-| `data/profile.json` | your member-field overrides (`NICKNAME`, `LEVEL`, `RATING`, …) |
+| `data/profile.json` | your member-field overrides (`NICKNAME`, `LEVEL`, …). Note: the in-game rating shown per key mode is **computed client-side** from your play data — `RATING` here only sets the myinfo field, not the displayed per-mode values |
 | `data/charts.json` | (song, keymode, levelmode) → CDN paths, 47 variants / 15 songs |
 | `data/cdn_paths.json` | CDN path → local ciphertext file (126 paths) |
 | `data/rank_sample.csv` | fallback leaderboard body when no exact capture matches |
