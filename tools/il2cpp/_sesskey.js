@@ -57,20 +57,56 @@ rpc.exports.hunt = function (korean) {
   return Il2Cpp.perform(() => {
     const out = {};
     const mod = Process.getModuleByName('GameAssembly.dll');
-    const base = mod.base, size = mod.size;
+    const base = mod.base;
     out.base = base.toString(16);
 
-    // the string-literal helper: RVA 0xC12390 for this build
-    // (0x6ffff2fd2390 - 0x6ffff23c0000); thunks do
-    //   mov ecx, <index>; mov edx, <data-offset>; mov r8d, <length>; call helper
-    const HELPER_RVA = 0xc12390;
-    const helper = base.add(HELPER_RVA);
-    out.helper = helper.toString(16);
-    out.helperBytes = Array.from(new Uint8Array(helper.readByteArray(0x80)))
-      .map(b => b.toString(16).padStart(2, '0')).join(' ');
+    // known literal-region addresses for the Korean message (previous session,
+    // identical module base); verify each by reading the text
+    const candidates = ['0x6ffff96ba736', '0x6fffffd70018', '0x6fffffd75cfa'];
+    const windows = [];
+    for (const c of candidates) {
+      try {
+        const t = ptr(c).readUtf16String(40);
+        windows.push({ addr: c, verify: t ? t.slice(0, 40) : null });
+      } catch (e) { windows.push({ addr: c, err: '' + e }); }
+    }
+    out.candidates = windows;
 
-    // pass 1: every `call helper` site in the executable ranges; recover
-    // (index, data-offset, length) from the movs immediately before
+    // dump a decoded window around every candidate that verifies
+    out.koreanWindows = [];
+    for (const c of candidates) {
+      const a = ptr(c);
+      let range = null;
+      for (const r of Process.enumerateRanges({ protection: 'r--', coalesce: true })
+          .concat(Process.enumerateRanges({ protection: 'rw-', coalesce: true }))) {
+        if (a.compare(r.base) >= 0 && a.compare(r.base.add(r.size)) < 0) { range = r; break; }
+      }
+      if (!range) { out.koreanWindows.push({ addr: c, err: 'no containing range' }); continue; }
+      let s0 = a.sub(0x500); if (s0.compare(range.base) < 0) s0 = range.base;
+      let e0 = a.add(0x700); const re = range.base.add(range.size);
+      if (e0.compare(re) > 0) e0 = re;
+      try {
+        const u = new Uint8Array(s0.readByteArray(e0.sub(s0).toInt32()));
+        let txt = '', hex = '';
+        for (let i = 0; i + 1 < u.length; i += 2) {
+          const ch = u[i] | (u[i+1] << 8);
+          txt += (ch >= 32 && ch !== 0xfffe) ? String.fromCharCode(ch) : '\u00b7';
+        }
+        for (let i = 0; i < u.length; i++) hex += u[i].toString(16).padStart(2, '0');
+        out.koreanWindows.push({ addr: c, start: s0.toString(16), text: txt, hex: hex });
+      } catch (e) { out.koreanWindows.push({ addr: c, err: '' + e }); }
+    }
+    return JSON.stringify(out);
+  });
+};
+
+// heavy: enumerate every string-literal thunk (call sites of the literal
+// helper, RVA 0xC12390) - run only when needed
+rpc.exports.thunks = function () {
+  return Il2Cpp.perform(() => {
+    const mod = Process.getModuleByName('GameAssembly.dll');
+    const base = mod.base, size = mod.size;
+    const helper = base.add(0xc12390);
     const xranges = Process.enumerateRanges({ protection: 'x', coalesce: true })
       .filter(r => r.base.compare(base) >= 0 && r.base.compare(base.add(size)) < 0);
     const CH = 0x400000, OV = 8;
@@ -96,67 +132,6 @@ rpc.exports.hunt = function (korean) {
         pos = pos.add(len - OV);
       }
     }
-    out.literalSites = sites.length;
-
-    // 2. the Korean literal data. The literal region was located in a previous
-    //    session at 0x6ffff96ba736 (same module base every launch), so verify
-    //    that address first; the general bounded scan is the fallback.
-    const KOREAN_HINT = '0x6ffff96ba736';
-    const kHits = [];
-    try {
-      const t = ptr(KOREAN_HINT).readUtf16String(24);
-      if (t && t.startsWith(korean.slice(0, 8))) kHits.push(ptr(KOREAN_HINT));
-    } catch (e) {}
-    if (kHits.length === 0) {
-      const kPat = utf16hex(korean).match(/../g).join(' ');
-      const W0 = base, W1 = base.add(0x10000000);
-      let budget = 400000000;
-      for (const r of Process.enumerateRanges({ protection: 'r--', coalesce: true })
-          .concat(Process.enumerateRanges({ protection: 'rw-', coalesce: true }))) {
-        if (budget <= 0) break;
-        // INTERSECT the range with the window - never scan a whole giant range
-        const s = r.base.compare(W0) > 0 ? r.base : W0;
-        const eEnd = r.base.add(r.size);
-        const e = eEnd.compare(W1) > 0 ? W1 : eEnd;
-        if (s.compare(e) >= 0) continue;
-        const n = e.sub(s).toInt32();
-        budget -= n;
-        try { for (const m of Memory.scanSync(s, n, kPat)) {
-          kHits.push(m.address); if (kHits.length >= 8) break;
-        } } catch (e) {}
-        if (kHits.length >= 8) break;
-      }
-    }
-    out.koreanHits = kHits.map(a => a.toString(16));
-    if (kHits.length === 0) return JSON.stringify({ ...out, err: 'korean literal not found' });
-
-    // 3. dump the data region around each Korean hit (clamped to its mapping)
-    //    so the neighbouring literals and their exact offsets can be resolved
-    //    offline; plus the raw hex for relabeled re-decoding
-    out.koreanWindows = kHits.map(a => {
-      let range = null;
-      for (const r of Process.enumerateRanges({ protection: 'r--', coalesce: true })
-          .concat(Process.enumerateRanges({ protection: 'rw-', coalesce: true }))) {
-        if (a.compare(r.base) >= 0 && a.compare(r.base.add(r.size)) < 0) { range = r; break; }
-      }
-      const res = { addr: a.toString() };
-      if (!range) { res.err = 'range not found'; return res; }
-      let s0 = a.sub(0x400); if (s0.compare(range.base) < 0) s0 = range.base;
-      let e0 = a.add(0x600); const re = range.base.add(range.size);
-      if (e0.compare(re) > 0) e0 = re;
-      try {
-        const u = new Uint8Array(s0.readByteArray(e0.sub(s0).toInt32()));
-        res.start = s0.toString(16);
-        res.hex = Array.from(u).map(b => b.toString(16).padStart(2, '0')).join('');
-        let txt = '';
-        for (let i = 0; i + 1 < u.length; i += 2) {
-          const c = u[i] | (u[i+1] << 8);
-          txt += (c === 0) ? '\u00b7' : (c >= 32 && c !== 0xfffe) ? String.fromCharCode(c) : '\u00b7';
-        }
-        res.text = txt;
-      } catch (e) { res.err = '' + e; }
-      return res;
-    });
-    return JSON.stringify(out);
+    return JSON.stringify({ count: sites.length, sites: sites });
   });
 };
