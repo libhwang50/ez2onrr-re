@@ -117,7 +117,7 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
 |---|---|
 | `zf.wy` = `S2C_GET_PATTERN_FILE` | `final_url_ez`@0x10, `final_url_ezi`@0x18, **`bundleCryptKey`**@0x20, `result`@0x28 |
 | `zf.wx` = `C2S_GET_PATTERN_FILE` | `appid`, `musicresourcename`, `keymode`, `levelmode`, `gamemode` |
-| `zf.wz` | `appid`, `steamId:UInt64[]` |
+| `zf.wz` = `C2S_GET_USERINFO` | `appid`, `steamId:UInt64[]` — the leaderboard profile fetch; 10 ids observed in one request. The client **crashes with a JSON parse error** (popup → exit) when the response is a single-`memberinfo` object, so `S2C_GET_USERINFO` almost certainly carries a **list** of profiles (shape still uncaptured) |
 
 * **`bundleCryptKey`** — a **64-char base64 string decoding to 48 raw bytes** *(supersedes
   the “96-character hex” reading; `da.rus.rjn` is its base64-decode, not `bytes.fromhex`*,
@@ -383,15 +383,26 @@ per-request base64 blob (a signature — semantics unverified). Responses are ei
 | `plf…` | empty — **the score upload**; the whole record is in the URL |
 | `get<rank_id><keymode><levelmode>,<page>[,<steamid>]` | leaderboard CSV of `rank,score,steamid` triplets |
 
-`plf` fields observed for a Finite 5K HD NEW-RECORD play (placeholders for the personal
-parts): `plf<steamid>,<nickname>,27948,0,5,2,1,-1,<score>,<kool>,<cool>,<good>,<miss>,
-<fail>,0,1,1,4,0,0,50,0,9045`. `27948` is the **rank-server's own song id** (the API's
+`plf` fields observed for two Finite 5K HD plays (placeholders for the personal
+parts): `plf<steamid>,<nickname>,27948,0,5,2,1,-1,<score>,<kool>,<cool>,<good>,
+<miss>,<fail>,0,1,1,4,0,0,50,0,<acc×100>`. A second play of the same chart
+changed **only** the score, the five judgement counts and the trailing accuracy
+field — every other field was byte-identical. `27948` is the **rank-server's own song id** (the API's
 `MUSIC_ID` for Finite is 9916 — two separate ID spaces; the leaderboard query uses the
 same id, and its `23` suffix = keymode 2 / levelmode 3). The judgement counts sum to the
 chart's total notes (`NOTE[6]` = 985 for Finite 5K HD — result screen, upload and music
-list all agree), and `9045` = accuracy ×100 (90.45). The middle fields (`0,5,2,1,-1`,
-`0,1,1,4,0,0,50,0`) are unmapped — one play is not enough to pin them; `5` looks like
-the key-mode's key count.
+list all agree), and the last field is accuracy ×100. The constant fields (`27948`,
+`0,5,2,1,-1`, `0,1,1,4,0,0,50,0`) are mode/song constants across plays — `5` looks like
+the key-mode's key count — but one mode pair is not enough to pin them.
+
+**The client fetches the `.ezi` and `.ez` in either order**, and retries a failing
+chart download **5 times** (3 s apart) before booting the song to the main screen.
+
+**Private-server trap:** an unhandled exception inside a mitmproxy addon hook does *not*
+abort the request — mitmproxy logs it and **forwards the request to the real upstream**.
+The first `server/_pserver.py` test therefore mixed real and private responses
+invisibly. The addon now catches everything and serves explicit errors instead — keep
+that guarantee when editing it (a request to a game host must never leak upstream).
 
 ## 4. Runtime internals
 
@@ -582,9 +593,11 @@ verified end-to-end offline, in-game validation in progress.
    key mode (7K unobserved; 8K seen as `8-ez` but no API label yet).
 4. Find what selects the key pair (`svk`/`svm`/`svo`) — not the payload, the CDN path, or
    `bundleCryptKey`; it looks like an authoring/build-time choice.
-5. Capture one bridge-keyed session (`mitmdump -w` **plus** `server/_harvest_session.py`)
-   to decrypt `c2s_set_game_clear` (48-B response; the server currently guesses
-   `{"result":1}`) and `c2s_get_userinfo` (leaderboard profile fetch), and to pin the
-   unmapped `plf` fields (§3.7).
+5. Capture a bridge-keyed session **of the real servers** (plain `mitmdump -w` **plus**
+   `server/_harvest_session.py`, addon disabled) to decrypt the real `c2s_set_game_clear`
+   response (48 B) and the real `c2s_get_userinfo` response (list shape) — the private
+   server currently guesses both. Also pins the unmapped `plf` fields (§3.7).
 6. Make the server Frida-free: patch `zf.gnf` to a fixed session key, or RE the raw-TCP
    control/battle channel (`zf` RSA+AES) the real server presumably uses to learn the key.
+7. Broaden chart coverage in `server/data/` (uncaptured songs fail with `result:0` and
+   the client retries 5× before booting to the main screen — e.g. Hyper Magic 5K HD).

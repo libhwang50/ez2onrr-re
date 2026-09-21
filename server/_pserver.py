@@ -12,7 +12,8 @@ no privileged ports:
 
 Run (two terminals):
 
-    # 1. session-key bridge (Frida -> file), leave running:
+    # 1. session-key bridge (Frida -> file), leave running — it re-attaches
+    #    automatically when the game restarts:
     .venv/bin/python server/_harvest_session.py
 
     # 2. the server itself:
@@ -22,17 +23,25 @@ Then start the game as usual. The real TCP battle/control channels (raw IPs)
 are untouched and keep working.
 
 Protocol notes (all verified against captures — see AGENTS.md §3.1):
-  * API request  body: data=<urlenc b64( magic[6]=d3ad76d3adb8 || AES-CBC-PKCS7(json) )>
+  * API request  body: form-encoded; the `data` field holds
+    urlenc(b64( magic[6]=d3ad76d3adb8 || AES-CBC-PKCS7(json) )). `c2s_login`
+    additionally carries `ticket` and `identity` fields.
   * API response body: b64( AES-CBC-PKCS7(json) )            (no magic)
   * key/IV = ASCII bytes of zf.aes_key (32) / zf.aes_iv (16), generated
     client-side per session (zf.gnf: RNGCryptoServiceProvider -> hex).
     The harvester writes them to server/session_key.json.
+
+IMPORTANT: game-host requests are NEVER forwarded upstream. If handling fails,
+the addon serves an explicit error instead — otherwise mitmproxy silently
+proxies to the official servers and the session becomes a confusing mix of
+real and fake data (this exact bug shipped once).
 """
 import base64
 import json
 import os
 import re
 import time
+import traceback
 import urllib.parse
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -52,6 +61,7 @@ MAGIC = bytes.fromhex('d3ad76d3adb8')
 TEMPLATES = {}
 CDN_PATHS = {}
 CHARTS = []
+PROFILE = {}
 BATTLE_SERVER = '3.37.247.33:9902'
 RANK_CSV_SAMPLE = ''
 
@@ -65,20 +75,14 @@ def load_data():
         p = os.path.join(DATA, name + '.json')
         if os.path.exists(p):
             TEMPLATES[name] = json.load(open(p))
+    global CDN_PATHS, CHARTS, RANK_CSV_SAMPLE
     p = os.path.join(DATA, 'cdn_paths.json')
     if os.path.exists(p):
-        global CDN_PATHS
         CDN_PATHS = json.load(open(p))
     p = os.path.join(DATA, 'charts.json')
     if os.path.exists(p):
-        global CHARTS
         CHARTS = json.load(open(p))
-    p = os.path.join(DATA, 'profile.json')
-    prof = json.load(open(p)) if os.path.exists(p) else {}
-    global PROFILE
-    PROFILE = {k: v for k, v in prof.items() if not k.startswith('_')}
     p = os.path.join(DATA, 'rank_sample.csv')
-    global RANK_CSV_SAMPLE
     if os.path.exists(p):
         RANK_CSV_SAMPLE = open(p).read().strip()
     log(f'data loaded: templates={sorted(TEMPLATES)} cdn={len(CDN_PATHS)} charts={len(CHARTS)}')
@@ -100,47 +104,58 @@ def pkcs7_unpad(b):
     return b[:-n]
 
 
-def aes_cbc(key, iv, data):
-    c = Cipher(algorithms.AES(key), modes.CBC(iv))
-    return c
-
-
 def session_key():
-    """Return (key_bytes, iv_bytes) or None."""
+    """Return (key_bytes, iv_bytes, age_seconds) or None."""
     try:
+        st = os.stat(KEYFILE)
         d = json.load(open(KEYFILE))
-        k, v = d.get('aes_key', ''), d.get('aes_iv', '')
-        if isinstance(k, str) and len(k) == 32 and len(v) == 16:
-            return k.encode(), v.encode()
+        k, v = str(d.get('aes_key', '')), str(d.get('aes_iv', ''))
+        if len(k) == 32 and len(v) == 16:
+            return k.encode(), v.encode(), time.time() - st.st_mtime
     except Exception:
         pass
     return None
 
 
-def decrypt_request(body: bytes):
-    """data=<urlenc b64(magic||ct)> -> (json_text, error)."""
+def parse_form(body: bytes):
+    """The API posts form fields (data=..., and ticket=/identity= on login).
+    Returns the url-decoded `data` value, or None."""
     text = body.decode('utf-8', 'replace')
-    if not text.startswith('data='):
-        return None, 'no data= prefix'
-    enc = urllib.parse.unquote(text[5:])
-    raw = base64.b64decode(enc + '=' * (-len(enc) % 4))
+    for part in text.split('&'):
+        k, _, v = part.partition('=')
+        if k == 'data':
+            return urllib.parse.unquote(v)
+    return None
+
+
+def decrypt_request(body: bytes):
+    """API request -> (json_text, error). Never raises."""
+    enc = parse_form(body)
+    if enc is None:
+        return None, 'no data= field'
+    try:
+        raw = base64.b64decode(enc + '=' * (-len(enc) % 4))
+    except Exception as e:
+        return None, f'bad base64: {e}'
     if raw[:6] != MAGIC:
         return None, f'bad magic {raw[:6].hex()}'
-    ct = raw[6:]
     sk = session_key()
     if sk is None:
-        return None, 'no session key yet'
-    key, iv = sk
-    dec = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
-    pt = pkcs7_unpad(dec.update(ct) + dec.finalize())
-    return pt.decode('utf-8', 'replace'), None
+        return None, 'no session key'
+    key, iv, _age = sk
+    try:
+        dec = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+        pt = pkcs7_unpad(dec.update(raw[6:]) + dec.finalize())
+        return pt.decode('utf-8', 'replace'), None
+    except Exception as e:
+        return None, f'decrypt failed (stale session key?): {e}'
 
 
 def encrypt_response(json_obj) -> bytes:
     sk = session_key()
     if sk is None:
         raise RuntimeError('no session key')
-    key, iv = sk
+    key, iv, _age = sk
     pt = json.dumps(json_obj, separators=(',', ':'), ensure_ascii=False).encode()
     enc = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
     ct = enc.update(pkcs7_pad(pt)) + enc.finalize()
@@ -181,6 +196,16 @@ def handle_api(flow: http.HTTPFlow):
             if session_key():
                 break
             time.sleep(0.25)
+        sk = session_key()
+        if sk is None:
+            log('ERROR: no session key for login — is _harvest_session.py '
+                'running and attached to this game session?')
+            flow.response = http.Response.make(
+                502, b'private server: no session key',
+                {'Content-Type': 'text/plain'})
+            return
+        log(f"login: serving template under key {sk[0][:8].decode()}... "
+            f"(key file {sk[2]:.0f}s old)")
         tpl = TEMPLATES.get('login')
         if tpl is None:
             return respond_api(flow, {'result': 0})
@@ -192,18 +217,22 @@ def handle_api(flow: http.HTTPFlow):
             return respond_api(flow, {'result': 0})
         return respond_api(flow, tpl)
 
-    if endpoint in ('c2s_get_myinfo', 'c2s_get_userinfo'):
+    if endpoint == 'c2s_get_myinfo':
         tpl = TEMPLATES.get('myinfo')
         if tpl is None:
             return respond_api(flow, {'result': 0})
         return respond_api(flow, apply_profile(tpl))
 
+    if endpoint == 'c2s_get_userinfo':
+        return respond_api(flow, userinfo_response(req_json))
+
     if endpoint == 'c2s_get_pattern_file':
         return respond_api(flow, pattern_response(req_json))
 
     if endpoint == 'c2s_set_game_clear':
-        # refinement candidate: real response is 48 B ciphertext; {"result":1}
-        # is the minimal guess until a keyed capture reveals the fields.
+        # refinement candidate: the real response is 48 B of ciphertext; the
+        # client accepted {"result":1}-shaped guesses so far (unvalidated — the
+        # validated response in the first test actually came from upstream).
         cfg = os.path.join(DATA, 'set_game_clear.json')
         tpl = json.load(open(cfg)) if os.path.exists(cfg) else {'result': 1}
         return respond_api(flow, tpl)
@@ -217,13 +246,13 @@ def norm(s):
 
 
 def pattern_response(req_json):
-    """c2s_get_pattern_file: (musicresourcename, keymode, levelmode) -> URLs."""
-    if req_json:
-        try:
-            req = json.loads(req_json)
-        except Exception:
-            req = {}
-    else:
+    """c2s_get_pattern_file: (musicresourcename, keymode, levelmode) -> URLs.
+
+    Exact matches only — serving a different keymode/difficulty chart for the
+    selected one would load wrong notes."""
+    try:
+        req = json.loads(req_json) if req_json else {}
+    except Exception:
         req = {}
     name = str(req.get('musicresourcename') or req.get('MUSIC_RESOURCE_NAME') or '')
     km = int(req.get('keymode') or req.get('KEYMODE') or 0)
@@ -231,12 +260,10 @@ def pattern_response(req_json):
     want = norm(name)
     hit = next((c for c in CHARTS if c['song_norm'] == want and c['keymode'] == km
                 and c['levelmode'] == lm), None)
-    if hit is None:  # fall back to any difficulty of that song+keymode
-        hit = next((c for c in CHARTS if c['song_norm'] == want and c['keymode'] == km), None)
-    if hit is None:  # fall back to song only
-        hit = next((c for c in CHARTS if c['song_norm'] == want), None)
     if hit is None:
-        log(f'pattern: NO CHART for {name!r} keymode={km} levelmode={lm}')
+        have = sorted({c['song_norm'] for c in CHARTS})
+        log(f'pattern: NO exact chart for {name!r} keymode={km} levelmode={lm} '
+            f'(known songs: {have})')
         return {'result': 0}
     base = f'https://{CDN_HOST}'
     resp = {
@@ -254,6 +281,37 @@ def bundle_crypt_key():
     if os.path.exists(p):
         return open(p).read().strip()
     return '0' * 96
+
+
+def userinfo_response(req_json):
+    """c2s_get_userinfo: {"appid":...,"steamId":[UInt64,...]} — the leaderboard
+    profile fetch (up to ~10 players at once).
+
+    The real response shape is not yet captured; the client crashed on a
+    single-memberinfo body, so serve a LIST with one entry per requested
+    steamId. Tune data/userinfo_entry.json once a real capture lands."""
+    try:
+        req = json.loads(req_json) if req_json else {}
+    except Exception:
+        req = {}
+    ids = req.get('steamId') or req.get('SteamId') or []
+    if not isinstance(ids, list):
+        ids = [ids]
+    tpl_p = os.path.join(DATA, 'userinfo_entry.json')
+    tpl = json.load(open(tpl_p)) if os.path.exists(tpl_p) else {
+        'MEMBER_ID': 0, 'STATUS': 0, 'PLATE': 1,
+        'ACC_DATE': '2026-01-01T00:00:00', 'REG_DATE': '2026-01-01T00:00:00',
+        'ROUND': 0, 'LEVEL': 98, 'EXP': 0, 'NEXT_EXP': 0, 'RATING': 4.978,
+        'NICKNAME': 'player', 'STEAM_ID': '0',
+    }
+    entries = []
+    for sid in ids:
+        e = dict(tpl)
+        e['STEAM_ID'] = str(sid)
+        e['NICKNAME'] = f'player_{str(sid)[-4:]}'
+        entries.append(e)
+    log(f'get_userinfo: {len(entries)} profile(s) served (shape = GUESS, see README)')
+    return {'memberinfo': entries, 'result': 1}
 
 
 def respond_api(flow, obj):
@@ -299,15 +357,32 @@ class PrivateServer:
 
     def request(self, flow: http.HTTPFlow):
         host = (flow.request.host or '').lower()
-        if host == API_HOST:
-            if not flow.request.path.startswith('/api/'):
-                return
-            log(f'>>> {flow.request.method} {flow.request.path}')
-            handle_api(flow)
-        elif host == RANK_HOST:
-            handle_rank(flow)
-        elif host == CDN_HOST:
-            handle_cdn(flow)
+        if host not in (API_HOST, RANK_HOST, CDN_HOST):
+            return
+        try:
+            if host == API_HOST:
+                log(f'>>> {flow.request.method} {flow.request.path}')
+                handle_api(flow)
+            elif host == RANK_HOST:
+                handle_rank(flow)
+            else:
+                handle_cdn(flow)
+        except Exception:
+            # NEVER let a game-host request fall through upstream: mitmproxy
+            # would proxy it to the official servers and the session becomes a
+            # real/fake mix (shipped once — do not repeat).
+            log('ADDON ERROR on', flow.request.path, '\n' + traceback.format_exc())
+            if host == CDN_HOST:
+                flow.response = http.Response.make(404, b'', {})
+            else:
+                flow.response = http.Response.make(
+                    502, b'private server error (see pserver.log)',
+                    {'Content-Type': 'text/plain'})
+
+    def error(self, flow: http.HTTPFlow):
+        if (flow.request.host or '').lower() in (API_HOST, RANK_HOST, CDN_HOST):
+            log(f'FLOW ERROR {flow.request.method} {flow.request.path}: '
+                f'{flow.error.msg if flow.error else "?"}')
 
 
 addons = [PrivateServer()]
