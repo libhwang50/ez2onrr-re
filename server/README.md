@@ -231,7 +231,32 @@ python server/_coverage.py --log      # what the game asked for vs what we could
 The loop that adds songs: `_exp.py harvest` (hybrid, `chart exact`) → walk the
 game's song list so it issues one `c2s_get_pattern_file` per song → the addon
 records the CDN bodies → `python server/_build_data.py` rebuilds
-`server/data/charts.json` + the CDN cache. Then `_exp.py offline` serves them
+`server/data/charts.json` + the CDN cache.
+
+`server/_sweep.py` automates that walk. It is **blind by design** — the server log
+is its sensor, since every request names the song, keymode, levelmode and gamemode
+— and it refuses to send keys unless the focused window really is the game
+(`niri msg focused-window`), so it cannot type into your terminal.
+
+```bash
+python server/_sweep.py                  # bindings + who has focus right now
+python server/_sweep.py --watch          # just tail the log (no input)
+python server/_sweep.py --calibrate      # learn the difficulty/keymode keys
+python server/_sweep.py --limit 600      # walk the list, one entry per song
+python server/_sweep.py --variants       # also cycle difficulty/keymode
+python server/_sweep.py --dry-run        # print the plan, send nothing
+```
+
+`--calibrate` is the interesting one: it presses candidate keypad keys and reads
+`keymode`/`levelmode` back out of the request the game makes, so the bindings are
+*derived*, not guessed. Bindings and timings live in `server/data/sweep_keys.json`.
+Note `gamemode` (BASIC 1 / STANDARD 2) is a real chart selector for some songs —
+recorded per capture, and worth preferring on serve once the captures carry it.
+
+BASIC vs STANDARD, for reference: KOOL window 40 ms vs 22 ms, and for STANDARD
+charts at level ≥6 (4K) / ≥8 (5K/6K) / ≥11 (DLC) the EZ~NM patterns are replaced
+by easier BASIC-exclusive ones (HD/SHD unchanged; a few named exceptions).
+Source: NamuWiki "EZ2ON REBOOT : R/시스템". Then `_exp.py offline` serves them
 with `chart any`. `_coverage.py --log` is how a capture macro's progress is
 verified without watching the screen — the game's own request names the song,
 keymode and difficulty.

@@ -283,6 +283,14 @@ response, so experiments need no restart.
   on HD and 1814 on SHD, while the total stays ~6390. So difficulty moves notes between the
   player's lanes and the auto-played tracks; the *song* is essentially unchanged.
   **Practical consequence: one chart per song is enough to render the full song.**
+* **Song-select and in-game commands** (from the same page, and the basis of
+  `server/_sweep.py`): in song select `0`–`9` jump to a list section, `PageUp`/`PageDown`
+  move 8 rows, `a`–`z` jump to songs starting with that letter (leading articles are
+  ignored, so *The Ashtray* is under `A`), `F6` picks randomly, and the **keypad
+  4/5/6/8** change the on-screen values (difficulty and keymode) — which is exactly what a
+  capture sweep needs to vary a variant. During play `F7`/`F8` nudge display sync ±1 ms,
+  `F9`/`F10` halve/double note speed. `_sweep.py --calibrate` derives the difficulty and
+  keymode keys empirically, because the request JSON it watches names both.
 * **The Lounge is a chart-harvesting route.** The in-game Lounge (watch a BGA with the song
   playing) goes through the same `c2s_get_pattern_file` flow and serves the song's **4K EZ**
   chart — confirmed by capture: the Lounge chart for Conflict was `4-ez` with an `.ezi`
@@ -296,8 +304,24 @@ response, so experiments need no restart.
   6 → 6K (API keymode `3`), 8 → 8K. Confirmed on all four. 7K is unobserved (it is said to
   be course-only, behind the O2Jam Collaboration DLC).
 * **Difficulty is `levelmode`: 1=EZ, 2=NM, 3=HD, 4=SHD** (Conflict and Engine at levelmode 4
-  are both SHD; Conflict levelmode 3 is HD). `gamemode` 1 and 2 produced identical charts
-  for the same mode/difficulty, so it is not a chart selector.
+  are both SHD; Conflict levelmode 3 is HD).
+* **`gamemode` is BASIC (1) vs STANDARD (2), and it IS a chart selector — for some songs**
+  *(supersedes the earlier "gamemode 1 and 2 produced identical charts, so it is not a
+  chart selector", which held only for the songs sampled)*. The two modes are otherwise
+  identical (controls, play style, judgement *names*, scoring to 1.1 M, multiplayer); BASIC
+  is the more forgiving one:
+  * **KOOL base window: 40 ms in BASIC vs 22 ms in STANDARD** (≈2× more lenient), and the
+    groove gauge is far more generous;
+  * **replacement rule**: where the STANDARD chart is level ≥6 (4K), ≥8 (5K/6K) or ≥11 (DLC),
+    its **EZ~NM** patterns are swapped for easier BASIC-exclusive ones. HD/SHD are not
+    replaced, and there are named exceptions (Mystic Dream 9903 Horror Mix, 바람에게 부탁해
+    5K, TYR, METATRON 6K). Max 4 keymodes × 4 difficulties = 16 patterns per song;
+  * Sudden Death is not playable in BASIC; 8K BASIC was added 2023-04-20; BASIC got its own
+    rating system on 2025-12-29 (relevant to the rank work — the myinfo rating may be
+    per-mode for the same reason the rating appears to be).
+  Consequence for the private server and for capture: **record `gamemode` with every chart
+  capture** and prefer the exact one when serving (`gamemode` is in the request JSON, so a
+  capture run records it for free). Source: NamuWiki "EZ2ON REBOOT : R/시스템" §4.1–4.2.
 * **The CDN URL hash is not a content hash.** A song's `.ezi` URL differs per variant while
   the decrypted bytes are identical, so the path segment cannot be used to identify
   content — match on the decrypted payload instead.
@@ -699,6 +723,7 @@ Private server (see **`server/README.md`** for the full guide):
 |---|---|
 | `server/_pserver.py` | **the private server** — a mitmproxy addon that stubs `game1-play` / `game1-rank` / `game1-cdn` server-side; no extra certs, no hosts edits (the Wine prefix already proxies through mitmproxy and trusts its CA) |
 | `server/_harvest_session.py` | Frida bridge: polls `zf.aes_key`/`aes_iv` at 1 Hz → `server/session_key.json` (the client generates the API session key locally and never sends it — §3.1). Also owns the **one-session command channel**: it polls `server/cmd.json` and answers in `server/cmd_result.json`, so memory probes never need a second Frida session (which crashes the game). Restores the default SIGINT handler while an RPC runs, so Ctrl-C aborts a slow scan and detaches cleanly |
+| `server/_sweep.py` | **drive the game to capture charts** — blind (the server log is the sensor), guarded by a focused-window check, with `--probe`-style `--calibrate` that deduces the difficulty/keymode keys from the request JSON |
 | `server/_coverage.py` | **audit chart coverage** — songs covered vs the 601-song music list (coverage is per *song*: one capture serves every variant), writes a capture queue, and parses `pserver.log` to verify what a capture run actually asked for |
 | `server/_build_data.py` | rebuild `server/data/` from local captures — decrypted API templates, the chart→CDN map (47 variants / 15 songs), profile overrides |
 | `server/_exp.py` | the experiment knobs: `hybrid on/off`, `urls now/skew/future/expire/noparams/host`, `bck harvested/stale/garbage/empty/literal:…`, `off` (mutations only), `reset`. Read per request — no restart. `off` deliberately does NOT touch the hybrid setting |
@@ -771,7 +796,10 @@ server's. In-game validation of the server itself is in progress.
    path — `chart any` serves a song's captured chart for any of its keymodes/
    difficulties. Adding songs needs one official pattern request each (hybrid,
    `chart exact`, walk the song list), the addon's recorded CDN bodies, then
-   `_build_data.py`; `server/_coverage.py --log` verifies a capture run. Unc captured
+   `_build_data.py`; `server/_coverage.py --log` verifies a capture run, and
+   `server/_sweep.py` automates the walk (guarded by a focused-window check, with a
+   `--calibrate` mode that learns the difficulty/keymode keys from the request JSON).
+   Also record `gamemode` per capture (BASIC vs STANDARD differs by rule, §3.5). Uncaptured
    songs answer `result:0` and the client retries 5× against **our** server, so a miss
    is harmless.
 8. **`bundleCryptKey` — SOLVED (§3.2/§3.7).** Fully offline chart loads work with a
