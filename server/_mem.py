@@ -105,6 +105,10 @@ def main():
         print('scanning for the base64 string form (UTF-16LE)…')
         show(send({'op': 'findhex', 'hex': ' '.join(
             f'{x:02x}' for x in b.encode('utf-16-le'))}))
+    elif a[0] == 'findlitoff':
+        # target address, static-fields base (the value `deref <global> 0xb8` prints)
+        show(send({'op': 'findlitoff', 'target': a[1],
+                   'sf': a[2] if len(a) > 2 else '0x71540000'}, timeout=600), max_hits=30)
     elif a[0] == 'findaccessor':
         show(send({'op': 'findaccessor', 'offset': a[1],
                    'len': a[2] if len(a) > 2 else ''}, timeout=900), max_hits=30)

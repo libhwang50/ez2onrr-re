@@ -669,3 +669,67 @@ rpc.exports.findaccessor = function (offsetStr, lenStr) {
     return JSON.stringify(out);
   });
 };
+
+// findlitoff(targetAddr, staticFieldsHex): resolve which assembly blob contains
+// the literal at targetAddr and whether the code addresses it.
+//
+// The literal blobs and the static-fields region share one anonymous mapping, and
+// each assembly's blob pointer is stored as an 8-byte pointer inside the
+// static-fields region (readable as [StringKlass+0xb8] for the String class, i.e.
+// the value `deref <global> 0xb8` returns). So: scan that region for pointers
+// into the mapping, and for every candidate base B test whether the code contains
+// `mov edx,<target-B>` (BA imm32) - a hit means B is the base of the assembly
+// whose blob holds the literal, and the site is the literal's accessor.
+rpc.exports.findlitoff = function (targetStr, sfStr) {
+  return Il2Cpp.perform(() => {
+    const t0 = Date.now();
+    const target = parseInt(String(targetStr).replace(/^0x/, ''), 16);
+    const sf = parseInt(String(sfStr).replace(/^0x/, ''), 16);
+    const out = { target: '0x' + target.toString(16), staticFields: '0x' + sf.toString(16),
+                  bases: [], hits: [] };
+    // 1) collect pointers inside the static-fields region that point into it
+    const lo = sf, hi = sf + 0x2000000;           // pointers into the mapping
+    const CH = 0x40000;
+    const seen = {};
+    for (let off = 0; off < 0x200000 && off < hi - sf; off += CH - 8) {
+      const len = Math.min(CH, 0x200000 - off);
+      let buf;
+      try { buf = new Uint8Array(ptr(sf + off).readByteArray(len)); } catch (e) { break; }
+      for (let i = 0; i + 8 <= buf.length; i += 1) {
+        const v = buf[i] | (buf[i+1] << 8) | (buf[i+2] << 16) | (buf[i+3] << 24)
+                + 0;                                   // low 32 bits
+        const vhi = buf[i+4] | (buf[i+5] << 8) | (buf[i+6] << 16) | (buf[i+7] << 24);
+        if (vhi !== 0) continue;                        // keep 32-bit addresses
+        if (v >= lo && v < hi && v <= target) seen[v] = (off + i);
+      }
+    }
+    const bases = Object.keys(seen).map(k => parseInt(k, 10)).sort((a, b) => a - b);
+    out.baseCount = bases.length;
+    for (const b of bases) {
+      const off2 = target - b;
+      if (off2 < 0 || off2 > 0x400000) continue;
+      out.bases.push({ base: '0x' + b.toString(16), off: '0x' + off2.toString(16),
+                       pointerAt: '0x' + (sf + seen[b]).toString(16) });
+    }
+    // 2) for each candidate, does the code contain `mov edx,<off>`?
+    const mod = Process.getModuleByName('GameAssembly.dll');
+    const xr = Process.enumerateRanges('x')
+      .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
+    for (const cand of out.bases) {
+      const off2 = parseInt(cand.off, 16);
+      const ob = [off2 & 0xff, (off2 >> 8) & 0xff, (off2 >> 16) & 0xff, (off2 >>> 24) & 0xff];
+      const pat = 'ba ' + ob.map(x => x.toString(16).padStart(2, '0')).join(' ');
+      let n = 0, firstSite = null;
+      for (const r of xr) {
+        let hs; try { hs = Memory.scanSync(r.base, r.size, pat); } catch (e) { continue; }
+        if (hs.length && !firstSite) firstSite = '0x' + hs[0].address.toString(16);
+        n += hs.length;
+      }
+      cand.baHits = n;
+      cand.firstSite = firstSite;
+    }
+    out.candidatesWithHits = out.bases.filter(b => b.baHits > 0);
+    out.elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+    return JSON.stringify(out);
+  });
+};
