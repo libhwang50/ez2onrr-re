@@ -114,6 +114,56 @@ Notes:
   real captured CSVs when available (`data/rank_csv/`, Top100 + MyRange for
   Finite) and fall back to a static sample.
 
+## Fully-offline chart loads: the mutation experiments
+
+the 8CN26 check is *post-parse*: the client has the chart downloaded, decrypted
+and parsed, then rejects the session. A fresh upstream pattern response loads;
+a replayed (stale) or synthesized one does not. To find out *which part* of the
+response is validated, mutate a known-good response in flight.
+
+Knobs are ordinary files in `server/data/`, re-read on **every** response, so an
+experiment needs no mitmdump restart (only turning `passthrough_pattern` on/off
+does):
+
+| file | value | effect |
+|---|---|---|
+| `mutate_urls.txt` | `future` | `Expires` +10 years — signature no longer matches |
+| | `expire` | `Expires` in the past — signature still valid |
+| | `noparams` | strip the whole query string |
+| | `host` | swap the CDN host, keep path/params |
+| `mutate_bck.txt` | `stale` | the older captured real `bundleCryptKey` |
+| | `garbage` | 48 random bytes, valid base64 shape |
+| | `empty` | the field emptied |
+| | `literal:<b64>` | any exact value |
+
+Both mutations apply to a **passthrough** (fresh upstream) response *and* to a
+**replayed** one, so the decisive test can be run without an official login:
+
+```bash
+# experiment 1 — replayed (stale) response, only the expiry made "fresh"
+rm -f server/data/passthrough_pattern
+echo future > server/data/mutate_urls.txt
+mitmdump -q -s server/_pserver.py        # enter the song
+```
+
+`pserver.log` shows `MUTATED (replayed): ['final_url_ez=future', …]`. Delete the
+knob file to return to the untouched response.
+
+How to read the results:
+
+* **replay + `future` loads** → the client does not verify the CloudFront
+  signature, and the stale `bundleCryptKey` is not the blocker either. Then a
+  fully offline server just needs plausible far-future URLs.
+* **replay + `future` fails, passthrough + `future` loads** → the signature is
+  not verified but something else about a *replayed* response is wrong —
+  `bundleCryptKey`, or the upstream-minted URL's path/params.
+* **passthrough + `future` fails** → the client *does* verify the CloudFront
+  signature; a fully offline server then needs the embedded public key
+  (a hunt) or a client patch.
+* **passthrough + `garbage` loads** → `bundleCryptKey` is not validated at all.
+* **passthrough + `expire` loads** → the knob is not reaching the response (or
+  expiry genuinely is not checked) — investigate before trusting any result.
+
 ## Known simplifications / next steps
 
 * `c2s_set_game_clear` response is a guess (`{"result":1}`); the real body is

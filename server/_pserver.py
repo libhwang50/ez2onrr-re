@@ -194,6 +194,96 @@ def encrypt_response(json_obj) -> bytes:
     return base64.b64encode(ct)
 
 
+def decrypt_api_body(body: bytes):
+    """An upstream API response body -> json object, or None. Never raises.
+
+    Same cipher as encrypt_response (b64 of AES-CBC/PKCS7 under the client's
+    own session key — upstream encrypts with the key the client uses)."""
+    sk = session_key()
+    if sk is None:
+        return None
+    key, iv, _age = sk
+    b = (body or b'').strip()
+    try:
+        raw = base64.b64decode(b + b'=' * (-len(b) % 4))
+        dec = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+        return json.loads(pkcs7_unpad(dec.update(raw) + dec.finalize()).decode('utf-8'))
+    except Exception:
+        return None
+
+
+# ---------------- response mutation (the 8CN26 isolation experiments) ----
+#
+# Knobs are read per response, so an experiment needs no restart of mitmdump:
+#
+#   server/data/mutate_urls.txt   future | expire | noparams | host
+#   server/data/mutate_bck.txt    stale | garbage | empty | literal:<b64>
+#
+#   future    Expires far in the future (signature no longer matches)
+#   expire    Expires in the past (signature still valid)
+#   noparams  strip the whole query string
+#   host      swap the CDN host (same path/params)
+#   stale     the older captured bundleCryptKey (real, wrong session)
+#   garbage   48 random bytes, valid base64 shape
+#
+# Removing both files restores the untouched response.
+
+def _knob(name):
+    try:
+        return open(os.path.join(DATA, name)).read().strip()
+    except Exception:
+        return ''
+
+
+def mutation_requested():
+    return bool(_knob('mutate_urls.txt') or _knob('mutate_bck.txt'))
+
+
+def mutate_url(u, mode):
+    if mode == 'noparams':
+        return u.split('?')[0]
+    try:
+        parts = urllib.parse.urlsplit(u)
+        q = dict(urllib.parse.parse_qsl(parts.query))
+    except Exception:
+        return u
+    if mode == 'future':
+        q['Expires'] = str(int(time.time()) + 315360000)   # +10 years
+    elif mode == 'expire':
+        q['Expires'] = str(int(time.time()) - 3600)
+    if mode == 'host':
+        parts = parts._replace(netloc='game1-cdn2.ez2game.co.kr')
+    return urllib.parse.urlunsplit(parts._replace(
+        query=urllib.parse.urlencode(q)))
+
+
+def mutate_pattern_response(obj):
+    """Apply the knob files. Returns a list of applied changes, or None."""
+    m_url, m_bck = _knob('mutate_urls.txt'), _knob('mutate_bck.txt')
+    if not (m_url or m_bck) or not isinstance(obj, dict):
+        return None
+    changed = []
+    if m_url:
+        for f in ('final_url_ez', 'final_url_ezi'):
+            if isinstance(obj.get(f), str):
+                obj[f] = mutate_url(obj[f], m_url)
+                changed.append(f'{f}={m_url}')
+    if m_bck:
+        if m_bck == 'stale':
+            try:
+                obj['bundleCryptKey'] = str(PATTERN_REPLAY[list(PATTERN_REPLAY)[0]]['bundleCryptKey'])
+            except Exception:
+                obj['bundleCryptKey'] = 'stale'
+        elif m_bck == 'garbage':
+            obj['bundleCryptKey'] = base64.b64encode(os.urandom(48)).decode()
+        elif m_bck == 'empty':
+            obj['bundleCryptKey'] = ''
+        elif m_bck.startswith('literal:'):
+            obj['bundleCryptKey'] = m_bck[len('literal:'):]
+        changed.append(f'bundleCryptKey={m_bck}')
+    return changed
+
+
 # ---------------- endpoint handlers ----------------
 
 def apply_profile(d):
@@ -269,8 +359,10 @@ def handle_api(flow: http.HTTPFlow):
         if PASSTHROUGH_PATTERN:
             # forward to the upstream official server: the response carries
             # FRESH signed URLs + a fresh bundleCryptKey (requires an official
-            # login so the upstream session exists)
-            log('pattern: PASSTHROUGH to upstream (fresh-response experiment)')
+            # login so the upstream session exists). The response hook applies
+            # the mutate_* knobs to it before it reaches the client.
+            log('pattern: PASSTHROUGH to upstream (fresh-response experiment)'
+                + (' +mutation' if mutation_requested() else ''))
             return  # no response set -> mitmproxy forwards upstream
         return respond_api(flow, pattern_response(req_json))
 
@@ -325,7 +417,11 @@ def pattern_response(req_json):
     key = f"{want}|{km}|{lm}"
     if key in PATTERN_REPLAY:
         log(f'pattern: {name!r} km={km} lm={lm} -> REPLAYED official response')
-        return dict(PATTERN_REPLAY[key])
+        obj = dict(PATTERN_REPLAY[key])
+        ch = mutate_pattern_response(obj)
+        if ch:
+            log(f'  MUTATED (replayed): {ch}')
+        return obj
     hit = next((c for c in CHARTS if c['song_norm'] == want and c['keymode'] == km
                 and c['levelmode'] == lm), None)
     if hit is None:
@@ -452,6 +548,27 @@ class PrivateServer:
                 flow.response = http.Response.make(
                     502, b'private server error (see pserver.log)',
                     {'Content-Type': 'text/plain'})
+
+    def response(self, flow: http.HTTPFlow):
+        """Apply mutate_* knobs to a PASSTHROUGH pattern response before it
+        reaches the client (fresh upstream URLs + bundleCryptKey)."""
+        host = (flow.request.host or '').lower()
+        if host != API_HOST or 'c2s_get_pattern_file' not in flow.request.path:
+            return
+        if not mutation_requested() or flow.response is None:
+            return
+        try:
+            obj = decrypt_api_body(flow.response.content)
+            if obj is None:
+                log('MUTATE: upstream pattern response did not decrypt (stale '
+                    'session key?) - left untouched')
+                return
+            ch = mutate_pattern_response(obj)
+            if ch:
+                flow.response.content = encrypt_response(obj)
+                log(f'MUTATE applied (upstream): {ch}')
+        except Exception:
+            log('MUTATE ERROR\n' + traceback.format_exc())
 
     def error(self, flow: http.HTTPFlow):
         if (flow.request.host or '').lower() in (API_HOST, RANK_HOST, CDN_HOST):
