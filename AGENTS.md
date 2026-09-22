@@ -87,9 +87,13 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
 
 * **Key** = the **32 ASCII bytes** of `zf.aes_key` (not hex-decoded); **IV** = the
   **16 ASCII bytes** of `zf.aes_iv`.
-* **The client generates both itself, per launch** *(supersedes "overwritten at login" as
-  the mechanism)*: `zf.gnf()` draws 32/16 bytes from `RNGCryptoServiceProvider` and
-  hex-encodes them (`BitConverter.ToString` → strip `-`; uppercase). Pre-generation
+* **The client generates both itself, and they rotate *within* a launch** *(supersedes
+  both "overwritten at login" and the later "per launch")*: `zf.gnf()` draws 32/16 bytes
+  from `RNGCryptoServiceProvider` and hex-encodes them (`BitConverter.ToString` → strip
+  `-`; uppercase). Observed in a single launch: `6440E3ED…/8044B641…` at 16:08 →
+  `316A60CA…/6B4716FE…` at 16:27. So anything that needs the key must **re-read it per
+  request** — which is why the harvester rewrites `server/session_key.json` at 1 Hz and
+  `_pserver.py` reads it per request. Pre-generation
   defaults are the metadata placeholders `01234567890123456789012345678901` /
   `0123456789012345`. Read the live values with `il2cpp_field_static_get_value`, never
   the metadata defaults.
@@ -119,16 +123,31 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
 | `zf.wx` = `C2S_GET_PATTERN_FILE` | `appid`, `musicresourcename`, `keymode`, `levelmode`, `gamemode` |
 | `zf.wz` = `C2S_GET_USERINFO` | `appid`, `steamId:UInt64[]` — the leaderboard profile fetch; 10 ids observed in one request. The client **crashes with a JSON parse error** (popup → exit) when the response is a single-`memberinfo` object, so `S2C_GET_USERINFO` almost certainly carries a **list** of profiles (shape still uncaptured) |
 
-* **`bundleCryptKey`** — a **64-char base64 string decoding to 48 raw bytes** *(supersedes
-  the “96-character hex” reading; `da.rus.rjn` is its base64-decode, not `bytes.fromhex`*,
-  same 48 bytes). **Session-scoped**: byte-identical for both
-  songs sampled in one session, so the earlier “per-song” reading is superseded — which
-  also retracts the note that had superseded the original per-session claim. It is **not**
-  the chart key (§3.3).
-  **It is, however, the only element of the pattern response the client acts on**: a
-  garbage value (same shape) fails the load while a stale CloudFront URL signature and
-  an `Expires` we mint ourselves are accepted — the full matrix, and what the token is
-  still unknown to *do*, are in §3.7.
+* **`bundleCryptKey` — SOLVED.** It is **not a key**: it is
+  `base64( AES-256-CBC/PKCS7( 32-byte constant ) )` under the client's **own live session
+  key and IV**, used as ASCII — the same cipher as the API bodies (§3.1). Decrypting a
+  captured token with the session key yields the payload
+
+  ```
+  32-byte payload constant:
+  d3163d646fedbbcc07a752f663fcd4cf06f5f9eedbadcc70244f20c82ad76922
+  ```
+
+  and re-encrypting that payload reproduces the served 64-char token **byte-for-byte**
+  (verified against the token the official server had just served in the same session).
+  It is a **build-time constant of the client**, not session material: two tokens captured
+  under *different* session keys decrypt to the same 32 bytes. It is a **knowledge proof**
+  — the server demonstrates it knows the session key by encrypting a fixed plaintext,
+  which the client decrypts and compares with its own copy of the constant.
+  *(Supersedes “96-character hex”, “per-song”, “session-scoped”, and the earlier “only
+  thing acted on, role unknown”.)* It is **not** the chart key (§3.3).
+
+  The two failure modes are why this hid for so long: a token that **cannot decrypt**
+  (random bytes, or a token from another session's key) gives **8CN26 “Song Load
+  timeout”**, which reads like a corruption verdict but is a *wait*; a token that decrypts
+  but carries the **wrong payload** trips a *tamper kill* — "An unrecoverable error has
+  occured. The program will now be terminated." (a message that sits right beside the
+  8CN26 literal in the blob, which is how it was noticed as a distinct path).
 * **`CRYPT_KEY`** — a per-song 16-element `{1,2,3}` sequence; a chart/note-obfuscation
   parameter, **not** cipher key material.
 * **Naming is correct**: `final_url_ez` = the **chart**, `final_url_ezi` = the
@@ -466,25 +485,30 @@ only element acted on. A private login cannot make the upstream mint URLs — it
 returns `{"result":0}` (24 B) and the client retries until `GPF 5 TIMES FAILED` —
 which is why hybrid mode must forward the **login** too, not just the pattern.
 
-**Fully offline chart loads: WORKING (one borrowed value).** Private login, our own
-minted `Expires`, CDN files from the local cache, plus `bck harvested` — the
-48-byte token captured from one official pattern response *in the same session*.
-Verified by decrypting the response the client accepted: our URL path +
-`Expires = now+150` + a stale signature + the official token. Recipe:
-`server/README.md`. The single remaining online step is harvesting that token.
+**Fully offline chart loads: WORKING, with nothing borrowed.** Private login, our own
+minted `Expires`, CDN files from the local cache, and a token the server **mints itself**
+from the session key it reads live (§3.2) — no official request anywhere in the path.
+Protocol-level proof: our minted token is byte-identical to the one the official server
+had just served in the same session, so the client has already accepted our own output in
+game. Recipe: `server/README.md`.
 
-**The open question: what the bCK feeds.** A full-heap scan (budget not exhausted,
-3.4 GB) finds **exactly two** copies of the token, both `byte[48]` arrays derived
-from the response — no independent copy, no base64 copy in UTF-8 or UTF-16 — and
-a failing load opens exactly **one** connection (the handshake-only TLS probe to
-`3.37.247.33:443`; no 4649 frame, no 9902). Ruled out as derivations: SHA-384/512,
-HMAC and AES combinations over the session key, the Steam ticket, the login
-ciphertext and the SteamID. So the client owns no local expectation and the token
-is *used as a key* somewhere in the load pipeline; the timeout is what surfaces.
-Leads for resuming: the strings at `oj.UI(166)`/`oj.UI(167)` (they label the
-failed step); the wait loop in `ft.MoveNext` around the two latch checks
-(`0x6ffff2fa71c2`/`0x6ffff2fa7205`); and a field-by-field diff of the `InGameCore`
-instance (fields 0x510–0x840, §4.3) between a successful and a failing load.
+**Why it hid, and what the token is actually for.** Each observation pointed away from
+the truth on its own:
+
+* a full-heap scan (3.4 GB, budget not exhausted) finds **exactly two** copies of the
+  *token*, both derived from the response — because the client never stores the transit
+  value, it stores the *constant*;
+* a failing load opens exactly **one** connection (the handshake-only TLS probe to
+  `3.37.247.33:443`; no 4649 frame, no 9902) — because the comparison is local;
+* no hash/HMAC/AES sweep over the session key, the Steam ticket, the login ciphertext or
+  the SteamID finds the payload — because it is a compile-time constant, not a derivation;
+* garbage bytes give a *timeout* while a wrong payload gives a *tamper kill* — different
+  stages (decrypt vs compare) produce different symptoms.
+
+Residual curiosity, not a blocker: the constant's *preimage* is unknown. It is a value of
+a particular client build, so a future game update can change it; re-derive it by
+decrypting any captured token with that session's key — which is exactly what
+`_pserver.py`'s `bck_payload()` does when `server/data/bck_payload.hex` is missing.
 
 **How literals are addressed in this build (needed for any future hunt).**
 
@@ -695,8 +719,10 @@ Notable: `tools/probes/_poll_da.py` (safe 4 Hz `da.rus` watcher — the pattern 
 
 ## 7. Status & next steps
 
-**No blockers.** Every layer is now solved: AssetBundles, keysounds/BGA, the API session
-cipher, and the CDN chart/index cipher (§3.3, `decrypt_chart.py`).
+**No blockers.** Every layer is solved: AssetBundles, keysounds/BGA, the API session
+cipher, the CDN chart/index cipher (§3.3, `decrypt_chart.py`), and the pattern-response
+token (`bundleCryptKey`, §3.2) — so the private server serves songs with **no official
+server contact at all**.
 
 **Done:** located the chart decryptor by scanning for direct calls into the `dc*` cluster
 (`tools/il2cpp/_callers.js`), identified `dcf → dcg` as `mask ∘ AES-256-CBC`, extracted the
@@ -705,10 +731,12 @@ end-to-end (5 songs, 3 key pairs). The 4K lane map and the long-note rule are ve
 against the game's own `normalLanes`, 12/12 lanes exact. `parse_chart.py` reads the result:
 header, tracks, note events with normal/long, `.ezi` join; JSON or a note listing.
 `dump_song.py` now decrypts on capture and waits for the parse before snapshotting.
-The login/session-key protocol is fully mapped (§3.1) and a **basic private server**
-(`server/`) serves a complete online session — login, music list, profile, pattern files,
-CDN charts, rank stubs — with the session key bridged from the running game; wire formats
-verified end-to-end offline, in-game validation in progress.
+The login/session-key protocol is fully mapped (§3.1) and the private server (`server/`)
+serves a complete online session — login, music list, profile, pattern files, CDN charts,
+rank stubs. **Chart loads are fully offline**: the only thing taken from the running game
+is its session key (which the client never puts on the wire), and the `bundleCryptKey`
+token is minted server-side from a client constant (§3.2), byte-identical to the official
+server's. In-game validation of the server itself is in progress.
 
 **Next:**
 
@@ -730,25 +758,11 @@ verified end-to-end offline, in-game validation in progress.
    control/battle channel (`zf` RSA+AES) the real server presumably uses to learn the key.
 7. Broaden chart coverage in `server/data/` (uncaptured songs fail with `result:0` and
    the client retries 5× before booting to the main screen — e.g. Hyper Magic 5K HD).
-8. **What the `bundleCryptKey` feeds — the one open item.** Offline chart loads
-   already work (§3.7): the client verifies only the bCK, never the URL signature,
-   so one hybrid load per session to harvest that 48-byte token is the sole online
-   step. What the token is *used for* is unknown — it has no second copy in memory
-   and no socket is opened at load time, so it is consumed locally as a key and
-   the surface symptom is a timeout inside `ft.MoveNext`. Three concrete leads,
-   in order of expected effort:
-   (a) **state diff** — dump the `InGameCore` instance (fields 0x510–0x840, §4.3)
-   after a successful load and after a failing one (the latch at `+0x798` marks
-   the failure) and compare: whatever is unset only in the failing case is what
-   the token feeds;
-   (b) **the two strings** `ft.MoveNext` passes to the reporter — resolve
-   `oj.UI(166)` / `oj.UI(167)` (the resolver checks a lazily-built table at
-   `String.static_fields+0x358`), since they label the failed step;
-   (c) **the wait loop** in `ft.MoveNext`@`0x6ffff2f74230` around the latch checks
-   at `0x6ffff2fa71c2` / `0x6ffff2fa7205`.
-   AOT code is decrypted per method, so trigger the failure before scanning, and
-   remember the engine details in §3.7 (per-assembly blob base in a `System.String`
-   static; chunked scans so an abandoned RPC cannot wedge the Gadget).
+8. **`bundleCryptKey` — SOLVED (§3.2/§3.7).** Fully offline chart loads work with a
+   self-minted token: encrypt the client's build-time 32-byte payload constant under the
+   live session key, exactly as the official server does. Nothing comes from an official
+   response any more. Remaining niceties: keep `server/data/bck_payload.hex` per client
+   build, and re-derive it after a game update.
 9. Persist progression: feed accepted `plf` uploads back into the served myinfo
    `clearlist` so scores/records survive across sessions (the client computes its
    per-key-mode rating from that data — §3.7), and RE the exact per-mode rating

@@ -4,9 +4,10 @@ A first working private-server implementation for the Standard/Basic online
 flow. It stubs the game's three HTTPS hosts entirely server-side and keeps the
 raw-TCP channels (battle/control, raw IPs) pointed at the real servers.
 
-**Chart loads work fully offline** (no official login, no CloudFront): the client
-verifies only the per-session `bundleCryptKey`, not the URL signature — see
-"Fully offline chart loads" below for the knob recipe and the one open question.
+**Chart loads work fully offline** (no official login, no CloudFront, no borrowed
+token): the URL signature is never verified and `bundleCryptKey` is minted here —
+it is AES-256-CBC/PKCS7 of a **client-side constant** under the client's live
+session key. See "Fully offline chart loads" below.
 
 
 Everything cryptographic is already solved (see AGENTS.md §3.1/§3.3); this is
@@ -140,16 +141,44 @@ An unrecoverable error has occurred.
 ```
 
 i.e. **8CN26 = "Song Load timeout"** (that string pair sits in the game's literal
-pool; see `AGENTS.md` §3.7). With a wrong bCK the load simply never completes and
-a watchdog reports it.
+pool; see `AGENTS.md` §3.7).
+
+### What the bCK actually is (solved)
+
+`bundleCryptKey` is not a key. It is
+
+```
+base64( AES-256-CBC/PKCS7( 32-byte constant ) )
+```
+
+under the client's **own live session key and IV** (ASCII) — the very cipher the
+API bodies use. The payload is a **build-time constant of the client**
+(`d3163d64…`, written to `server/data/bck_payload.hex`), so the server can mint a
+byte-identical token with no official server involved. It is a knowledge proof:
+the server shows it knows the client's session key by encrypting a fixed
+plaintext, and the client compares the result with its own copy of the constant.
+
+That is why the two failure modes look so different:
+
+| what the client got | outcome |
+|---|---|
+| a token that **cannot decrypt** (random bytes, or another session's token) | **8CN26 "Song Load timeout"** — a *wait*, so it reads like corruption |
+| a token that decrypts but carries the **wrong payload** | **tamper kill** — "An unrecoverable error has occured. The program will now be terminated." |
+
+With no session key at all the server cannot mint anything, so `session_key.json`
+(care of the harvester) stays the single input from the running game. Note the key
+**rotates within a launch**, so it must be re-read per request — `_pserver.py`
+does that already.
 
 ### The knobs and what they proved
 
 ```bash
 python server/_exp.py                 # show state
-python server/_exp.py hybrid on       # forward login+pattern upstream (harvest a token)
+python server/_exp.py hybrid off      # no passthrough to the official servers
 python server/_exp.py urls now        # mint our own Expires = now+150
-python server/_exp.py bck harvested   # reuse the token from the last official response
+python server/_exp.py bck mint        # mint the token (client constant + live key)
+python server/_exp.py bck mint:zero   # ... with a zero payload (diagnostic)
+python server/_exp.py bck harvested   # or reuse the token from a captured response
 python server/_exp.py off             # clear the url/bck mutations (hybrid untouched)
 python server/_exp.py reset           # clear everything
 ```
@@ -157,31 +186,29 @@ python server/_exp.py reset           # clear everything
 | run | knob | result | conclusion |
 |---|---|---|---|
 | A | none (hybrid) | loads | baseline |
-| B | `bck garbage` | 8CN26 | `bundleCryptKey` **is** acted on |
+| B | `bck garbage` | 8CN26 | the token must decrypt (padding) |
 | C | `urls skew` (`Expires` +1 s → invalid signature) | **loads** | the URL signature is **never** verified |
-| D/E | `urls future` / `expire` | fail | only because the bCK was stale, not because of the URL |
+| D | `bck mint:random` | **tamper kill** | a decryptable token with the wrong payload is fatal |
+| E | `bck harvested` (fresh, same session) | loads | the control |
+| F | `bck mint` (client constant, live key) | **byte-identical to E's token** | the server can mint it itself |
 
 ### The offline recipe
 
-One official contact per session, only to obtain the token:
+No official contact at all — the protocol-level token is minted here:
 
 ```bash
-# 1. arm the harvester + server, then do ONE hybrid load to learn the token
-.venv/bin/python server/_harvest_session.py          # terminal 1
-python server/_exp.py hybrid on
-mitmdump -s server/_pserver.py -w ./mitm_parsed/flow_dump_harvest   # terminal 2
-#    launch the game, log in, enter one song → server/data/last_upstream_c2s_get_pattern_file.full.json
+.venv/bin/python server/_harvest_session.py   # terminal 1: keeps session_key.json live
+mitmdump -s server/_pserver.py                # terminal 2: the server
 
-# 2. go fully offline (no official login, no passthrough, no CloudFront)
-python server/_exp.py hybrid off
-python server/_exp.py urls now
-python server/_exp.py bck harvested
-#    every song entry now loads with: our login, our music list, our profile,
-#    our minted URL, our cached CDN files, the captured token
+python server/_exp.py hybrid off              # no passthrough
+python server/_exp.py urls now                # our own CDN URLs
+python server/_exp.py bck mint                # mint the token from the live key
 ```
 
-Verified by decrypting the response the client accepted: our URL path,
-`Expires = now+150`, a *stale* signature, and the official token.
+Then every captured song entry loads with our login, our music list, our profile,
+our minted URL, our cached CDN files and a token we produced. Verified by
+decrypting the response the client accepted, and by minting a token identical to
+the one the official server had served moments earlier.
 
 ### Where the blocker lives (from the code)
 
@@ -229,13 +256,11 @@ hand-off) is described in `AGENTS.md` §3.7 and §7.8.
 * Rank endpoints accept any signature; nothing is verified or persisted.
 * Songs without a captured chart fail at chart load (`result:0`) — extend
   coverage with `dump_song.py` and re-run `_build_data.py`.
-* **Fully offline loads work** (see above) but need one token per session, captured
-  from a single official pattern response (`bck harvested`). What the client does
-  with that token is still unknown — it keeps no local copy and opens no socket at
-  load time, so it must be used as a key inside the load pipeline; the trail is
-  written up in `AGENTS.md` §3.7 / §7.8. Until that is cracked, the fully offline
-  mode is: one hybrid load to harvest, then pure private with `urls now` +
-  `bck harvested`.
-* The session key still requires the Frida bridge (and, in hybrid mode, so does
-  the token). Patching `zf.gnf` to a fixed key and the token question are the two
-  routes to a bridge-free server.
+* **Fully offline loads work** with no official contact (see above). The bCK
+  constant is a value of a particular client build: after a game update, re-derive
+  it by decrypting a captured token (that is `bck_payload()`'s fallback), or just
+  re-check `server/data/bck_payload.hex`. Its *purpose* is now known (a session-key
+  knowledge proof); its *preimage* is not, and does not matter.
+* The session key still requires the Frida bridge — it is generated in the client
+  and never sent, so a bridge-free server would need `zf.gnf` patched or the raw
+  TCP channel RE'd. This is the last dependency on Frida.

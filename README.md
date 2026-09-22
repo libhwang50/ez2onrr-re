@@ -16,8 +16,7 @@ from its CDN. The full technical write-up is in **`AGENTS.md`**.
 | ✅ API traffic | `game1-play.ez2game.co.kr` decrypted (AES-CBC, live session key) |
 | ✅ Charts & keysound index | **cracked** — `decrypt_chart.py` decrypts CDN payloads offline |
 | ✅ Basic private server | login → music list → profile → chart download → score upload, all served locally (`server/`) |
-| ✅ **Offline chart loads** | our own minted `Expires` + a stale CloudFront signature are accepted: the client verifies **only** `bundleCryptKey` (§3.7). One hybrid load per session harvests that 48-byte token, after which the whole session runs offline |
-| 🔧 Fully self-sufficient server | blocked on one open question: which step of the load pipeline the token feeds (`AGENTS.md` §3.7/§7.8); the network is ruled out |
+| ✅ **Fully offline songs** | no official server contact at all: the CloudFront URL signature is never verified, and `bundleCryptKey` is minted server-side (it is AES-CBC of a client-side *constant* under the live session key — `AGENTS.md` §3.2). The only input from the running game is its session key, which it never sends |
 
 ## Private server
 
@@ -43,22 +42,30 @@ from your own captures with `server/_build_data.py`. Full details and caveats:
 
 ### Offline play
 
-Chart loads work **without the official servers**: the client does not verify the
-CloudFront URL signature or its expiry at all, so the server mints its own `Expires`
-and serves the cached payloads. The one thing it does check is the 48-byte
-`bundleCryptKey`, which is per session — do a single hybrid load to capture it, then
-go fully private for the rest of the session:
+Songs load with **no official server contact at all**. Two things make that work:
+
+* the client never verifies the CloudFront URL signature or its expiry, so the
+  server mints its own `Expires` and serves the chart blobs from its cache;
+* `bundleCryptKey` looks like key material but is
+  `AES-256-CBC/PKCS7(<a constant 32-byte payload>)` under the client's **live
+  session key** — a knowledge proof the server can produce itself once it knows
+  that key (`server/data/bck_payload.hex`).
+
+So the only thing taken from the running game is its session key (which it
+generates locally and never puts on the wire; the harvester bridges it):
 
 ```bash
-python server/_exp.py hybrid on        # forward login+pattern once, then load a song
-python server/_exp.py hybrid off       # from here on: no official contact
-python server/_exp.py urls now
-python server/_exp.py bck harvested
+python server/_harvest_session.py      # terminal 1: keeps session_key.json live
+mitmdump -s server/_pserver.py         # terminal 2: the server
+
+python server/_exp.py hybrid off       # no passthrough to the official servers
+python server/_exp.py urls now         # our own CDN URLs
+python server/_exp.py bck mint         # mint the token from the live session key
 ```
 
-(`server/_exp.py` re-reads its knobs on every request, so the switch is live — and
-`off` deliberately leaves the hybrid setting alone.) What the token is ultimately
-*used for* is still open; the reasoning and the leads are in `AGENTS.md` §3.7.
+`server/_exp.py` re-reads its knobs on every request, so the switches are live.
+Note that the session key **rotates within a launch**, so the harvester must keep
+running and the server re-reads the key per request.
 
 ## Setup
 

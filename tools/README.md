@@ -69,7 +69,15 @@ python server/_mem.py findlit 17 0x71616d9c         # `mov r8d,<len>` sites (bas
 python server/_mem.py findthunk 0x71616d97          # mov edx,<off> + call, all bases
 python server/_mem.py readbytes 0x137365560 256     # hex + ascii dump
 python server/_mem.py bck                           # locate the session token in memory
+python server/_mem.py whowrites 0x798               # sites referencing [reg+disp]
+python server/_mem.py callers 0x6ffff2e87ec0        # chunked E8/E9 sweep + attribution
+python server/_mem.py method 0x6ffff2fa7327         # name the method containing an address
+python server/_mem.py zfstatics zf                  # every static field of a class + values
 ```
+
+`whowrites`/`callers`/`method` are chunked internally, so Ctrl-C between chunks is
+safe; `zfstatics` is how the session-scoped statics (the API key/IV and anything
+else `zf` holds) are read without walking `Dictionary` state.
 
 Behaviour worth knowing before trusting a result:
 
