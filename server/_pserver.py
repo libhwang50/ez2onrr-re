@@ -796,9 +796,16 @@ def pattern_response(req_json):
     how = 'exact'
     if hit is None and chart_mode() == 'any':
         pool = [c for c in CHARTS if c['song_norm'] == want]
+        if gm:
+            # the .ezi is NOT always one per song: on some songs the keysound index
+            # differs by keymode (ultimatum: {4K,6K} share one, {5K,8K} another),
+            # so stay inside the requested gamemode when we can
+            same_gm = [c for c in pool if str(c.get('gamemode') or '') == gm]
+            pool = same_gm or pool
         if pool:
-            # prefer the same keymode (fewest lane mismatches), then the 4K EZ
-            # variant the Lounge serves, then anything captured for the song
+            # a chart record always pairs its own .ez with its own .ezi, so any
+            # choice here is internally consistent; prefer the same keymode (no
+            # lane mismatch), then the 4K EZ variant the Lounge serves
             pick = (next((c for c in pool if c['keymode'] == km), None)
                     or next((c for c in pool if c['keymode'] == 1 and c['levelmode'] == 1), None)
                     or pool[0])

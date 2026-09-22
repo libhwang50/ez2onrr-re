@@ -265,12 +265,18 @@ response, so experiments need no restart.
   `\r\n` terminated, velocity 0/1, PKCS7-padded at EOF. Corroboration — MilK: 18,192 B ÷
   807 keysounds = **22.5 B per line**; Conflict: 2,719 lines, mapping verified against the
   game's parsed `instrumentDic` 2719/2719.
-* **The `.ezi` is per song, NOT per mode or difficulty.** Comparing every variant captured
-  (Conflict at keymode 1/levelmode 4, 1/3 and 3/3; Engine at 1/4, 3/3 and two gamemodes;
-  Destr0yer at 1/4 and 3/3; PUPA 5K HD vs 5K NM; **Hyper Magic 4K SHD vs 8K EZ**) each
-  song's decrypted `.ezi` is **byte-identical** — one sha256 per song, even across key
-  modes. So the keysound bank is a property of the song, and no new difficulty or key mode
-  ever needs a fresh keysound set.
+* **The `.ezi` is usually per song — but not always.** On the songs sampled while working
+  out the format (Conflict 1/4, 1/3, 3/3; Engine 1/4, 3/3 and two gamemodes; Destr0yer
+  1/4, 3/3; PUPA 5K HD vs NM; Hyper Magic 4K SHD vs 8K EZ) each decrypted `.ezi` was
+  **byte-identical**, so it looked like a pure property of the song. **The one song we
+  eventually captured all 16 variants of breaks that: `ultimatum` has two `.ezi`s, split
+  by keymode — `{4K, 6K}` share one and `{5K, 8K}` share the other** (both 62,512 B, same
+  length, different bytes). *(Supersedes "one sha256 per song, even across key modes", and
+  with it the claim that no key mode ever needs a fresh keysound set.)* Consequence: a
+  chart's `.ez` only means anything next to **its own** `.ezi` — the two must be captured
+  and served as a pair. Every `charts.json` record is one capture, so pairs stay matched;
+  the risk is only cross-variant fallbacks, which is why `chart any` now stays inside the
+  requested `gamemode`.
 * **The `.ez` chart differs by keymode and difficulty — but only in how notes are ASSIGNED,
   not in what sounds.** Comparing the multiset of `(position, keysound)` over *all* tracks:
   * Conflict **4K EZ ⊂ 4K SHD** — 6386 events, none unique to EZ; SHD has 7 extra;
@@ -282,7 +288,10 @@ response, so experiments need no restart.
   Meanwhile the lane counts move enormously — Conflict's lanes hold 330 notes on EZ, 1304
   on HD and 1814 on SHD, while the total stays ~6390. So difficulty moves notes between the
   player's lanes and the auto-played tracks; the *song* is essentially unchanged.
-  **Practical consequence: one chart per song is enough to render the full song.**
+  **Practical consequence: one chart per song is enough to render the full song** (each
+chart record pairs its own `.ez` with its own `.ezi`, so a render is always internally
+consistent; only the *lane count* of the variant you get may differ from the one you
+selected).
 * **Song-select and in-game commands** (from the same page, and the basis of
   `server/_sweep.py`): in song select `0`–`9` jump to a list section, `PageUp`/`PageDown`
   move 8 rows, `a`–`z` jump to songs starting with that letter (leading articles are
