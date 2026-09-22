@@ -329,92 +329,81 @@ rpc.exports.readbytes = function (addrStr, lenStr) {
 // attribute the callers of that thunk to methods, all in one go.
 rpc.exports.findthunk = function (targetStr) {
   return Il2Cpp.perform(() => {
+    const t0 = Date.now();
     const target = ptr(targetStr);
-    const out = { target: targetStr, offsets: [], found: [] };
-    let rangeBase = null, imgBase = null, rsize = 0;
+    const mod = Process.getModuleByName('GameAssembly.dll');
+    const out = { target: targetStr, offsets: [], sites: [], methods: [] };
+
+    // the mapped range containing the literal -> image base from its file offset
+    const cands = [];
     for (const r of Process.enumerateRanges('r--')) {
       if (r.base.compare(target) <= 0 && r.base.add(r.size).compare(target) > 0) {
-        rangeBase = r.base; rsize = r.size;
         out.range = r.base.toString(16) + '+0x' + r.size.toString(16)
                   + ' file=' + JSON.stringify(r.file || null);
-        if (r.file && typeof r.file.offset === 'number') imgBase = r.base.sub(r.file.offset);
+        if (r.file && typeof r.file.offset === 'number')
+          cands.push({ name: 'imageBase', base: r.base.sub(r.file.offset) });
+        cands.push({ name: 'rangeBase', base: r.base });
         break;
       }
     }
-    if (!rangeBase) return JSON.stringify({ ...out, err: 'no containing r-- range' });
-    const cands = [];
-    if (imgBase) cands.push({ name: 'imageBase', base: imgBase });
-    cands.push({ name: 'rangeBase', base: rangeBase });
-    const mod = Process.getModuleByName('GameAssembly.dll');
+    if (!cands.length) return JSON.stringify({ ...out, err: 'no containing r-- range' });
+
     const xr = Process.enumerateRanges('x')
       .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
+
+    // native scanSync for `mov edx,<off>` (BA imm32); no byte loops, no
+    // per-candidate NativePointer allocation
     for (const c of cands) {
       const off = target.sub(c.base).toInt32() >>> 0;
       out.offsets.push({ name: c.name, base: c.base.toString(16), off: off });
       const ob = [off & 0xff, (off >> 8) & 0xff, (off >> 16) & 0xff, (off >>> 24) & 0xff];
       const pat = 'ba ' + ob.map(b => b.toString(16).padStart(2, '0')).join(' ');
-      const CH = 0x400000, OV = 8;
       for (const r of xr) {
-        let pos = r.base;
-        while (pos.compare(r.base.add(r.size)) < 0) {
-          const len = Math.min(CH, r.base.add(r.size).sub(pos).toInt32());
-          let buf; try { buf = new Uint8Array(pos.readByteArray(len)); } catch (e) { break; }
-          for (let i = 0; i + 6 <= buf.length; i++) {
-            if (buf[i] !== 0xba) continue;
-            if (buf[i+1] !== ob[0] || buf[i+2] !== ob[1] || buf[i+3] !== ob[2] || buf[i+4] !== ob[3]) continue;
-            for (let j = i + 5; j < Math.min(i + 30, buf.length - 5); j++) {
-              if (buf[j] !== 0xe8) continue;
-              let fs = null;
-              for (let b = j; b >= Math.max(0, j - 0x120); b--) if (buf[b] === 0xcc) { fs = b + 1; break; }
-              out.found.push({ via: c.name, off: off, callSite: pos.add(j).toString(16),
-                               funcStart: fs === null ? null : pos.add(fs).toString(16) });
-              break;
-            }
-          }
-          pos = pos.add(len - OV);
+        let hits; try { hits = Memory.scanSync(r.base, r.size, pat); } catch (e) { continue; }
+        for (const m of hits) {
+          if (out.sites.length >= 24) break;
+          let buf; try { buf = new Uint8Array(m.address.readByteArray(40)); } catch (e) { continue; }
+          let callOff = -1;
+          for (let j = 5; j < 34; j++) if (buf[j] === 0xe8) { callOff = j; break; }
+          if (callOff < 0) continue;
+          out.sites.push({ via: c.name, off: off, site: m.address.toString(16),
+                           callAt: m.address.add(callOff).toString(16) });
         }
       }
     }
-    // attribute callers of each resolved function start
+
+    // attribute every site to its enclosing method (nearest preceding VA) - the
+    // method that references the literal is what we are after, and this needs no
+    // second scan of the module
     const mmap = [];
     for (const asm of Il2Cpp.domain.assemblies) {
-      let img; try { img = asm.image; } catch (e) { continue; }
-      let classes; try { classes = img.classes; } catch (e) { continue; }
+      let img, classes;
+      try { img = asm.image; } catch (e) { continue; }
+      try { classes = img.classes; } catch (e) { continue; }
       for (const cls of classes) {
-        let ms; try { ms = cls.methods; } catch (e) { continue; }
-        for (const m of ms) { let va; try { va = m.virtualAddress; } catch (e) { continue; }
-          if (!va.isNull()) mmap.push({ va: va, name: cls.name + '.' + m.name }); }
+        let ms; try { ms = cls.methods; } catch (e) { ms = []; }
+        for (const m of ms) {
+          let va; try { va = m.virtualAddress; } catch (e) { continue; }
+          if (!va.isNull()) mmap.push({ va: va, name: (cls.namespace ? cls.namespace + '.' : '') + cls.name + '.' + m.name });
+        }
       }
     }
     mmap.sort((a, b) => a.va.compare(b.va));
-    const attr = (sp) => { let lo = 0, hi = mmap.length - 1, best = null;
-      while (lo <= hi) { const mid = (lo + hi) >> 1;
-        if (mmap[mid].va.compare(sp) <= 0) { best = mmap[mid]; lo = mid + 1; } else hi = mid - 1; }
-      return best; };
-    out.funcs = [];
-    const seen = {};
-    for (const f of out.found) {
-      if (!f.funcStart || seen[f.funcStart]) continue;
-      seen[f.funcStart] = 1;
-      const tva = ptr(f.funcStart);
-      const callers = [];
-      for (const r of xr) {
-        let pos = r.base;
-        while (pos.compare(r.base.add(r.size)) < 0) {
-          const len = Math.min(0x400000, r.base.add(r.size).sub(pos).toInt32());
-          let buf; try { buf = new Uint8Array(pos.readByteArray(len)); } catch (e) { break; }
-          for (let i = 0; i + 5 <= buf.length; i++) {
-            if (buf[i] !== 0xe8) continue;
-            const rel = buf[i+1] | (buf[i+2] << 8) | (buf[i+3] << 16) | (buf[i+4] << 24);
-            if (pos.add(i + 5 + rel).equals(tva)) callers.push(pos.add(i).toString(16));
-          }
-          pos = pos.add(len - 8);
-        }
+    const attr = (sp) => {
+      let lo = 0, hi = mmap.length - 1, best = null;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (mmap[mid].va.compare(sp) <= 0) { best = mmap[mid]; lo = mid + 1; } else hi = mid - 1;
       }
-      out.funcs.push({ funcStart: f.funcStart, callers: callers.map(cs => {
-        const e = attr(ptr(cs));
-        return { site: cs, enc: e ? e.name + ' @ ' + e.va.toString(16) : '?' }; }) });
+      return best;
+    };
+    for (const site of out.sites) {
+      const e = attr(ptr(site.site));
+      site.inMethod = e ? e.name + ' @ ' + e.va.toString(16) : '?';
+      site.delta = e ? (parseInt(site.site, 16) - parseInt(e.va.toString(16), 16)) : null;
     }
+    out.uniqueMethods = [...new Set(out.sites.map(s => s.inMethod))];
+    out.elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
     return JSON.stringify(out);
   });
 };
