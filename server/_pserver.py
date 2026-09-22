@@ -61,6 +61,7 @@ MAGIC = bytes.fromhex('d3ad76d3adb8')
 TEMPLATES = {}
 CDN_PATHS = {}
 CHARTS = []
+PATTERN_REPLAY = {}
 PROFILE = {}
 _profile_mtime = 0
 BATTLE_SERVER = '3.37.247.33:9902'
@@ -103,6 +104,10 @@ def load_data():
     p = os.path.join(DATA, 'charts.json')
     if os.path.exists(p):
         CHARTS = json.load(open(p))
+    p = os.path.join(DATA, 'pattern_replay.json')
+    if os.path.exists(p):
+        global PATTERN_REPLAY
+        PATTERN_REPLAY = json.load(open(p))
     p = os.path.join(DATA, 'rank_sample.csv')
     if os.path.exists(p):
         RANK_CSV_SAMPLE = open(p).read().strip()
@@ -303,11 +308,18 @@ def pattern_response(req_json):
     km = int(req.get('keymode') or req.get('KEYMODE') or 0)
     lm = int(req.get('levelmode') or req.get('LEVELMODE') or 0)
     want = norm(name)
+    # a captured REAL response (real signed URLs + real per-session
+    # bundleCryptKey) is the only known-good shape - synthesized responses fail
+    # the client's post-parse validation with 8CN26
+    key = (want, km, lm)
+    if key in PATTERN_REPLAY:
+        log(f'pattern: {name!r} km={km} lm={lm} -> REPLAYED official response')
+        return dict(PATTERN_REPLAY[key])
     hit = next((c for c in CHARTS if c['song_norm'] == want and c['keymode'] == km
                 and c['levelmode'] == lm), None)
     if hit is None:
         have = sorted({c['song_norm'] for c in CHARTS})
-        log(f'pattern: NO exact chart for {name!r} keymode={km} levelmode={lm} '
+        log(f'pattern: NO replay/chart for {name!r} keymode={km} levelmode={lm} '
             f'(known songs: {have})')
         return {'result': 0}
     base = f'https://{CDN_HOST}'

@@ -144,6 +144,39 @@ def main():
                 if cand and os.path.exists(cand):
                     cdn_paths[p] = os.path.relpath(cand, ROOT)
 
+    # ---- real pattern responses from a keyed official capture (if present):
+    #      served VERBATIM (real signed URLs + real bundleCryptKey) ----
+    rp = os.path.join(ROOT, 'mitm_parsed', 'replay_official2', 'flows.jsonl')
+    if os.path.exists(rp):
+        sys.path.insert(0, ROOT)
+        from Crypto.Cipher import AES as _AES
+        from Crypto.Util.Padding import unpad as _unpad
+        import base64 as _b64
+        key = os.environ.get('EZ2_API_SESSION_KEY', '').encode()
+        iv = os.environ.get('EZ2_API_SESSION_IV', '').encode()
+        if key and iv:
+            replays = {}
+            for line in open(rp):
+                rec = json.loads(line)
+                if 'c2s_get_pattern_file' not in rec.get('path', ''):
+                    continue
+                try:
+                    enc = rec['req_body_text'].split('data=', 1)[1].split('&')[0]
+                    import urllib.parse as _up
+                    raw = _b64.b64decode(_up.unquote(enc) + '=' * 3)
+                    req = json.loads(_unpad(_AES.new(key, _AES.MODE_CBC, iv).decrypt(raw[6:]), 16))
+                    resp = json.loads(_unpad(_AES.new(key, _AES.MODE_CBC, iv).decrypt(
+                        _b64.b64decode(rec['resp_body_text'] + '=' * (-len(rec['resp_body_text']) % 4))), 16))
+                    if resp.get('result') != 1:
+                        continue
+                    k = (norm(req.get('musicresourcename', '')),
+                         int(req.get('keymode', 0)), int(req.get('levelmode', 0)))
+                    replays[k] = resp
+                except Exception:
+                    continue
+            json.dump(replays, open(os.path.join(OUT, 'pattern_replay.json'), 'w'), indent=1)
+            print(f'pattern_replay.json: {len(replays)} real responses')
+
     json.dump(cdn_paths, open(os.path.join(OUT, 'cdn_paths.json'), 'w'), indent=1)
     json.dump(charts, open(os.path.join(OUT, 'charts.json'), 'w'), indent=1)
     print(f'cdn_paths.json: {len(cdn_paths)} paths')
