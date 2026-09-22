@@ -205,17 +205,20 @@ rpc.exports.hunt3 = function (funcStr) {
       .filter(r => r.base.compare(base) >= 0 && r.base.compare(base.add(mod.size)) < 0);
     const CH = 0x400000, OV = 8;
     const callers = [];
+    const tvaNum = parseInt(tva.toString(16), 16);
     for (const r of xranges) {
-      let pos = r.base;
-      while (pos.compare(r.base.add(r.size)) < 0) {
-        const len = Math.min(CH, r.base.add(r.size).sub(pos).toInt32());
-        let buf; try { buf = new Uint8Array(pos.readByteArray(len)); } catch (e) { break; }
+      let pos = 0;
+      const rstart = parseInt(r.base.toString(16), 16);
+      while (pos < r.size) {
+        const len = Math.min(CH, r.size - pos);
+        let buf; try { buf = new Uint8Array(r.base.add(pos).readByteArray(len)); } catch (e) { break; }
         for (let i = 0; i + 5 <= buf.length; i++) {
           if (buf[i] !== 0xe8) continue;
           const rel = buf[i+1] | (buf[i+2] << 8) | (buf[i+3] << 16) | (buf[i+4] << 24);
-          if (pos.add(i + 5 + rel).equals(tva)) callers.push(pos.add(i).toString(16));
+          if (rstart + pos + i + 5 + rel === tvaNum)
+            callers.push('0x' + (rstart + pos + i).toString(16));
         }
-        pos = pos.add(len - OV);
+        pos += len - OV;
       }
     }
     const mmap = [];
@@ -649,47 +652,19 @@ rpc.exports.findaccessor = function (offsetStr, lenStr) {
       while (lo <= hi) { const mid = (lo + hi) >> 1;
         if (mmap[mid].va.compare(sp) <= 0) { best = mmap[mid]; lo = mid + 1; } else hi = mid - 1; }
       return best; };
-    // numeric target set: converting every call target to a hex string (the
-    // first version) allocated one string per call site in the module and turned
-    // a ~20 s sweep into minutes
-    const targets = new Set();
-    const targetNames = {};
+    // The caller sweep is deliberately NOT done here: it is the only slow step
+    // (a byte-by-byte pass over the whole code section) and running it inline
+    // meant an abandoned RPC could wedge the Gadget. Report the accessor (fast),
+    // then fetch its callers separately with hunt3.
     for (const s of out.sites) {
       const e = attr(ptr(s.site));
       s.accessor = e ? e.name + ' @ ' + e.va.toString(16) : '?';
-      if (e) {
-        out.accessors.push(s.accessor);
-        const n = parseInt(e.va.toString(16), 16);
-        targets.add(n);
-        targetNames[n] = s.accessor;
-      }
+      s.accessorVA = e ? '0x' + e.va.toString(16) : null;
+      if (e) out.accessors.push(s.accessor);
     }
     out.accessors = [...new Set(out.accessors)];
-    const found = {};
-    for (const r of xr) {
-      let pos = 0;
-      const rstart = parseInt(r.base.toString(16), 16);
-      while (pos < r.size) {
-        const len3 = Math.min(0x800000, r.size - pos);
-        let buf; try { buf = new Uint8Array(r.base.add(pos).readByteArray(len3)); } catch (e) { break; }
-        for (let i = 0; i + 5 <= buf.length; i++) {
-          if (buf[i] !== 0xe8) continue;
-          const rel = buf[i+1] | (buf[i+2] << 8) | (buf[i+3] << 16) | (buf[i+4] << 24);
-          const tgt = rstart + pos + i + 5 + rel;
-          if (targets.has(tgt))
-            (found[tgt] = found[tgt] || []).push(rstart + pos + i);
-        }
-        pos += len3 - 8;
-      }
-    }
-    for (const k of Object.keys(found))
-      for (const siteNum of found[k]) {
-        const siteHex = '0x' + siteNum.toString(16);
-        const e = attr(ptr(siteHex));
-        out.callers.push({ accessor: targetNames[k], site: siteHex,
-                           inMethod: e ? e.name + ' @ ' + e.va.toString(16) : '?' });
-      }
-    out.uniqueCallerMethods = [...new Set(out.callers.map(c => c.inMethod))];
+    out.hint = 'for the callers: python server/_mem.py hunt3 ' +
+               (out.sites.length && out.sites[0].accessorVA ? out.sites[0].accessorVA : '<accessorVA>');
     out.elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
     return JSON.stringify(out);
   });
