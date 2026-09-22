@@ -13,6 +13,7 @@ It presses keys, waits for a request it has not seen before, and moves on.
     python server/_sweep.py --variant 5K:HD    # capture every song at 5K HD
     python server/_sweep.py --keymodes 4K,5K --difficulties EZ,HD   # the cross product
     python server/_sweep.py --variants         # every key mode x every difficulty
+    python server/_sweep.py --no-smart         # do not skip variants already dumped
     python server/_sweep.py --shot             # save a screenshot before each entry
     python server/_sweep.py --state            # classify the current screen and exit
     python server/_sweep.py --no-screen        # disable the screen classifier
@@ -26,7 +27,10 @@ the game is still in the previous song (pause menu safe), back at song select, o
 at the main menu — instead of guessing whether ESC is safe. It also waits out
 LOADING/TRANSITION instead of counting a slow load as a miss, confirms the song
 select before advancing (`--no-verify` to skip), and stops when the list wraps or
-the song stops advancing (`--no-stop-on-wrap` to skip).
+the song stops advancing (`--no-stop-on-wrap` to skip). With a variant plan it reads
+`extracted_charts/` and only captures the variants a song is missing (`--no-smart`
+to disable), and it waits for gameplay to be confirmed so Esc fires as soon as it is
+safe rather than after a fixed delay.
 
 Capture run (one entry per song is enough — the server serves a song's chart for
 any of its keymodes, and the .ezi is per-song):
@@ -54,6 +58,7 @@ LOG = os.path.join(ROOT, 'server', 'pserver.log')
 KEYS = os.path.join(DATA, 'sweep_keys.json')
 PROGRESS = os.path.join(DATA, 'sweep_progress.jsonl')
 SHOTS = os.path.join(ROOT, 'server', 'shots')
+ARCHIVE = os.path.join(ROOT, 'extracted_charts')
 
 DEFAULTS = {
     '_comment': ('Song-select key names for xdotool: TAB = key mode (4B/5B/6B/8B) '
@@ -83,14 +88,18 @@ DEFAULTS = {
     'menu': {'cards': ['BASIC', 'STANDARD', 'MULTIPLAYER', 'COURSE', 'LOUNGE', 'OPTION'],
              'confirm': 'Return'},
     'timing': {'after_key': 0.35, 'settle': 1.0, 'wait_for_request': 8.0,
-               'after_exit': 2.5, 'after_start': 8.0, 'wait_for_cdn': 10.0,
+               'after_exit': 1.2, 'after_start': 8.0, 'wait_for_cdn': 10.0,
                'after_failed_load': 3.0,
                'poll': 0.25,
                'after_confirm': 3.0,
                # screen classifier: wait out fades and require a state to persist for
                # `screen_stable` seconds before acting (the fade effect is ~1.5 s)
                'screen_debounce': 0.4, 'screen_stable': 2.0, 'screen_timeout': 6.0,
-               'variant_settle': 0.5},
+               # leave gameplay as soon as it is confirmed (Esc opens PAUSE); the
+               # `after_start` cap is only reached for a `--no-screen` run
+               'gameplay_stable': 1.5, 'gameplay_poll': 0.4,
+               # start pressing difficulty/keymode this long after the exit sequence
+               'variant_settle': 0.5, 'variant_lead': 0.5},
 }
 
 REQ = re.compile(r'c2s_get_pattern_file request: (\{.*\})')
@@ -487,6 +496,42 @@ DIFFS = ['EZ', 'NM', 'HD', 'SHD']     # Left/Right order (Left clamps, does not 
 # levelmode 1=EZ, 2=NM, 3=HD, 4=SHD).
 API_KEYMODE = {'1': 0, '2': 1, '3': 2, '4': 3}
 API_DIFF = {'1': 0, '2': 1, '3': 2, '4': 3}
+# Archive directory names <-> API ids. This is what `_pserver.py` files captures under,
+# so "already dumped" agrees with what the server can serve. 4 is 8K, 5 is 7K (course).
+KM_DIR = {1: '4k', 2: '5k', 3: '6k', 4: '8k', 5: '7k'}
+DIFF_DIR = {1: 'ez', 2: 'nm', 3: 'hd', 4: 'shd'}
+KM_API = {v: k for k, v in KM_DIR.items()}
+DIFF_API = {v: k for k, v in DIFF_DIR.items()}
+
+
+def norm_song(s):
+    """The archive directory name for a song (same normalisation as _pserver.norm)."""
+    return re.sub(r'[^a-z0-9]', '', (s or '').lower())
+
+
+def captured_variants(song):
+    """{(api keymode, api levelmode)} already dumped under extracted_charts/<song>/."""
+    d = os.path.join(ARCHIVE, norm_song(song))
+    have = set()
+    if not os.path.isdir(d):
+        return have
+    for km_dir in os.listdir(d):
+        km = KM_API.get(km_dir)
+        if km is None or not os.path.isdir(os.path.join(d, km_dir)):
+            continue
+        sub = os.path.join(d, km_dir)
+        for lm_dir in os.listdir(sub):
+            lm = DIFF_API.get(lm_dir)
+            if lm is not None and os.path.isfile(os.path.join(sub, lm_dir, 'ez.ez')):
+                have.add((km, lm))
+    return have
+
+
+def plan_api(entry):
+    """(api keymode, api levelmode) for a plan entry, either of which may be None."""
+    km, df = entry
+    return (KEYMODES.index(km) + 1 if km else None,
+            DIFFS.index(df) + 1 if df else None)
 
 
 def _split_list(s):
@@ -619,13 +664,15 @@ def resync():
     time.sleep(T['after_exit'])
 
 
-def ensure_song_select(attempts=2):
+def ensure_song_select(attempts=2, lenient=False):
     """Return True once the debounced screen state says we are at the song select.
 
     One cheap single-frame check first; the debounced classifier only runs if that is
-    inconclusive (e.g. mid-transition). Acts on the other states: main menu -> confirm
-    the focused card; gameplay/pause -> the pause menu is safe; loading/transition ->
-    wait; anything else -> the harmless Up+Enter fallback (never ESC).
+    inconclusive (e.g. mid-transition). With `lenient`, a TRANSITION/LOADING frame is
+    accepted after `variant_lead` — that is the tail of the exit fade, and the variant
+    keys land fine during it, so it saves the debounce. Acts on the other states: main
+    menu -> confirm the focused card; gameplay/pause -> the pause menu is safe;
+    loading/transition -> wait; anything else -> the harmless Up+Enter fallback (no ESC).
     """
     if not SCREEN:
         return True
@@ -636,6 +683,9 @@ def ensure_song_select(attempts=2):
         except Exception as e:
             print(f'    (screen classifier unavailable: {e})')
             return True                 # cannot verify; do not block the sweep
+        if lenient and st and st[0] in ('TRANSITION', 'LOADING_SCREEN'):
+            time.sleep(T.get('variant_lead', 0.5))
+            return True
         if not st or st[0] != 'SONG_SELECT':
             st = screen_state()
         if st and st[0] == 'SONG_SELECT':
@@ -656,6 +706,42 @@ def ensure_song_select(attempts=2):
     return False
 
 
+def wait_for_gameplay():
+    """Wait until the screen has been GAMEPLAY long enough that Esc opens PAUSE.
+
+    Returns the seconds waited. Without the classifier this is the fixed `after_start`
+    wait (the old behaviour); with it, Esc fires as soon as gameplay has been stable for
+    `gameplay_stable` seconds, instead of always waiting the `after_start` cap.
+    """
+    t0 = time.time()
+    try:
+        import _screen
+    except Exception as e:
+        print(f'    (screen classifier unavailable: {e}); fixed wait')
+        time.sleep(T['after_start'])
+        return time.time() - t0
+    stable = T.get('gameplay_stable', 1.5)
+    since = None
+    while True:
+        try:
+            st = _screen.classify(_screen.grab())
+        except Exception as e:
+            print(f'    (screen classifier unavailable: {e}); fixed wait')
+            time.sleep(T['after_start'])
+            return time.time() - t0
+        now = time.time()
+        if st[0] == 'GAMEPLAY':
+            if since is None:
+                since = now
+            if now - since >= stable:
+                return now - t0
+        else:
+            since = None
+        if now - t0 >= T['after_start']:
+            return now - t0
+        time.sleep(T.get('gameplay_poll', 0.4))
+
+
 def sweep(limit, variants, shot, dry, mode=None):
     tail = Tail(LOG)
     cdn = CdnWatch()
@@ -673,8 +759,8 @@ def sweep(limit, variants, shot, dry, mode=None):
         verify = 'on' if VERIFY else 'off'
         stop = '' if '--no-stop-on-wrap' in sys.argv[1:] else ' (stop on wrap/end)'
         print('  would: [shot] Enter -> wait for the request (waiting out '
-              'LOADING/TRANSITION) -> wait '
-              f'{T["after_start"]}s for gameplay -> Esc/Up/Enter (MUSIC SELECT) '
+              'LOADING/TRANSITION) -> wait for gameplay (<= '
+              f'{T["after_start"]}s) -> Esc/Up/Enter (MUSIC SELECT) '
               f'-> confirm the song select ({verify}) -> next song -> repeat{stop}')
         return 0
     if not game_focused(verbose=True):
@@ -685,7 +771,9 @@ def sweep(limit, variants, shot, dry, mode=None):
             return 2
     captured = skipped = failed = 0
     nochart = 0
-    pi = 0
+    smart = '--no-smart' not in sys.argv[1:]
+    cur_song = None          # song at the cursor; None means not identified yet
+    queue = []               # variants still to capture for cur_song
     cur_km = cur_diff = None
     if plan:
         reqs = tail.read_all()
@@ -713,7 +801,16 @@ def sweep(limit, variants, shot, dry, mode=None):
             if shot:
                 screenshot(f'{i:04d}_before')
             if plan:
-                km, df = plan[pi]
+                if cur_song is None:
+                    km, df = plan[0]                       # identify the song
+                elif queue:
+                    km, df = queue[0]
+                else:
+                    print(f'    {cur_song}: all requested variants already dumped')
+                    send(K['next_song'], 'next song')
+                    cur_song = None
+                    time.sleep(T['settle'])
+                    continue
                 if km or df:
                     print(f'    variant -> {km or "keep"} {df or "keep"}')
                     cur_km, cur_diff = set_variant(km, df, cur_km, cur_diff)
@@ -745,7 +842,6 @@ def sweep(limit, variants, shot, dry, mode=None):
             ok = [e for e in events if e[0] in ('OK', 'HIT')]
             k = tail.key(req)
             if plan:
-                km, df = plan[pi]
                 if km and str(k[1]) != str(KEYMODES.index(km) + 1):
                     print(f'    WARNING: asked for {km} but the game requested keymode '
                           f'{k[1]} — recalibrating')
@@ -754,6 +850,17 @@ def sweep(limit, variants, shot, dry, mode=None):
                           f'levelmode {k[2]} — recalibrating')
                 cur_km = API_KEYMODE.get(str(k[1]))
                 cur_diff = API_DIFF.get(str(k[2]))
+                if cur_song is None:
+                    cur_song = k[0]
+                    have = captured_variants(k[0]) if smart else set()
+                    queue = [v for v in plan if plan_api(v) not in have]
+                    if (km, df) in queue:
+                        queue.remove((km, df))
+                    if smart:
+                        print(f'    {cur_song}: {len(have)} variant(s) dumped, '
+                              f'{len(queue)} to go')
+                elif queue and queue[0] == (km, df):
+                    queue.pop(0)
             if mode and captured == 0 and prev_gm and k[3] == prev_gm:
                 print(f'    WARNING: gamemode is still {k[3]} after switching to '
                       f'{mode.upper()} — the menu step probably missed '
@@ -776,28 +883,22 @@ def sweep(limit, variants, shot, dry, mode=None):
                 print(f'    CAPTURED  {k[0]:24s} km={k[1]} lm={k[2]} gm={k[3]}'
                       f'   ({captured} new, CDN {ok[0][0]})')
             if ok:
-                # A confirmed start: the game is loading into gameplay, so the
-                # pause menu is the right way out.
-                time.sleep(T['after_start'])
+                # A confirmed start: wait for gameplay, then the pause menu is safe.
+                waited = wait_for_gameplay()
+                print(f'    gameplay after {waited:.1f}s — leaving')
                 exit_song()
                 last_confirmed = False
-                if VERIFY and not ensure_song_select():
+                if VERIFY and not ensure_song_select(lenient=True):
                     print('    WARNING: could not confirm the song select; continuing')
             else:
                 # The load failed; the client backs out to the song select by
                 # itself (after its 5 retries). Do not press ESC here.
                 time.sleep(T['after_failed_load'])
                 last_confirmed = False
-                if VERIFY and not ensure_song_select():
+                if VERIFY and not ensure_song_select(lenient=True):
                     print('    WARNING: could not confirm the song select; continuing')
-            # With a plan, stay on this song until every variant has been captured.
-            advance = True
-            if plan and len(plan) > 1:
-                pi += 1
-                if pi >= len(plan):
-                    pi = 0
-                else:
-                    advance = False
+            # Advance to the next song once the plan's queue for this song is empty.
+            advance = not plan or not queue
             if advance:
                 if stop_on_wrap:
                     song = k[0]
@@ -814,6 +915,8 @@ def sweep(limit, variants, shot, dry, mode=None):
                         break
                     run_songs.append(song)
                 send(K['next_song'], 'next song')
+                if plan:
+                    cur_song = None
             time.sleep(T['settle'])
     except KeyboardInterrupt:
         print('\ninterrupted')

@@ -270,6 +270,7 @@ python server/_sweep.py --variants       # every key mode x every difficulty
 python server/_sweep.py --dry-run        # print the plan, send nothing
 python server/_sweep.py --no-screen      # disable the screen classifier entirely
 python server/_sweep.py --no-verify      # do not confirm the song select before advancing
+python server/_sweep.py --no-smart       # do not skip variants already dumped
 python server/_sweep.py --no-stop-on-wrap  # ignore the wrap/end checks
 ```
 
@@ -369,11 +370,25 @@ per key-mode group, so the full cross product is only worth it when you actually
 exact per-variant charts. `--variant` / the axis flags are the cheap way to fill a
 gap (e.g. capture the whole list at 5K HD, then again at 4K EZ).
 
+**It only captures what is missing.** After the first entry identifies the song (the
+request names it), the sweep reads `extracted_charts/<song>/` and drops every plan entry
+whose `.ez` already exists, so a song that already has 4K/5K/6K but not 8K runs only the
+four 8K variants before advancing. One entry per song is always spent identifying it (the
+title is only known from the request), but the rest are skipped — `--no-smart` disables it.
+
 ### How the loop uses the state
 
 * **A slow load is not a miss.** On a missed request the loop classifies; if the screen is
   `LOADING_SCREEN`/`TRANSITION` it waits and re-waits for the request instead of counting a
   failure. A genuine miss then goes through `recover()`.
+* **Leave gameplay as soon as it is safe.** Instead of always waiting `after_start` (8 s),
+  it polls the screen and presses Escape once gameplay has been stable for
+  `gameplay_stable` (1.5 s) — about 4 s earlier. `after_start` stays the cap, and a
+  `--no-screen` run uses it directly.
+* **Start the variant keys early.** After the exit sequence it waits `after_exit` (1.2 s)
+  and, if the screen is mid-transition, proceeds after `variant_lead` (0.5 s) rather than
+  waiting for the debounced song select; the difficulty/key-mode keys land during the
+  fade-in.
 * **Confirm before advancing.** After leaving a song the loop calls `ensure_song_select()`:
   a cheap single-frame check first, then the debounced classifier if that is inconclusive.
   If it is not at the song select it acts (`MAIN_MENU` -> confirm the card,

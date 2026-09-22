@@ -27,7 +27,9 @@ DATA = os.path.join(ROOT, 'server', 'data')
 LOG = os.path.join(ROOT, 'server', 'pserver.log')
 QUEUE = os.path.join(DATA, 'coverage_queue.json')
 
-KEYMODE_DIR = {1: '4k', 2: '5k', 3: '6k', 4: '7k', 5: '8k'}
+# API keymode -> directory name. 4 is 8K and 5 is 7K (course-only): the same mapping
+# `_pserver.py` files captures under, so coverage and the archive agree.
+KEYMODE_DIR = {1: '4k', 2: '5k', 3: '6k', 4: '8k', 5: '7k'}
 LEVEL_DIR = {1: 'ez', 2: 'nm', 3: 'hd', 4: 'shd'}
 
 
