@@ -138,23 +138,60 @@ def main():
                 # scan INSIDE this session - never open a second Frida session
                 if os.environ.get('EZ2_HUNT') and not hunt_done:
                     hunt_done = True
-                    log('EZ2_HUNT: hunting the error site (blocks several '
-                        'minutes; Ctrl-C once = cancel+exit cleanly)…')
+                    log('EZ2_HUNT: three fast stages, progress logged; '
+                        'Ctrl-C cancels (detaches safely)')
                     # restore the default SIGINT behaviour for the duration:
-                    # the hunt blocks in a C-level lock wait, and our custom
-                    # handler swallows Ctrl-C (which looked like a hang).
-                    # The default handler raises KeyboardInterrupt inside the
+                    # a stage blocks in a C-level lock wait, and our custom
+                    # handler swallows Ctrl-C (which looked like a hang). The
+                    # default handler raises KeyboardInterrupt inside the
                     # blocked wait, and the except path below detaches safely.
                     signal.signal(signal.SIGINT, signal.default_int_handler)
+                    out = {}
                     try:
-                        res = script.exports_sync.hunt('스팀에서 게임 파일 무결성')
-                        open(os.path.join(ROOT, 'server', 'hunt_result.json'), 'w').write(res)
-                        log('hunt result -> server/hunt_result.json')
+                        t0 = time.time()
+                        log('hunt 1/3: literal base + Korean message + '
+                            'neighbourhood…')
+                        r1 = json.loads(script.exports_sync.hunt1(
+                            '스팀에서 게임 파일 무결성'))
+                        out['hunt1'] = r1
+                        log(f'  base={r1.get("base")} litBase={r1.get("litBase")} '
+                            f'koreanHits={r1.get("koreanHits")} '
+                            f'koreanOff={r1.get("koreanOff")} '
+                            f'defHits={r1.get("defHits")} ({time.time()-t0:.0f}s)')
+                        for run in (r1.get('neighbourRuns') or [])[:40]:
+                            log(f'    | {run[:150]}')
+                        if r1.get('err'):
+                            log(f'  stage 1 error: {r1["err"]}')
+                        elif r1.get('koreanOff') is not None:
+                            t0 = time.time()
+                            log('hunt 2/3: literal thunk for that offset…')
+                            r2 = json.loads(script.exports_sync.hunt2(
+                                str(r1['koreanOff'])))
+                            out['hunt2'] = r2
+                            log(f'  thunk sites={r2.get("found")} '
+                                f'({time.time()-t0:.0f}s)')
+                            fs = next((f['funcStart'] for f in (r2.get('found') or [])
+                                       if f.get('funcStart')), None)
+                            if fs:
+                                t0 = time.time()
+                                log(f'hunt 3/3: callers of {fs}…')
+                                r3 = json.loads(script.exports_sync.hunt3(fs))
+                                out['hunt3'] = r3
+                                log(f'  callers={r3.get("callers")} '
+                                    f'({time.time()-t0:.0f}s)')
+                                for c in (r3.get('callers') or []):
+                                    log(f'    -> {c.get("site")}  {c.get("enc")}')
+                            else:
+                                log('  no function start resolved — cannot '
+                                    'find callers')
                     except KeyboardInterrupt:
                         log('hunt cancelled by Ctrl-C (detached safely)')
                         raise SystemExit(0)
                     except Exception as e:
                         log(f'hunt failed: {e}')
+                    open(os.path.join(ROOT, 'server', 'hunt_result.json'),
+                         'w').write(json.dumps(out, indent=1, ensure_ascii=False))
+                    log('hunt result -> server/hunt_result.json')
             misses = 0
         except Exception as e:
             misses += 1
