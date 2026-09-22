@@ -12,6 +12,13 @@ It presses keys, waits for a request it has not seen before, and moves on.
     python server/_sweep.py --mode STANDARD [--from BASIC]   # step to that card first
     python server/_sweep.py --variants         # also cycle difficulty/keymode
     python server/_sweep.py --shot             # save a screenshot before each entry
+    python server/_sweep.py --state            # classify the current screen and exit
+
+The server log is the primary sensor (a request names song/keymode/levelmode/
+gamemode, and CDN OK/HIT says whether it was captured). A screenshot classifier
+(`server/_screen.py`) is the *safety* sensor: on a missed request it tells whether
+the game is still in the previous song (pause menu safe), back at song select, or
+at the main menu — instead of guessing whether ESC is safe.
 
 Capture run (one entry per song is enough — the server serves a song's chart for
 any of its keymodes, and the .ezi is per-song):
@@ -33,12 +40,12 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # for _screen
 DATA = os.path.join(ROOT, 'server', 'data')
 LOG = os.path.join(ROOT, 'server', 'pserver.log')
 KEYS = os.path.join(DATA, 'sweep_keys.json')
 PROGRESS = os.path.join(DATA, 'sweep_progress.jsonl')
 SHOTS = os.path.join(ROOT, 'server', 'shots')
-SHOTDIR = os.path.expanduser('~/Pictures/Screenshots')
 
 DEFAULTS = {
     '_comment': ('Song-select key names for xdotool: TAB = key mode (4B/5B/6B/8B) '
@@ -133,21 +140,64 @@ def send(key_name, describe=None):
 
 
 def screenshot(tag):
+    """Save a frame of the game window. Focus-independent (XWayland + x11grab), so
+    it works while the sweep's terminal holds the focus."""
     os.makedirs(SHOTS, exist_ok=True)
-    before = set(os.listdir(SHOTDIR)) if os.path.isdir(SHOTDIR) else set()
-    run(['niri', 'msg', 'action', 'screenshot-screen'])
-    time.sleep(1.0)
     try:
-        new = sorted(set(os.listdir(SHOTDIR)) - before)
-    except Exception:
-        new = []
-    if not new:
+        import _screen
+        from PIL import Image
+        rgb = _screen.grab()
+    except Exception as e:
+        print(f'  shot failed: {e}')
         return None
-    src = os.path.join(SHOTDIR, new[-1])
     dst = os.path.join(SHOTS, f'{tag}_{int(time.time())}.png')
-    os.replace(src, dst)
+    Image.fromarray(rgb).save(dst)
     print(f'  shot -> {os.path.relpath(dst, ROOT)}')
     return dst
+
+
+SCREEN = os.environ.get('EZ2_NO_SCREEN') not in ('1', 'true')
+
+
+def screen_state():
+    """(state, confidence, why) for the game window, or None if unavailable."""
+    if not SCREEN:
+        return None
+    try:
+        import _screen
+        return _screen.classify(_screen.analyze(_screen.grab()))
+    except Exception as e:
+        print(f'    (screen classifier unavailable: {e})')
+        return None
+
+
+def recover(still_in_song, shot_tag=None):
+    """Get back to the song select after a missed request, using the screen state
+    when it is available and the safe blind fallback otherwise.
+
+    ESC is only safe once we know the game is in the previous song's pause menu:
+    in the main menu ESC is 'leave', and an unprovoked Escape can walk the game out
+    of song select. So: classify first, then act.
+    """
+    st = screen_state()
+    state = st[0] if st else None
+    if st:
+        print(f'    screen state: {state} (conf={st[1]:.2f}, {st[2]})')
+        if shot_tag:
+            screenshot(shot_tag)
+    if state in ('GAMEPLAY', 'PAUSE', 'RESULT') or (state is None and still_in_song):
+        print('    still in the previous song — the pause menu is safe to use')
+        resync()
+    elif state == 'MAIN_MENU':
+        print('    back at the main menu — re-entering the focused card')
+        send(CFG['menu']['confirm'])
+        time.sleep(T['after_confirm'])
+    else:
+        # SONG_SELECT or unknown: no ESC. Up+Enter is harmless everywhere and
+        # re-enters a focused card / starts a song.
+        print('    safe recovery (Up, Enter; no ESC)')
+        send(K['prev_song'])
+        send(K['enter_song'])
 
 
 # ---------------------------------------------------------------- log
@@ -477,19 +527,7 @@ def sweep(limit, variants, shot, dry, mode=None):
             req = tail.wait(T['wait_for_request'])
             if req is None:
                 failed += 1
-                if shot:
-                    screenshot(f'{i:04d}_nostart')
-                if last_confirmed:
-                    print('    no request — still in the previous song, so the '
-                          'pause menu is safe to use')
-                    resync()
-                else:
-                    # We do NOT know where we are (menu? song select?), and ESC
-                    # would mean "leave" in the main menu. Up+Enter is harmless
-                    # everywhere and re-enters a focused card / starts a song.
-                    print('    no request — safe recovery (Up, Enter; no ESC)')
-                    send(K['prev_song'])
-                    send(K['enter_song'])
+                recover(last_confirmed, f'{i:04d}_nostart' if shot else None)
                 last_confirmed = False
                 time.sleep(T['settle'])
                 continue
@@ -550,6 +588,13 @@ def main():
         return watch()
     if '--calibrate' in a:
         return calibrate(write='--write' in a)
+    if '--state' in a:
+        st = screen_state()
+        if st is None:
+            print('screen classifier unavailable')
+            return 1
+        print(f'{st[0]}  conf={st[1]:.2f}  ({st[2]})')
+        return 0
     mode = arg(a, '--mode', None)
     if '--dry-run' in a:
         return sweep(int(arg(a, '--limit', 10)), '--variants' in a, '--shot' in a,

@@ -252,14 +252,16 @@ The loop that adds songs, end to end:
 The addon only lets a CDN request out when `cdn` is in the passthrough list — in
 `offline` mode nothing leaves the machine, and an uncached chart is a plain 404.
 
-`server/_sweep.py` automates that walk. It is **blind by design** — the server log
-is its sensor, since every request names the song, keymode, levelmode and gamemode
-— and it refuses to send keys unless the focused window really is the game
-(`niri msg focused-window`), so it cannot type into your terminal.
+`server/_sweep.py` automates that walk. The server log is its primary sensor — every
+request names the song, keymode, levelmode and gamemode — and a screen-state classifier
+(`server/_screen.py`, below) is the *safety* sensor. It refuses to send keys unless the
+focused window really is the game (`niri msg focused-window`), so it cannot type into
+your terminal.
 
 ```bash
 python server/_sweep.py                  # bindings + who has focus right now
 python server/_sweep.py --watch          # just tail the log (no input)
+python server/_sweep.py --state          # classify the current screen and exit
 python server/_sweep.py --calibrate      # learn the difficulty/keymode keys
 python server/_sweep.py --limit 600      # walk the list, one entry per song
 python server/_sweep.py --variants       # also cycle difficulty/keymode
@@ -271,12 +273,46 @@ python server/_sweep.py --dry-run        # print the plan, send nothing
 The sweep therefore only sends the pause-menu exit when the entry actually started a
 song (a pattern request *and* a CDN body arrived, so the next state is loading or
 gameplay — never a menu), or when it knows the previous entry started a song and never
-came back (so we are inside its gameplay). When it does not know where it is, the
-recovery is `Up` + `Enter`, which is harmless in every state and productive in the
-two that matter: in song select it starts a song, in the main menu it re-enters the
-focused card. Timings in `server/data/sweep_keys.json`: `wait_for_request` 8 s (a
-request arrives 1–2 s after a real Enter, so a stumble fails fast) and `after_start`
-8 s (time from the request to gameplay before `Esc`).
+came back (so we are inside its gameplay). On a missed request it now **classifies the
+screen** (`server/_screen.py`): *gameplay/pause* means the previous song is still
+running and the pause menu is safe; *main menu* means re-enter the focused card; *song
+select* or *unknown* means `Up` + `Enter`, which is harmless in every state and
+productive in the two that matter. Timings in `server/data/sweep_keys.json`:
+`wait_for_request` 8 s (a request arrives 1–2 s after a real Enter, so a stumble fails
+fast) and `after_start` 8 s (time from the request to gameplay before `Esc`).
+
+### Screen-state classifier — `server/_screen.py`
+
+The log says what the game *asked for*, not where the UI is, so the safety decision
+above needs to see the screen. It is deliberately **not** OCR, and not pixel-perfect
+template matching: the song select is semi-transparent UI over an animated BGA.
+
+* The BGA is heavily **blurred**, so the UI is the only high-frequency content. Edge
+  energy separates them even *through* a translucent panel (measured at 1920x1080: UI
+  ROIs 3.7–5.4 mean |grad| vs 1.8 for the blurred field). Matching an *edge* patch
+  survives alpha blending; matching an intensity patch does not.
+* Translucent panels move with the background, so **temporal differencing fails**: the
+  blurred field moved ~100/255 between frames while the *static* circular preview
+  looked UI-stable. The classifier instead keys on **saturated, near-opaque accents**
+  (the yellow play disk — ~4,500 px, left half only) and on edge structure.
+* Capture is **focus-independent**: the game is XWayland, so `ffmpeg -f x11grab
+  -window_id` reads its pixels. `niri msg action screenshot-window` only captures the
+  *focused* window, and this desktop is focus-follows-mouse, which made it unusable
+  while the sweep's terminal held focus.
+
+```bash
+python server/_screen.py --debug                 # features + annotated ROI map
+python server/_screen.py --collect MAIN_MENU     # save an anchor for a state
+python server/_screen.py --watch                 # classify continuously
+python server/_screen.py --list                  # collected anchors
+```
+
+`classify()` applies a few hard rules (accent blobs) first, then falls back to the
+nearest edge-grid signature among the collected `server/anchors/<STATE>/` frames.
+Anchors are git-ignored (they contain BGA art); collect your own with `--collect`.
+Currently only `SONG_SELECT` is anchored — the yellow-disk rule and the anchors both
+resolve it — so the other states fall through to the safe `UNKNOWN` recovery until
+anchors are collected for them.
 
 A chart only counts as captured once the CDN body actually arrived: the sweep
 watches for the addon's `CDN OK`/`CDN HIT` line and otherwise reports *asked but

@@ -50,6 +50,10 @@ music_names.json
 # visualiser output (derived from charts + BGAs)
 visualizations/
 
+# screen-state classifier artifacts (game screenshots: UI + BGA preview art)
+server/shots/
+server/anchors/
+
 # --- private server (server/) runtime artifacts — never publish ---
 # session_key.json holds the live API session key; data/ holds decrypted
 # templates from your own captures (personal profile, play history, the music
