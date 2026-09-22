@@ -290,12 +290,15 @@ def summarize_obj(obj, secret=()):
 
 
 def save_upstream(ep, obj):
-    """Persist a decrypted upstream response (secrets shortened) so the exact
-    field set of a known-good response can be diffed against our replay."""
+    """Persist a decrypted upstream response: a shortened copy for reading and
+    a full one (real URLs + bundleCryptKey) for reuse/diffing. Both live in the
+    git-ignored server/data/."""
     try:
         red = {k: _redact(v) for k, v in obj.items()} if isinstance(obj, dict) else obj
-        p = os.path.join(DATA, 'last_upstream_' + ep + '.json')
-        json.dump(red, open(p, 'w'), indent=1, ensure_ascii=False)
+        json.dump(red, open(os.path.join(DATA, 'last_upstream_' + ep + '.json'),
+                            'w'), indent=1, ensure_ascii=False)
+        json.dump(obj, open(os.path.join(DATA, 'last_upstream_' + ep + '.full.json'),
+                            'w'), indent=1, ensure_ascii=False)
     except Exception:
         pass
 
@@ -312,6 +315,14 @@ def mutate_url(u, mode):
         q['Expires'] = str(int(time.time()) + 315360000)   # +10 years
     elif mode == 'expire':
         q['Expires'] = str(int(time.time()) - 3600)
+    elif mode == 'skew':
+        # +1 s: still perfectly "fresh" for any expiry-window check, but the
+        # CloudFront signature no longer matches -> isolates signature
+        # verification from a freshness/expiry check.
+        try:
+            q['Expires'] = str(int(q.get('Expires', '0')) + 1)
+        except Exception:
+            pass
     if mode == 'host':
         parts = parts._replace(netloc='game1-cdn2.ez2game.co.kr')
     return urllib.parse.urlunsplit(parts._replace(

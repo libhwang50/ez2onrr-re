@@ -143,7 +143,8 @@ wanted, is to forward those endpoints too:
 
 | knob | value | effect |
 |---|---|---|
-| `urls` | `future` | `Expires` +10 years — signature no longer matches |
+| `urls` | `skew` | `Expires` +1 s — still "fresh", but the signature no longer matches |
+| | `future` | `Expires` +10 years — signature no longer matches |
 | | `expire` | `Expires` in the past — signature still valid |
 | | `noparams` | strip the whole query string |
 | | `host` | swap the CDN host, keep path/params |
@@ -165,7 +166,7 @@ Both mutations apply to a **passthrough** (fresh upstream) response *and* to a
   pattern request is meaningless unless the **login** was forwarded too — the
   real server has no session to mint URLs for. Hence `hybrid on` = `login,pattern`.
 
-### The discriminating tests (one hybrid session, four song entries)
+### The discriminating tests (one hybrid session, one entry each)
 
 With `hybrid on` and an official login in the same instance:
 
@@ -173,20 +174,22 @@ With `hybrid on` and an official login in the same instance:
 |---|---|---|---|---|
 | A | none | ✓ | | control — hybrid works |
 | B | `bck garbage` | | | `bundleCryptKey` is **not** validated |
-| C | `urls future` | | | no CloudFront signature check → mint far-future URLs |
-| D | `urls expire` | | | signature **is** checked → need the embedded public key |
+| C | `urls skew` | | | **no signature verification** — an offline server may mint its own URLs (any fresh-looking `Expires`) |
+| D | `urls future` | | | signature **is** checked → need the embedded public key (or the check is an `Expires` window) |
+| E | `urls expire` | | | expiry is a real check |
+
+`skew` (`Expires` +1 s) is the decisive one: the URL still looks perfectly fresh
+to any expiry-window check, but its CloudFront signature is invalid. It separates
+"the signature is verified" from "the URL just has to look recent". `future`
+(+10 years) fails under *both* explanations, so it cannot separate them on its
+own.
 
 `pserver.log` logs every upstream response it decrypted
 (`UPSTREAM c2s_get_pattern_file: {result=1, final_url_ez=…, …}` plus each URL's
-path/`Expires`/signature length), and saves it to
-`data/last_upstream_c2s_get_pattern_file.json` — so the exact field set of a
-known-good response can finally be diffed against the replay.
-
-Only `expire` failing while `future` loads would mean the signature is
-irrelevant and only `Expires` matters; both failing means the client verifies the
-CloudFront signature, and the next step is to locate the embedded public key
-(the hunt) and replace it with one we hold, after which the private server can
-mint its own genuinely-valid URLs.
+path/`Expires`/signature length) and saves it to
+`data/last_upstream_c2s_get_pattern_file.json` (shortened) and
+`…​.full.json` (real URLs + key, git-ignored) — so a known-good response can be
+diffed against the replay and reused.
 
 ## Known simplifications / next steps
 

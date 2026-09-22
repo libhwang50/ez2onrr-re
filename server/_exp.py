@@ -9,6 +9,7 @@ endpoints forwarded upstream, which is also read per request.
     python server/_exp.py hybrid on             # forward login+pattern upstream
     python server/_exp.py hybrid pattern        # forward only the pattern
     python server/_exp.py hybrid off            # pure private server
+    python server/_exp.py urls skew             # Expires +1s (breaks signature only)
     python server/_exp.py urls future           # Expires +10y (breaks signature)
     python server/_exp.py urls expire           # Expires in the past
     python server/_exp.py urls noparams         # strip the query
@@ -31,7 +32,7 @@ KNOBS = {
     'urls': 'mutate_urls.txt',
     'bck': 'mutate_bck.txt',
 }
-URL_MODES = ('future', 'expire', 'noparams', 'host')
+URL_MODES = ('skew', 'future', 'expire', 'noparams', 'host')
 BCK_MODES = ('stale', 'garbage', 'empty')
 
 
