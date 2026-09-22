@@ -44,6 +44,22 @@ function utf16hex(s) {
 // Stage 3 (hunt3, funcStr): find the callers of that thunk function and
 //   attribute them via the method map.
 
+
+// Only the module's OWN executable ranges. The previous filter
+// (base >= mod.base && base < mod.base + mod.size) also matched unrelated
+// executable mappings in that window - Wine/Unity JIT regions - so byte-by-byte
+// JS loops walked gigabytes: that is why the "callers" scan appeared to hang
+// while native scanSync (about 1 GB/s) merely took seconds.
+function moduleCodeRanges(mod) {
+  let rs = [];
+  try { rs = mod.enumerateRanges('r-x'); } catch (e) { rs = []; }
+  if (!rs.length)
+    rs = Process.enumerateRanges('x')
+      .filter(r => r.base.compare(mod.base) >= 0 &&
+                   r.base.compare(mod.base.add(mod.size)) < 0);
+  return rs;
+}
+
 const HELPER_RVA = 0xc12390;
 const AESKEY_THUNK_RVA = 0xe2a5f0;
 const AESIV_THUNK_RVA = 0xe2a690;
@@ -156,8 +172,7 @@ rpc.exports.hunt2 = function (offStr) {
     // find `mov edx, <off>` followed by `call helper` in the executable ranges
     const offBytes = [off & 0xff, (off >> 8) & 0xff, (off >> 16) & 0xff, (off >>> 24) & 0xff];
     const pat = 'ba ' + offBytes.map(b => b.toString(16).padStart(2, '0')).join(' ');
-    const xranges = Process.enumerateRanges({ protection: 'x', coalesce: true })
-      .filter(r => r.base.compare(base) >= 0 && r.base.compare(base.add(mod.size)) < 0);
+    const xranges = moduleCodeRanges(mod);
     const CH = 0x400000, OV = 8;
     const found = [];
     for (const r of xranges) {
@@ -201,8 +216,7 @@ rpc.exports.hunt3 = function (funcStr) {
     const tva = ptr(funcStr);
     const mod = Process.getModuleByName('GameAssembly.dll');
     const base = mod.base;
-    const xranges = Process.enumerateRanges({ protection: 'x', coalesce: true })
-      .filter(r => r.base.compare(base) >= 0 && r.base.compare(base.add(mod.size)) < 0);
+    const xranges = moduleCodeRanges(mod);
     const CH = 0x400000, OV = 8;
     const callers = [];
     const tvaNum = parseInt(tva.toString(16), 16);
@@ -375,8 +389,7 @@ rpc.exports.findthunk = function (targetStr, extraBasesCsv) {
     if (extraBasesCsv) for (const b of String(extraBasesCsv).split(','))
       if (b.trim()) add(ptr(b.trim()), 'given');
 
-    const xr = Process.enumerateRanges('x')
-      .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
+    const xr = moduleCodeRanges(mod);
 
     for (const c of cands) {
       if (c.base.compare(target) >= 0) continue;   // base above target -> nonsense
@@ -444,8 +457,7 @@ rpc.exports.findlit = function (lenStr, targetStr) {
     const lb = [len & 0xff, (len >> 8) & 0xff, (len >> 16) & 0xff, (len >>> 24) & 0xff];
     const pat = '41 b8 ' + lb.map(b => b.toString(16).padStart(2, '0')).join(' ');
     const mod = Process.getModuleByName('GameAssembly.dll');
-    const xr = Process.enumerateRanges('x')
-      .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
+    const xr = moduleCodeRanges(mod);
     const out = { len: len, target: targetStr || null, sites: [], uniqueMethods: [] };
     const cands = [];
     for (const r of xr) {
@@ -513,8 +525,7 @@ rpc.exports.findlea = function (targetStr) {
     const t0 = Date.now();
     const target = parseInt(String(targetStr).replace(/^0x/, ''), 16);
     const mod = Process.getModuleByName('GameAssembly.dll');
-    const xr = Process.enumerateRanges('x')
-      .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
+    const xr = moduleCodeRanges(mod);
     const out = { target: '0x' + target.toString(16), module: mod.base.toString(16),
                   scannedRanges: xr.length, hits: [], uniqueMethods: [] };
     const modrms = [0x05, 0x0d, 0x15, 0x1d, 0x25, 0x2d, 0x35, 0x3d];
@@ -609,8 +620,7 @@ rpc.exports.findaccessor = function (offsetStr, lenStr) {
     const ob = [off & 0xff, (off >> 8) & 0xff, (off >> 16) & 0xff, (off >>> 24) & 0xff];
     const pat = 'ba ' + ob.map(b => b.toString(16).padStart(2, '0')).join(' ');
     const mod = Process.getModuleByName('GameAssembly.dll');
-    const xr = Process.enumerateRanges('x')
-      .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
+    const xr = moduleCodeRanges(mod);
     const out = { offset: '0x' + off.toString(16), length: lenStr || null,
                   sites: [], accessors: [], callers: [] };
     for (const r of xr) {
@@ -715,8 +725,7 @@ rpc.exports.findlitoff = function (targetStr, sfStr) {
     }
     // 2) for each candidate, does the code contain `mov edx,<off>`?
     const mod = Process.getModuleByName('GameAssembly.dll');
-    const xr = Process.enumerateRanges('x')
-      .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
+    const xr = moduleCodeRanges(mod);
     for (const cand of out.bases) {
       const off2 = parseInt(cand.off, 16);
       const ob = [off2 & 0xff, (off2 >> 8) & 0xff, (off2 >> 16) & 0xff, (off2 >>> 24) & 0xff];
@@ -745,8 +754,7 @@ rpc.exports.callers = function (targetStr) {
     const t0 = Date.now();
     const mod = Process.getModuleByName('GameAssembly.dll');
     const tvaNum = parseInt(String(targetStr).replace(/^0x/, ''), 16);
-    const xr = Process.enumerateRanges('x')
-      .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
+    const xr = moduleCodeRanges(mod);
     const sites = [];
     let bytesScanned = 0;
     for (const r of xr) {
