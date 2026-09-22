@@ -266,6 +266,9 @@ python server/_sweep.py --calibrate      # learn the difficulty/keymode keys
 python server/_sweep.py --limit 600      # walk the list, one entry per song
 python server/_sweep.py --variants       # also cycle difficulty/keymode
 python server/_sweep.py --dry-run        # print the plan, send nothing
+python server/_sweep.py --no-screen      # disable the screen classifier entirely
+python server/_sweep.py --no-verify      # do not confirm the song select before advancing
+python server/_sweep.py --no-stop-on-wrap  # ignore the wrap/end checks
 ```
 
 **Escape is only pressed when it is provably safe.** In the main menu `ESC` means
@@ -328,6 +331,20 @@ accepted, sampling every `screen_debounce` seconds (0.4) under an overall `scree
 the *raw* per-frame classification (so it still shows `GAMEPLAY` on a mid-fade frame); the
 debounce applies where it matters, in `_sweep.screen_state()`. `LOADING_SCREEN` is likewise
 waited on, not acted on.
+
+### How the loop uses the state
+
+* **A slow load is not a miss.** On a missed request the loop classifies; if the screen is
+  `LOADING_SCREEN`/`TRANSITION` it waits and re-waits for the request instead of counting a
+  failure. A genuine miss then goes through `recover()`.
+* **Confirm before advancing.** After leaving a song the loop calls `ensure_song_select()`:
+  a cheap single-frame check first, then the debounced classifier if that is inconclusive.
+  If it is not at the song select it acts (`MAIN_MENU` -> confirm the card,
+  `GAMEPLAY`/`PAUSE_MENU` -> `resync`, `LOADING`/`TRANSITION` -> wait, else the harmless
+  `Up`+`Enter`), and only advances once the state says song select. `--no-verify` skips it.
+* **Stop when the list ends.** The list wraps (or `Down` clamps), so the loop stops when it
+  comes back to the run's first entry, or when the same entry repeats three times in a row
+  (`next_song` not advancing). `--no-stop-on-wrap` skips both checks.
 Anchors are git-ignored (they contain BGA art); collect your own with `--collect`, and
 `--list` flags any `.json` that has no matching `.png` (inert — probes read the PNGs).
 Currently `GAMEPLAY`, `GAME_OVER`, `LOADING_SCREEN`, `MAIN_MENU`, `PAUSE_MENU` and

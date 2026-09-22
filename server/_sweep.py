@@ -13,12 +13,18 @@ It presses keys, waits for a request it has not seen before, and moves on.
     python server/_sweep.py --variants         # also cycle difficulty/keymode
     python server/_sweep.py --shot             # save a screenshot before each entry
     python server/_sweep.py --state            # classify the current screen and exit
+    python server/_sweep.py --no-screen        # disable the screen classifier
+    python server/_sweep.py --no-verify        # do not confirm the song select
+    python server/_sweep.py --no-stop-on-wrap  # ignore the wrap/end checks
 
 The server log is the primary sensor (a request names song/keymode/levelmode/
 gamemode, and CDN OK/HIT says whether it was captured). A screenshot classifier
 (`server/_screen.py`) is the *safety* sensor: on a missed request it tells whether
 the game is still in the previous song (pause menu safe), back at song select, or
-at the main menu — instead of guessing whether ESC is safe.
+at the main menu — instead of guessing whether ESC is safe. It also waits out
+LOADING/TRANSITION instead of counting a slow load as a miss, confirms the song
+select before advancing (`--no-verify` to skip), and stops when the list wraps or
+the song stops advancing (`--no-stop-on-wrap` to skip).
 
 Capture run (one entry per song is enough — the server serves a song's chart for
 any of its keymodes, and the .ezi is per-song):
@@ -160,6 +166,7 @@ def screenshot(tag):
 
 
 SCREEN = os.environ.get('EZ2_NO_SCREEN') not in ('1', 'true')
+VERIFY = True
 
 
 def screen_state():
@@ -529,6 +536,43 @@ def resync():
     time.sleep(T['after_exit'])
 
 
+def ensure_song_select(attempts=2):
+    """Return True once the debounced screen state says we are at the song select.
+
+    One cheap single-frame check first; the debounced classifier only runs if that is
+    inconclusive (e.g. mid-transition). Acts on the other states: main menu -> confirm
+    the focused card; gameplay/pause -> the pause menu is safe; loading/transition ->
+    wait; anything else -> the harmless Up+Enter fallback (never ESC).
+    """
+    if not SCREEN:
+        return True
+    for _ in range(attempts):
+        try:
+            import _screen
+            st = _screen.classify(_screen.grab())
+        except Exception as e:
+            print(f'    (screen classifier unavailable: {e})')
+            return True                 # cannot verify; do not block the sweep
+        if not st or st[0] != 'SONG_SELECT':
+            st = screen_state()
+        if st and st[0] == 'SONG_SELECT':
+            return True
+        state = st[0] if st else None
+        print(f'    not at the song select (screen={state})')
+        if state == 'MAIN_MENU':
+            send(CFG['menu']['confirm'])
+            time.sleep(T['after_confirm'])
+        elif state in ('GAMEPLAY', 'PAUSE_MENU', 'RESULT'):
+            resync()
+        elif state in ('LOADING_SCREEN', 'TRANSITION') or state is None:
+            time.sleep(T['after_start'])
+        else:
+            send(K['prev_song'])
+            send(K['enter_song'])
+            time.sleep(T['settle'])
+    return False
+
+
 def sweep(limit, variants, shot, dry, mode=None):
     tail = Tail(LOG)
     cdn = CdnWatch()
@@ -539,9 +583,12 @@ def sweep(limit, variants, shot, dry, mode=None):
           f'song/diff axes: {K["next_song"]}/{K["next_diff"]} '
           f'keymode={K["keymode_next"]!r}')
     if dry:
-        print('  would: [shot] Enter -> wait for the request -> wait '
+        verify = 'on' if VERIFY else 'off'
+        stop = '' if '--no-stop-on-wrap' in sys.argv[1:] else ' (stop on wrap/end)'
+        print('  would: [shot] Enter -> wait for the request (waiting out '
+              'LOADING/TRANSITION) -> wait '
               f'{T["after_start"]}s for gameplay -> Esc/Up/Enter (MUSIC SELECT) '
-              '-> next song -> repeat')
+              f'-> confirm the song select ({verify}) -> next song -> repeat{stop}')
         return 0
     if not game_focused(verbose=True):
         return 2
@@ -555,17 +602,38 @@ def sweep(limit, variants, shot, dry, mode=None):
     # gameplay), and only *then* is Escape provably safe: in the main menu ESC is
     # 나가기 (leave), so an unprovoked Escape can walk the game out of song select.
     last_confirmed = False
+    # Termination: the song list wraps (or clamps), so stop when we come back to the
+    # run's first entry, or when `next_song` stops advancing at all.
+    stop_on_wrap = '--no-stop-on-wrap' not in sys.argv[1:]
+    run_songs = []
+    last_key = None
+    repeats = 0
     try:
         for i in range(limit):
             if shot:
                 screenshot(f'{i:04d}_before')
             cdn.baseline()
             send(K['enter_song'], f'[{i+1}/{limit}] enter')
-            req = tail.wait(T['wait_for_request'])
+            req = None
+            for _attempt in range(2):
+                req = tail.wait(T['wait_for_request'])
+                if req is not None:
+                    break
+                # A slow load (the ~1.5 s scene fade, or a chart still coming back
+                # from a 5x retry) is not a failed entry — wait it out.
+                st = screen_state() if SCREEN else None
+                state = st[0] if st else None
+                if state in ('LOADING_SCREEN', 'TRANSITION'):
+                    print(f'    no request yet — screen is {state}; waiting')
+                    time.sleep(T['after_start'])
+                    continue
+                break
             if req is None:
                 failed += 1
                 recover(last_confirmed, f'{i:04d}_nostart' if shot else None)
                 last_confirmed = False
+                if VERIFY and not ensure_song_select():
+                    print('    WARNING: could not confirm the song select; continuing')
                 time.sleep(T['settle'])
                 continue
             events = cdn.wait_new(T['wait_for_cdn'])
@@ -598,16 +666,33 @@ def sweep(limit, variants, shot, dry, mode=None):
                 time.sleep(T['after_start'])
                 exit_song()
                 last_confirmed = False
+                if VERIFY and not ensure_song_select():
+                    print('    WARNING: could not confirm the song select; continuing')
             else:
                 # The load failed; the client backs out to the song select by
                 # itself (after its 5 retries). Do not press ESC here.
                 time.sleep(T['after_failed_load'])
                 last_confirmed = False
+                if VERIFY and not ensure_song_select():
+                    print('    WARNING: could not confirm the song select; continuing')
             if variants:
                 for which, key in (('diff', K['next_diff']), ('diff', K['next_diff']),
                                    ('diff', K['next_diff']), ('mode', K['keymode_next'])):
                     send(key, f'  cycle {which}')
                     enter_and_read(tail, which, quiet=True)
+            if stop_on_wrap:
+                if last_key is not None and k == last_key:
+                    repeats += 1
+                else:
+                    repeats = 0
+                last_key = k
+                if len(run_songs) >= 5 and k == run_songs[0]:
+                    print('    the list wrapped back to the first entry — stopping')
+                    break
+                if repeats >= 3:
+                    print('    the song is not advancing (next_song ignored?) — stopping')
+                    break
+                run_songs.append(k)
             send(K['next_song'], 'next song')
             time.sleep(T['settle'])
     except KeyboardInterrupt:
@@ -621,6 +706,11 @@ def sweep(limit, variants, shot, dry, mode=None):
 
 def main():
     a = sys.argv[1:]
+    global SCREEN, VERIFY
+    if '--no-screen' in a:
+        SCREEN = False
+    if '--no-verify' in a:
+        VERIFY = False
     if '--watch' in a:
         return watch()
     if '--calibrate' in a:
