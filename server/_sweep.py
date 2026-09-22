@@ -68,11 +68,13 @@ DEFAULTS = {
     'menu': {'cards': ['BASIC', 'STANDARD', 'MULTIPLAYER', 'COURSE', 'LOUNGE', 'OPTION'],
              'confirm': 'Return'},
     'timing': {'after_key': 0.35, 'settle': 1.0, 'wait_for_request': 25.0,
-               'after_exit': 2.5, 'after_start': 6.0, 'poll': 0.25,
+               'after_exit': 2.5, 'after_start': 6.0, 'wait_for_cdn': 10.0,
+               'poll': 0.25,
                'after_confirm': 3.0},
 }
 
 REQ = re.compile(r'c2s_get_pattern_file request: (\{.*\})')
+CDN = re.compile(r'CDN (OK|HIT|FAIL|MISS)\b(.*)$')
 SERVED = re.compile(r"pattern: '?(?P<name>[^']*?)'? km=(?P<km>\d+) lm=(?P<lm>\d+) -> (?P<how>.*)$")
 
 
@@ -205,6 +207,59 @@ class Tail:
         return None
 
 
+class CdnWatch:
+    """Watches the log for CDN outcomes: a pattern request alone is not a
+    capture — the chart has to come back from the CDN (OK/HIT) or the song
+    still cannot be served, and must stay on the to-do list."""
+
+    def __init__(self, path=LOG):
+        self.path = path
+        self.pos = 0
+        self.n_ok = self.n_bad = 0
+        for what, _rest in self.read_new():
+            self._count(what)
+
+    def _count(self, what):
+        if what in ('OK', 'HIT'):
+            self.n_ok += 1
+        else:
+            self.n_bad += 1
+
+    def read_new(self):
+        out = []
+        if not os.path.exists(self.path):
+            return out
+        size = os.path.getsize(self.path)
+        if size < self.pos:
+            self.pos = 0
+        with open(self.path, errors='replace') as f:
+            f.seek(self.pos)
+            for line in f:
+                m = CDN.search(line)
+                if m:
+                    out.append((m.group(1), m.group(2).strip()))
+            self.pos = f.tell()
+        return out
+
+    def baseline(self):
+        self.read_new()
+        return (self.n_ok, self.n_bad)
+
+    def wait_new(self, timeout):
+        """Wait for new CDN lines; returns [(what, rest), ...]."""
+        end = time.time() + timeout
+        got = []
+        while time.time() < end:
+            new = self.read_new()
+            for what, rest in new:
+                self._count(what)
+                got.append((what, rest))
+            if any(w in ('OK', 'HIT') for w, _ in got):
+                return got
+            time.sleep(T['poll'])
+        return got
+
+
 def progress(rec):
     with open(PROGRESS, 'a') as f:
         f.write(json.dumps(rec, ensure_ascii=False) + '\n')
@@ -215,13 +270,16 @@ def watch():
     tail = Tail(LOG)
     print(f'watching {os.path.relpath(LOG, ROOT)} — Ctrl-C to stop '
           f'({len(tail.seen)} requests seen so far)')
+    cdn = CdnWatch()
     n = 0
     try:
         while True:
             for r in tail.poll():
                 n += 1
                 k = tail.key(r)
-                print(f'  [{n:4d}] {k[0]:24s} km={k[1]} lm={k[2]} gm={k[3]}')
+                print(f'  [{n:4d}] request {k[0]:22s} km={k[1]} lm={k[2]} gm={k[3]}')
+            for what, rest in cdn.read_new():
+                print(f'         CDN {what} {rest[:90]}')
             time.sleep(0.4)
     except KeyboardInterrupt:
         print(f'\nstopped after {n} new requests')
@@ -385,6 +443,7 @@ def resync():
 
 def sweep(limit, variants, shot, dry, mode=None):
     tail = Tail(LOG)
+    cdn = CdnWatch()
     print(f'{"DRY RUN — " if dry else ""}sweep: up to {limit} entries, '
           f'{len(tail.seen)} requests already in the log')
     print(f'  bindings: enter={K["enter_song"]!r} '
@@ -403,10 +462,12 @@ def sweep(limit, variants, shot, dry, mode=None):
         if not goto_mode(mode, arg(sys.argv[1:], '--from', 'BASIC')):
             return 2
     captured = skipped = failed = 0
+    nochart = 0
     try:
         for i in range(limit):
             if shot:
                 screenshot(f'{i:04d}_before')
+            cdn.baseline()
             send(K['enter_song'], f'[{i+1}/{limit}] enter')
             req = tail.wait(T['wait_for_request'])
             if req is None:
@@ -415,21 +476,28 @@ def sweep(limit, variants, shot, dry, mode=None):
                 resync()
                 send(K['next_song'])
                 continue
+            events = cdn.wait_new(T['wait_for_cdn'])
+            ok = [e for e in events if e[0] in ('OK', 'HIT')]
             k = tail.key(req)
             if mode and captured == 0 and prev_gm and k[3] == prev_gm:
                 print(f'    WARNING: gamemode is still {k[3]} after switching to '
                       f'{mode.upper()} — the menu step probably missed '
                       f'(check --from / sweep_keys.json menu)')
-            if k in tail.seen:
+            if not ok:
+                nochart += 1
+                print(f'    ASKED BUT NO CHART  {k[0]:24s} km={k[1]} lm={k[2]} '
+                      f'gm={k[3]}  (CDN {[e[0] for e in events] or "silent"})')
+            elif k in tail.seen:
                 skipped += 1
-                print(f'    already known: {k[0]} km={k[1]} lm={k[2]} gm={k[3]}')
+                print(f'    already known: {k[0]} km={k[1]} lm={k[2]} gm={k[3]}'
+                      f'   (CDN {ok[0][0]})')
             else:
                 captured += 1
                 tail.seen.add(k)
                 progress({'t': int(time.time()), 'song': k[0], 'keymode': k[1],
-                          'levelmode': k[2], 'gamemode': k[3]})
+                          'levelmode': k[2], 'gamemode': k[3], 'cdn': ok[0][0]})
                 print(f'    CAPTURED  {k[0]:24s} km={k[1]} lm={k[2]} gm={k[3]}'
-                      f'   ({captured} new)')
+                      f'   ({captured} new, CDN {ok[0][0]})')
             time.sleep(T['after_start'])     # let the load reach gameplay
             exit_song()
             if variants:
@@ -441,7 +509,8 @@ def sweep(limit, variants, shot, dry, mode=None):
             time.sleep(T['settle'])
     except KeyboardInterrupt:
         print('\ninterrupted')
-    print(f'\ndone: {captured} captured, {skipped} already known, {failed} with no request')
+    print(f'\ndone: {captured} captured, {skipped} already known, '
+          f'{nochart} asked-but-no-chart (still missing), {failed} with no request')
     print(f'progress journal: {os.path.relpath(PROGRESS, ROOT)}')
     print('next: python server/_build_data.py && python server/_coverage.py')
     return 0

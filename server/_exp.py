@@ -7,7 +7,7 @@ endpoints forwarded upstream, which is also read per request.
 
     python server/_exp.py                       # show current state
     python server/_exp.py offline               # THE fully offline mode (no upstream)
-    python server/_exp.py harvest               # control: forward login+pattern once
+    python server/_exp.py harvest               # capture: forward login+pattern+cdn
     python server/_exp.py hybrid on             # forward login+pattern upstream
     python server/_exp.py hybrid pattern        # forward only the pattern
     python server/_exp.py hybrid off            # pure private server
@@ -96,9 +96,12 @@ def main():
         show()
         return 0
     if a[0] == 'harvest':
-        # The control / capture mode: one official pattern response comes back
-        # through, so last_upstream_c2s_get_pattern_file.full.json refreshes.
-        set_('endpoints', 'login,pattern')
+        # The capture mode: forward login+pattern so the upstream mints a real
+        # session and real signed URLs, AND forward `cdn` so charts we do not
+        # hold yet come from the official CDN and get filed into
+        # extracted_charts/ (without `cdn` a missing chart is a local 404 and
+        # nothing can ever be captured).
+        set_('endpoints', 'login,pattern,cdn')
         set_('urls', 'now')
         set_('bck', 'harvested')
         set_('chart', 'exact')     # a miss must reach upstream to be captured

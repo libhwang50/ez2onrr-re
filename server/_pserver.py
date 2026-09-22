@@ -41,6 +41,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 import traceback
 import urllib.parse
@@ -61,6 +62,14 @@ MAGIC = bytes.fromhex('d3ad76d3adb8')
 
 TEMPLATES = {}
 CDN_PATHS = {}
+# paths the last pattern responses pointed at: {path: {song,keymode,levelmode,
+# gamemode,kind}} - so a forwarded CDN body can be filed under the chart it is
+PENDING_CDN = {}
+PENDING_CDN_URLS = {}
+ARCHIVE = os.path.join(ROOT, 'extracted_charts')
+KM_DIR = {1: '4k', 2: '5k', 3: '6k', 4: '8k', 5: '7k'}
+DIFF_DIR = {1: 'ez', 2: 'nm', 3: 'hd', 4: 'shd'}
+KM_LANES = {1: 4, 2: 5, 3: 6, 4: 8, 5: 7}
 CHARTS = []
 PATTERN_REPLAY = {}
 PROFILE = {}
@@ -522,6 +531,10 @@ def handle_api(flow: http.HTTPFlow):
         log(f'WARN {endpoint}: request not decrypted ({err})')
     else:
         log(f'{endpoint} request: {req_json[:300]}')
+        try:
+            flow.metadata['ps_req'] = req_json
+        except Exception:
+            pass
 
     ep_short = endpoint  # c2s_xxx
     for e in passthrough_set():
@@ -565,7 +578,9 @@ def handle_api(flow: http.HTTPFlow):
         return respond_api(flow, userinfo_response(req_json))
 
     if endpoint == 'c2s_get_pattern_file':
-        return respond_api(flow, pattern_response(req_json))
+        resp = pattern_response(req_json)
+        register_cdn_urls(req_json, resp)
+        return respond_api(flow, resp)
 
     if endpoint == 'c2s_set_game_clear':
         # refinement candidate: the real response is 48 B of ciphertext; the
@@ -599,6 +614,110 @@ def cdn_url(path):
             f'&Key-Pair-Id=K2L5B5JS5W46ST')
 
 
+def cdn_passthrough():
+    """Forward CDN cache misses to the official CDN (harvest mode).
+
+    Opt-in via `passthrough_endpoints.txt` containing `cdn`. Without it a miss
+    is a 404 and no game-host request ever leaves the machine - which is the
+    shipped guarantee (see the addon error path); this knob is the one explicit
+    way to let the real CDN serve a chart we do not have yet, so it can be
+    recorded and used offline from then on.
+    """
+    return 'cdn' in passthrough_set() or 'chart' in passthrough_set()
+
+
+def register_cdn_urls(req_json, resp_obj):
+    """Remember which chart a pattern response's CDN paths belong to."""
+    try:
+        req = json.loads(req_json) if req_json else {}
+    except Exception:
+        req = {}
+    if not isinstance(resp_obj, dict):
+        return
+    song = str(req.get('musicresourcename') or '')
+    meta = {'song': song, 'keymode': int(req.get('keymode') or 0),
+            'levelmode': int(req.get('levelmode') or 0),
+            'gamemode': str(req.get('gamemode') or '')}
+    for field, kind in (('final_url_ez', 'ez'), ('final_url_ezi', 'ezi')):
+        u = resp_obj.get(field)
+        if isinstance(u, str) and u.startswith('http'):
+            _p = urllib.parse.urlsplit(u).path
+            PENDING_CDN[_p] = {**meta, 'kind': kind}
+            PENDING_CDN_URLS[_p] = u
+
+
+def capture_cdn_response(flow):
+    """File a CDN body forwarded from the official CDN into the chart archive.
+
+    Writes `extracted_charts/<song>/<km>/<diff>/cdn_ez_*.bin` / `cdn_ezi_*.bin`
+    plus an `ident.json` carrying the URLs and the label, i.e. exactly the layout
+    `dump_song.py` produces and `_build_data.py` consumes — so a sweep run needs
+    no separate pipeline, and the archive stays the single source of truth for
+    what the server can serve. The decrypted `.ez`/`.ezi` are written too, so a
+    capture can be audited with `check_charts.py` like any other dump.
+    """
+    p = flow.request.path.split('?')[0]
+    resp = flow.response
+    status = getattr(resp, 'status_code', 0)
+    body = (resp.content or b'') if resp is not None else b''
+    if status != 200 or not body:
+        log(f'CDN FAIL {status} {p}')
+        return
+    meta = PENDING_CDN.get(p)
+    km, lm = (meta or {}).get('keymode'), (meta or {}).get('levelmode')
+    km_dir, diff_dir = KM_DIR.get(km), DIFF_DIR.get(lm)
+    if not meta or not km_dir or not diff_dir:
+        log(f'CDN OK {len(body)}B {p} (unfiled: no matching pattern request)')
+        return
+    kind = meta['kind']                      # 'ez' | 'ezi'
+    d = os.path.join(ARCHIVE, norm(meta['song']) or 'song_unknown', km_dir, diff_dir)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, f'cdn_{kind}_cap.bin'), 'wb') as f:
+        f.write(body)
+    ident_p = os.path.join(d, 'ident.json')
+    ident = {}
+    if os.path.exists(ident_p):
+        try:
+            ident = json.load(open(ident_p))
+        except Exception:
+            ident = {}
+    url = PENDING_CDN_URLS.get(p)
+    ident['ez_url' if kind == 'ez' else 'ezi_url'] = url
+    ident.setdefault('ready', True)
+    ident.setdefault('bundleCryptKey', None)
+    ident['capturedBy'] = 'sweep'
+    lbl = ident.get('label') or {}
+    lbl.update({'song': meta['song'], 'keymode': f"{KM_LANES.get(km, '?')}K",
+                'lanes': KM_LANES.get(km), 'difficulty': diff_dir.upper(),
+                'levelmode': str(lm), 'gamemode': meta.get('gamemode') or None,
+                'labelSource': 'pattern request'})
+    ident['label'] = lbl
+    # decrypt alongside, so the capture is a complete dump (best effort)
+    try:
+        sys.path.insert(0, ROOT)
+        import decrypt_chart
+        files = {kind: body}
+        for k, v in list(files.items()):
+            if not os.path.exists(os.path.join(d, f'cdn_{k}_cap.bin')):
+                continue
+        pair = os.path.join(d, 'cdn_ez_cap.bin'), os.path.join(d, 'cdn_ezi_cap.bin')
+        if all(os.path.exists(x) for x in pair):
+            for src, dst in ((pair[0], 'ez.ez'), (pair[1], 'ezi.ezi')):
+                raw = open(src, 'rb').read()
+                pt, used = decrypt_chart.decrypt_named(raw)
+                if pt:
+                    open(os.path.join(d, dst), 'wb').write(pt)
+                    ident.setdefault('chartKeyPair', used)
+    except Exception:
+        pass
+    try:
+        with open(ident_p, 'w') as f:
+            json.dump(ident, f, indent=1, ensure_ascii=False)
+    except Exception:
+        log('ident.json write failed\n' + traceback.format_exc())
+    log(f'CDN OK {len(body)}B {kind} -> {os.path.relpath(d, ROOT)}')
+
+
 def chart_mode():
     """server/data/chart_mode.txt: 'exact' (default) or 'any'.
 
@@ -620,6 +739,7 @@ def pattern_response(req_json):
     name = str(req.get('musicresourcename') or req.get('MUSIC_RESOURCE_NAME') or '')
     km = int(req.get('keymode') or req.get('KEYMODE') or 0)
     lm = int(req.get('levelmode') or req.get('LEVELMODE') or 0)
+    gm = str(req.get('gamemode') or '')
     want = norm(name)
     # a captured REAL response (real signed URLs + real per-session
     # bundleCryptKey) is the only known-good shape - synthesized responses fail
@@ -632,8 +752,18 @@ def pattern_response(req_json):
         if ch:
             log(f'  MUTATED (replayed): {ch}')
         return obj
-    hit = next((c for c in CHARTS if c['song_norm'] == want and c['keymode'] == km
-                and c['levelmode'] == lm), None)
+    def _pick(pool):
+        # prefer the chart captured in the requested gamemode; fall back to one
+        # with no recorded gamemode (older dumps) rather than to the other mode
+        if gm:
+            return (next((c for c in pool if str(c.get('gamemode') or '') == gm), None)
+                    or next((c for c in pool if not c.get('gamemode')), None)
+                    or pool[0])
+        return pool[0]
+
+    exact_pool = [c for c in CHARTS if c['song_norm'] == want and c['keymode'] == km
+                  and c['levelmode'] == lm]
+    hit = _pick(exact_pool) if exact_pool else None
     how = 'exact'
     if hit is None and chart_mode() == 'any':
         pool = [c for c in CHARTS if c['song_norm'] == want]
@@ -756,9 +886,15 @@ def handle_cdn(flow: http.HTTPFlow):
     p = flow.request.path.split('?')[0]
     rel = CDN_PATHS.get(p)
     if rel is None:
+        if cdn_passthrough():
+            # harvest: no local copy, so let the official CDN answer and we
+            # record the body on the way back (capture_cdn_response)
+            log(f'CDN MISS {p} -> upstream (harvest)')
+            return
         log(f'CDN MISS {p}')
         flow.response = http.Response.make(404, b'', {'Content-Type': 'text/plain'})
         return
+    log(f'CDN HIT {p}')
     data = open(os.path.join(ROOT, rel), 'rb').read()
     flow.response = http.Response.make(
         200, data, {'Content-Type': 'application/octet-stream'})
@@ -795,10 +931,17 @@ class PrivateServer:
                     {'Content-Type': 'text/plain'})
 
     def response(self, flow: http.HTTPFlow):
-        """For a PASSTHROUGH endpoint: log the decrypted upstream response (so
-        its exact field set is visible), apply the mutate_* knobs to a pattern
-        response, and let it through untouched otherwise."""
+        """CDN bodies coming back from upstream are recorded; for a
+        PASSTHROUGH API endpoint the upstream response is logged (so its exact
+        field set is visible), the mutate_* knobs are applied to a pattern
+        response, and everything else is let through untouched."""
         host = (flow.request.host or '').lower()
+        if host == CDN_HOST:
+            try:
+                capture_cdn_response(flow)
+            except Exception:
+                log('CDN capture error\n' + traceback.format_exc())
+            return
         if host != API_HOST or flow.response is None:
             return
         ep = flow.request.path.rsplit('/', 1)[-1]
@@ -820,6 +963,7 @@ class PrivateServer:
             log(f'UPSTREAM {ep}: {summarize_obj(obj, secret=("bundleCryptKey",))}'
                 + (f'  MUTATED {ch}' if ch else ''))
             if ep == 'c2s_get_pattern_file' and isinstance(obj, dict):
+                register_cdn_urls(flow.metadata.get('ps_req'), obj)
                 for f in ('final_url_ez', 'final_url_ezi'):
                     u = obj.get(f)
                     if isinstance(u, str):

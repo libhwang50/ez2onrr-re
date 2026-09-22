@@ -108,11 +108,16 @@ def main():
         ezi_p = add_cdn(ezi_url, os.path.join(dirpath, ezi_f) if ezi_f else None)
         rel = os.path.relpath(dirpath, ROOT).split(os.sep)  # extracted_charts/<song>/<km>/<diff>
         if ez_p and ezi_p and len(rel) == 4 and rel[1] != '' and rel[2] in keymap:
+            lbl = ident.get('label') or {}
             charts.append({
                 'song': rel[1], 'song_norm': norm(rel[1]),
                 'keymode': keymap[rel[2]], 'levelmode': diffmap[rel[3]],
                 'keymode_dir': rel[2], 'levelmode_dir': rel[3],
                 'ez_path': ez_p, 'ezi_path': ezi_p,
+                # gamemode is a real chart selector for the EZ~NM patterns of
+                # high-level songs (BASIC vs STANDARD), so carry it when known
+                'gamemode': lbl.get('gamemode'), 'lanes': lbl.get('lanes'),
+                'label_source': lbl.get('labelSource'),
             })
 
     # the Sep-22 Sta-Finite 5K HD capture

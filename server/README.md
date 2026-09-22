@@ -228,10 +228,24 @@ python server/_coverage.py --queue    # write the capture queue (music-list orde
 python server/_coverage.py --log      # what the game asked for vs what we could serve
 ```
 
-The loop that adds songs: `_exp.py harvest` (hybrid, `chart exact`) → walk the
-game's song list so it issues one `c2s_get_pattern_file` per song → the addon
-records the CDN bodies → `python server/_build_data.py` rebuilds
-`server/data/charts.json` + the CDN cache.
+The loop that adds songs, end to end:
+
+1. **`_exp.py harvest`** — forwards `login,pattern,cdn` upstream. The API
+   passthrough is what mints a real session and real signed URLs; **`cdn` is what
+   lets a chart we do not hold yet come from the official CDN** (without it a
+   missing chart is a local 404 and nothing can ever be captured).
+2. Walk the song list (the game, or `server/_sweep.py`) so it asks for each song.
+3. The addon files every forwarded CDN body straight into
+   **`extracted_charts/<song>/<km>/<diff>/`** — `cdn_ez_cap.bin`, `cdn_ezi_cap.bin`
+   and an `ident.json` with the URLs and the label — i.e. the same layout
+   `dump_song.py` writes, so the archive stays the single source of truth and no
+   side pipeline exists. `capturedBy: "sweep"` marks the ones that came this way.
+4. **`python server/_build_data.py`** folds the archive into
+   `server/data/charts.json` + `cdn_paths.json`, then `_coverage.py` shows the
+   result.
+
+The addon only lets a CDN request out when `cdn` is in the passthrough list — in
+`offline` mode nothing leaves the machine, and an uncached chart is a plain 404.
 
 `server/_sweep.py` automates that walk. It is **blind by design** — the server log
 is its sensor, since every request names the song, keymode, levelmode and gamemode
@@ -246,6 +260,11 @@ python server/_sweep.py --limit 600      # walk the list, one entry per song
 python server/_sweep.py --variants       # also cycle difficulty/keymode
 python server/_sweep.py --dry-run        # print the plan, send nothing
 ```
+
+A chart only counts as captured once the CDN body actually arrived: the sweep
+watches for the addon's `CDN OK`/`CDN HIT` line and otherwise reports *asked but
+no chart* and leaves the song on the to-do list (so a failed download can never
+silently inflate coverage).
 
 `--calibrate [--write]` is the interesting one: it enters a song, reads
 song/keymode/levelmode back out of the request JSON, backs out, presses one candidate

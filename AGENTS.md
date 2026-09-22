@@ -330,6 +330,14 @@ response, so experiments need no restart.
   Consequence for the private server and for capture: **record `gamemode` with every chart
   capture** and prefer the exact one when serving (`gamemode` is in the request JSON, so a
   capture run records it for free). Source: NamuWiki "EZ2ON REBOOT : R/시스템" §4.1–4.2.
+* **`_pserver.py` can also *capture*.** With `cdn` in the passthrough list (what
+  `_exp.py harvest` sets) a CDN cache miss is forwarded to the official CDN and the body is
+  filed into `extracted_charts/<song>/<km>/<diff>/` in exactly `dump_song.py`'s layout
+  (`cdn_ez_cap.bin`, `cdn_ezi_cap.bin`, an `ident.json` with the URLs and label, and the
+  decrypted `.ez`/`.ezi` when the key pair validates). That makes the archive the single
+  source of truth — `_build_data.py` is still the only translator — and turns a whole song
+  sweep into coverage with no extra tooling. Without the knob a miss is a 404 and no
+  game-host request leaves the machine.
 * **The CDN URL hash is not a content hash.** A song's `.ezi` URL differs per variant while
   the decrypted bytes are identical, so the path segment cannot be used to identify
   content — match on the decrypted payload instead.
@@ -737,7 +745,7 @@ Private server (see **`server/README.md`** for the full guide):
 |---|---|
 | `server/_pserver.py` | **the private server** — a mitmproxy addon that stubs `game1-play` / `game1-rank` / `game1-cdn` server-side; no extra certs, no hosts edits (the Wine prefix already proxies through mitmproxy and trusts its CA) |
 | `server/_harvest_session.py` | Frida bridge: polls `zf.aes_key`/`aes_iv` at 1 Hz → `server/session_key.json` (the client generates the API session key locally and never sends it — §3.1). Also owns the **one-session command channel**: it polls `server/cmd.json` and answers in `server/cmd_result.json`, so memory probes never need a second Frida session (which crashes the game). Restores the default SIGINT handler while an RPC runs, so Ctrl-C aborts a slow scan and detaches cleanly |
-| `server/_sweep.py` | **drive the game to capture charts** — blind (the server log is the sensor), guarded by a focused-window check, with `--probe`-style `--calibrate` that deduces the difficulty/keymode keys from the request JSON |
+| `server/_sweep.py` | **drive the game to capture charts** (a capture counts only once the CDN body arrives; captures are filed into `extracted_charts/` by the addon) — blind (the server log is the sensor), guarded by a focused-window check, with `--probe`-style `--calibrate` that deduces the difficulty/keymode keys from the request JSON |
 | `server/_coverage.py` | **audit chart coverage** — songs covered vs the 601-song music list (coverage is per *song*: one capture serves every variant), writes a capture queue, and parses `pserver.log` to verify what a capture run actually asked for |
 | `server/_build_data.py` | rebuild `server/data/` from local captures — decrypted API templates, the chart→CDN map (47 variants / 15 songs), profile overrides |
 | `server/_exp.py` | the experiment knobs: `hybrid on/off`, `urls now/skew/future/expire/noparams/host`, `bck harvested/stale/garbage/empty/literal:…`, `off` (mutations only), `reset`. Read per request — no restart. `off` deliberately does NOT touch the hybrid setting |
