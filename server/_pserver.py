@@ -138,6 +138,46 @@ def pkcs7_unpad(b):
     return b[:-n]
 
 
+BCK_PAYLOAD_FILE = os.path.join(DATA, 'bck_payload.hex')
+
+
+def bck_payload():
+    """The 32-byte plaintext the client expects inside bundleCryptKey.
+
+    bundleCryptKey is AES-256-CBC/PKCS7(32-byte payload) under the client's live
+    session key/IV — the same cipher as the API bodies. The payload is a
+    **build-time constant of the client**, not session material: two captured
+    tokens from different key material decrypted to the same 32 bytes. So the
+    server does not need an official response at all — it encrypts this constant.
+
+    Order: server/data/bck_payload.hex (git-ignored), else derive it from the
+    last captured upstream pattern response (works when the capture is from the
+    same session key), else zeros with a warning.
+    """
+    try:
+        h = open(BCK_PAYLOAD_FILE).read().strip()
+        if len(h) == 64:
+            return bytes.fromhex(h)
+    except Exception:
+        pass
+    sk = session_key()
+    p = os.path.join(DATA, 'last_upstream_c2s_get_pattern_file.full.json')
+    if sk:
+        key, iv, _age = sk
+        try:
+            b = json.load(open(p))['bundleCryptKey']
+            raw = base64.b64decode(b + '=' * (-len(b) % 4))
+            dec = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+            pl = pkcs7_unpad(dec.update(raw) + dec.finalize())
+            if len(pl) == 32:
+                log(f'  bck payload derived from the last capture ({pl.hex()[:16]}…)')
+                return pl
+        except Exception:
+            pass
+    log('  WARNING: no bck payload constant available — falling back to zeros')
+    return bytes(32)
+
+
 def session_key():
     """Return (key_bytes, iv_bytes, age_seconds) or None."""
     try:
@@ -235,7 +275,9 @@ def decrypt_api_body(body: bytes):
 #   stale     the older captured bundleCryptKey (real, wrong session)
 #   garbage   48 random bytes, valid base64 shape
 #   mint      a token we build ourselves: AES-256-CBC/PKCS7 of a 32-byte payload
-#             under the live session key (mint:zero, mint:<hex>, mint:<text>)
+#             under the live session key. Plain `mint` uses the client's own
+#             constant payload, so it yields a byte-perfect token with no official
+#             server involved. mint:zero, mint:random, mint:<64 hex>, mint:<text>
 #
 # Removing both files restores the untouched response.
 
@@ -381,12 +423,15 @@ def mutate_pattern_response(obj):
             # That is why raw garbage gives 8CN26 (it cannot decrypt at all) and why
             # a real token from another session fails too (wrong key). So we can
             # mint our own, with no official server in the loop:
-            #   mint              32 random bytes  (does the client accept any payload?)
+            #   mint              the client's constant payload (the real thing)
+            #   mint:random       32 random bytes (wrong payload -> anti-tamper kill)
             #   mint:zero/zeros   32 zero bytes
             #   mint:<64 hex>     an explicit payload
             #   mint:<text>       sha256(text)
-            spec = m_bck.split(':', 1)[1] if ':' in m_bck else 'random'
-            if spec in ('', 'random'):
+            spec = m_bck.split(':', 1)[1] if ':' in m_bck else 'const'
+            if spec in ('', 'const', 'payload'):
+                payload = bck_payload()
+            elif spec == 'random':
                 payload = os.urandom(32)
             elif spec in ('zero', 'zeros'):
                 payload = bytes(32)
