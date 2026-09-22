@@ -424,6 +424,37 @@ Bugsnag-style reporter (`event.applecrashreport`, `event.view_hierarchy`) and
 its full text (Unity TMP rich text, `<size=28>로딩 실패</size>`) is capturable
 from memory but memory scanning proved non-deterministically crash-prone.
 
+**Chart-load failure 8CN26 — SOLVED: the pattern response must be FRESH.** A
+private-server chart load that fails with "게임 파일이 손상되었습니다 … ErrCode: 8CN26"
+has, at the error popup, already **downloaded, decrypted and parsed everything**
+(live-state reads: 5 lanes, notes populated, `instrumentDic` = 1131 = exactly the
+served `.ezi` line count, `da.rus` holding the exact ciphertext sizes). Isolation
+experiments:
+
+* official login + private (synthesized) pattern + private files → 8CN26
+* private login + private pattern with **fresh-shaped** URLs (150 s expiry, 344-char
+  signature) + private files → 8CN26
+* private login + **replayed verbatim** official response (real signed URLs, real
+  per-session `bundleCryptKey` — hours stale) → 8CN26
+* official login + **PASSTHROUGH** pattern request to the upstream (fresh response)
+  + private files → **LOADS AND PLAYS**
+
+So the client validates the freshness/validity of the pattern response's signed URLs
+(and/or the per-session `bundleCryptKey`, which differs every session), and rejects
+stale or forged ones post-parse. The chart FILES are byte-identical across sessions
+(sha256 `132bb600…` matches the CDN's own `x-amz-meta-sha256`), and the control
+channel (TCP 4649) is **just a websocket-sharp Notice channel**
+(`GET /Notice?id=<steamid>&name=<nick>&version=…`) carrying pings and announcement
+banners — no session audit, no audio, no battle traffic during a full play session.
+
+**Operating modes.** Hybrid (works today): official login mints fresh pattern
+responses (addon passthrough), CDN files come from the local cache, scores/records
+stay on the private server. Fully offline: blocked only by the client's
+freshness/signature validation of the pattern URLs — the error-site hunt
+(`EZ2_HUNT=1`, literal-thunk → caller attribution) reads the exact check; if it is a
+CloudFront signature verification with an embedded public key, patching that key
+enables self-minted URLs.
+
 **Private-server trap:** an unhandled exception inside a mitmproxy addon hook does *not*
 abort the request — mitmproxy logs it and **forwards the request to the real upstream**.
 The first `server/_pserver.py` test therefore mixed real and private responses
@@ -629,11 +660,11 @@ verified end-to-end offline, in-game validation in progress.
    control/battle channel (`zf` RSA+AES) the real server presumably uses to learn the key.
 7. Broaden chart coverage in `server/data/` (uncaptured songs fail with `result:0` and
    the client retries 5× before booting to the main screen — e.g. Hyper Magic 5K HD).
-8. **RE the control channel (TCP 4649, `zf` RSA+AES)** — the last blocker for chart
-   loads on a private session (see the 8CN26 findings in §3.7). Capture with
-   `sudo tcpdump -i any -w control.pcap host 3.37.247.33` during official *and* private
-   sessions (harvester running - the AES layer is likely keyed with the harvested
-   `zf.aes_key`/`aes_iv`), then diff.
+8. **Fully offline chart loads**: run the error-site hunt (`EZ2_HUNT=1`) and read the
+   client's pattern-response validation (§3.7). If it verifies the CloudFront URL
+   signature with an embedded public key, patching that key lets the private server
+   mint its own signed URLs. The control channel turned out to be a Notice websocket
+   (announcements only) - not a blocker.
 9. Persist progression: feed accepted `plf` uploads back into the served myinfo
    `clearlist` so scores/records survive across sessions (the client computes its
    per-key-mode rating from that data — §3.7), and RE the exact per-mode rating
