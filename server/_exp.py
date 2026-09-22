@@ -23,6 +23,8 @@ endpoints forwarded upstream, which is also read per request.
     python server/_exp.py bck mint:zero         # minted with a fixed payload
     python server/_exp.py bck stale             # the older captured real key
     python server/_exp.py bck empty
+    python server/_exp.py chart any             # serve the song's chart for any variant
+    python server/_exp.py chart exact           # only exact keymode/difficulty (capturing)
     python server/_exp.py off                   # clear the url/bck mutations
     python server/_exp.py hybrid off            # back to a pure private server
     python server/_exp.py reset                 # clear everything
@@ -39,8 +41,10 @@ KNOBS = {
     'endpoints': 'passthrough_endpoints.txt',
     'urls': 'mutate_urls.txt',
     'bck': 'mutate_bck.txt',
+    'chart': 'chart_mode.txt',
 }
 URL_MODES = ('now', 'skew', 'future', 'expire', 'noparams', 'host')
+CHART_MODES = ('exact', 'any')
 BCK_MODES = ('harvested', 'stale', 'garbage', 'empty', 'mint')
 
 
@@ -85,6 +89,7 @@ def main():
         set_('endpoints', '')
         set_('urls', 'now')
         set_('bck', 'mint')
+        set_('chart', 'any')
         legacy = os.path.join(DATA, 'passthrough_pattern')
         if os.path.exists(legacy):
             os.remove(legacy)
@@ -96,12 +101,13 @@ def main():
         set_('endpoints', 'login,pattern')
         set_('urls', 'now')
         set_('bck', 'harvested')
+        set_('chart', 'exact')     # a miss must reach upstream to be captured
         show()
         return 0
     if a[0] in ('off', 'reset'):
         # `off` = mutations only. Clearing the endpoints too was a trap: it
         # silently turned a hybrid response test back into a replay test.
-        names = list(KNOBS) if a[0] == 'reset' else ['urls', 'bck']
+        names = list(KNOBS) if a[0] == 'reset' else ['urls', 'bck', 'chart']
         for name in names:
             set_(name, '')
         if a[0] == 'reset':
@@ -127,6 +133,11 @@ def main():
             print(f'urls must be one of {URL_MODES} or off')
             return 2
         set_('urls', '' if val in ('off', 'none') else val)
+    elif what == 'chart':
+        if val not in CHART_MODES + ('off', 'none'):
+            print(f'chart must be one of {CHART_MODES} or off')
+            return 2
+        set_('chart', '' if val in ('off', 'none') else val)
     elif what == 'bck':
         if (val not in BCK_MODES + ('off', 'none')
                 and not val.startswith(('literal:', 'mint:'))):

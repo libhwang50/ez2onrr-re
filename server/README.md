@@ -174,6 +174,8 @@ does that already.
 
 ```bash
 python server/_exp.py                 # show state
+python server/_exp.py chart any       # serve a song's captured chart for any variant
+python server/_exp.py chart exact     # only the exact keymode/difficulty (capturing)
 python server/_exp.py hybrid off      # no passthrough to the official servers
 python server/_exp.py urls now        # mint our own Expires = now+150
 python server/_exp.py bck mint        # mint the token (client constant + live key)
@@ -211,6 +213,28 @@ our minted URL, our cached CDN files and a token we produced — **confirmed in 
 decrypting the response the client accepted, by minting a token byte-identical to
 the one the official server had served moments earlier, and by finding the client's
 own single `byte[32]` copy of the constant in memory next to its live session key.
+
+### Growing the chart archive
+
+Coverage is **per song, not per variant**: the client never picks the CDN path
+(it downloads whatever URL the server returns), so one capture of a song serves
+every keymode/difficulty of it, and the `.ezi` is already identical across a
+song's variants. `_exp.py chart any` does that mapping; `chart exact` is for
+capturing, because a miss must reach upstream for the body to be recorded.
+
+```bash
+python server/_coverage.py            # 16/601 songs (2.7%), and which are missing
+python server/_coverage.py --queue    # write the capture queue (music-list order)
+python server/_coverage.py --log      # what the game asked for vs what we could serve
+```
+
+The loop that adds songs: `_exp.py harvest` (hybrid, `chart exact`) → walk the
+game's song list so it issues one `c2s_get_pattern_file` per song → the addon
+records the CDN bodies → `python server/_build_data.py` rebuilds
+`server/data/charts.json` + the CDN cache. Then `_exp.py offline` serves them
+with `chart any`. `_coverage.py --log` is how a capture macro's progress is
+verified without watching the screen — the game's own request names the song,
+keymode and difficulty.
 
 ### Where the blocker lives (from the code)
 

@@ -699,6 +699,7 @@ Private server (see **`server/README.md`** for the full guide):
 |---|---|
 | `server/_pserver.py` | **the private server** — a mitmproxy addon that stubs `game1-play` / `game1-rank` / `game1-cdn` server-side; no extra certs, no hosts edits (the Wine prefix already proxies through mitmproxy and trusts its CA) |
 | `server/_harvest_session.py` | Frida bridge: polls `zf.aes_key`/`aes_iv` at 1 Hz → `server/session_key.json` (the client generates the API session key locally and never sends it — §3.1). Also owns the **one-session command channel**: it polls `server/cmd.json` and answers in `server/cmd_result.json`, so memory probes never need a second Frida session (which crashes the game). Restores the default SIGINT handler while an RPC runs, so Ctrl-C aborts a slow scan and detaches cleanly |
+| `server/_coverage.py` | **audit chart coverage** — songs covered vs the 601-song music list (coverage is per *song*: one capture serves every variant), writes a capture queue, and parses `pserver.log` to verify what a capture run actually asked for |
 | `server/_build_data.py` | rebuild `server/data/` from local captures — decrypted API templates, the chart→CDN map (47 variants / 15 songs), profile overrides |
 | `server/_exp.py` | the experiment knobs: `hybrid on/off`, `urls now/skew/future/expire/noparams/host`, `bck harvested/stale/garbage/empty/literal:…`, `off` (mutations only), `reset`. Read per request — no restart. `off` deliberately does NOT touch the hybrid setting |
 | `server/_mem.py` | drive the harvester's command channel: `findhex` (byte pattern over code first, then r--, rw-; default budget 16 GB, reports `budgetExhausted`), `findlea` (rip-relative `lea` to an address), `findlit` (base-free, keyed on `mov r8d,<len>`), `findthunk`, `readbytes`, `bck` (locate the session token in memory) |
@@ -764,8 +765,15 @@ server's. In-game validation of the server itself is in progress.
    pins the constant `plf` fields (§3.7).
 6. Make the server Frida-free: patch `zf.gnf` to a fixed session key, or RE the raw-TCP
    control/battle channel (`zf` RSA+AES) the real server presumably uses to learn the key.
-7. Broaden chart coverage in `server/data/` (uncaptured songs fail with `result:0` and
-   the client retries 5× before booting to the main screen — e.g. Hyper Magic 5K HD).
+7. Broaden chart coverage in `server/data/`. Measured: **16 of 601 songs** (the
+   music list's 1,201 entries are two `GAME_MODE`s of the same songs, and gamemode is
+   not a chart selector). Coverage is per *song*, because the server returns the CDN
+   path — `chart any` serves a song's captured chart for any of its keymodes/
+   difficulties. Adding songs needs one official pattern request each (hybrid,
+   `chart exact`, walk the song list), the addon's recorded CDN bodies, then
+   `_build_data.py`; `server/_coverage.py --log` verifies a capture run. Unc captured
+   songs answer `result:0` and the client retries 5× against **our** server, so a miss
+   is harmless.
 8. **`bundleCryptKey` — SOLVED (§3.2/§3.7).** Fully offline chart loads work with a
    self-minted token: encrypt the client's build-time 32-byte payload constant under the
    live session key, exactly as the official server does. Nothing comes from an official

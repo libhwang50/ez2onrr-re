@@ -267,6 +267,8 @@ def decrypt_api_body(body: bytes):
 #
 #   server/data/mutate_urls.txt   future | expire | noparams | host
 #   server/data/mutate_bck.txt    stale | garbage | empty | mint[:payload] | literal:<b64>
+#   server/data/chart_mode.txt    exact (default) | any   (serve the song's chart
+#                                 for an uncaptured keymode/difficulty too)
 #
 #   future    Expires far in the future (signature no longer matches)
 #   expire    Expires in the past (signature still valid)
@@ -597,11 +599,20 @@ def cdn_url(path):
             f'&Key-Pair-Id=K2L5B5JS5W46ST')
 
 
-def pattern_response(req_json):
-    """c2s_get_pattern_file: (musicresourcename, keymode, levelmode) -> URLs.
+def chart_mode():
+    """server/data/chart_mode.txt: 'exact' (default) or 'any'.
 
-    Exact matches only — serving a different keymode/difficulty chart for the
-    selected one would load wrong notes."""
+    'any' serves the best chart we hold *for that song* when the exact
+    keymode/difficulty was never captured. The client does not choose the CDN
+    path — it downloads whatever URL we return — so one capture per song makes
+    every variant of that song loadable (`_coverage.py` counts coverage that
+    way). Keep 'exact' while capturing: a miss must go upstream for the body to
+    be recorded, and 'any' would answer it locally instead."""
+    return (_knob('chart_mode.txt') or 'exact').strip().lower()
+
+
+def pattern_response(req_json):
+    """c2s_get_pattern_file: (musicresourcename, keymode, levelmode) -> URLs."""
     try:
         req = json.loads(req_json) if req_json else {}
     except Exception:
@@ -623,19 +634,29 @@ def pattern_response(req_json):
         return obj
     hit = next((c for c in CHARTS if c['song_norm'] == want and c['keymode'] == km
                 and c['levelmode'] == lm), None)
+    how = 'exact'
+    if hit is None and chart_mode() == 'any':
+        pool = [c for c in CHARTS if c['song_norm'] == want]
+        if pool:
+            # prefer the same keymode (fewest lane mismatches), then the 4K EZ
+            # variant the Lounge serves, then anything captured for the song
+            pick = (next((c for c in pool if c['keymode'] == km), None)
+                    or next((c for c in pool if c['keymode'] == 1 and c['levelmode'] == 1), None)
+                    or pool[0])
+            hit, how = pick, 'any-variant'
     if hit is None:
         have = sorted({c['song_norm'] for c in CHARTS})
         log(f'pattern: NO replay/chart for {name!r} keymode={km} levelmode={lm} '
             f'(known songs: {have})')
         return {'result': 0}
-    base = f'https://{CDN_HOST}'
     resp = {
         'final_url_ez': cdn_url(hit['ez_path']),
         'final_url_ezi': cdn_url(hit['ezi_path']),
         'bundleCryptKey': bundle_crypt_key(),
         'result': 1,
     }
-    log(f"pattern: {name!r} km={km} lm={lm} -> {hit['keymode_dir']}/{hit['levelmode_dir']}")
+    log(f"pattern: {name!r} km={km} lm={lm} -> {how} "
+        f"{hit['keymode_dir']}/{hit['levelmode_dir']}")
     return resp
 
 
