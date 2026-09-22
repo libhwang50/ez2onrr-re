@@ -92,6 +92,7 @@ python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 10
 | `dump_song.py [--out DIR] [--interval S]` | **recommended** — per-song byte-exact CDN archive + in-memory snapshot |
 | `harvest_key.py` | derive `true_key_1024.bin` from live memory |
 | `decrypt_chart.py <cdn_*.bin>` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
+| `decrypt_archive.py` | **complete chart dumps** — walk `extracted_charts/`, decrypt any raw CDN capture missing its plaintext, write `ez.ez` / `ezi.ezi` / `instrumentDic.json`; `--check` audits without writing |
 | `parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
 | `chart_labels.py` | decrypt captured API traffic → `chart_labels.json` (song name, key mode, difficulty) |
 | `check_charts.py` | **audit the captures** — flags a chart filed under the wrong key mode or difficulty, a missing artifact, or a record that disagrees with the chart on disk; exits non-zero |
