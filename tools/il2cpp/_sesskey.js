@@ -802,3 +802,63 @@ rpc.exports.callers = function (targetStr) {
                             elapsedSec: ((Date.now() - t0) / 1000).toFixed(1) });
   });
 };
+
+// --- chunked, abortable code scans -------------------------------------------
+// A single full-module scan in the gadget's JS engine takes long enough that
+// abandoning it can wedge the Gadget, and it prints nothing meanwhile. These ops
+// scan ONE bounded chunk per RPC (the Python client loops), so every call is
+// short, progress is visible, and Ctrl-C is safe between chunks.
+function codeLayout(mod) {
+  const CAP = 64 * 1024 * 1024;
+  const lo = mod.base, hi = mod.base.add(CAP);
+  let rs = [];
+  try { rs = mod.enumerateRanges('r-x'); } catch (e) { rs = []; }
+  if (!rs.length)
+    rs = Process.enumerateRanges('x').filter(r => r.base.compare(lo) >= 0 && r.base.compare(hi) < 0);
+  const out = [];
+  for (const r of rs) {
+    if (r.base.compare(lo) < 0 || r.base.compare(hi) >= 0) continue;
+    const size = Math.min(typeof r.size === 'number' ? r.size : 0, CAP);
+    if (size > 0) out.push({ base: r.base, size: size });
+  }
+  out.sort((a, b) => a.base.compare(b.base));
+  return out;
+}
+
+function scanChunkFor(targetNum, idx, CH) {
+  const mod = Process.getModuleByName('GameAssembly.dll');
+  const layout = codeLayout(mod);
+  const total = layout.reduce((a, r) => a + r.size, 0);
+  const start = idx * CH, end = Math.min(start + CH, total);
+  const res = { index: idx, totalMB: Math.round(total / 1048576),
+                ranges: layout.map(r => r.base.toString(16) + '+0x' + r.size.toString(16)),
+                done: end >= total, sites: [] };
+  if (start >= total) { res.done = true; return res; }
+  let consumed = 0;
+  for (const r of layout) {
+    const rStart = consumed, rEnd = consumed + r.size; consumed = rEnd;
+    if (rEnd <= start || rStart >= end) continue;
+    const from = Math.max(start, rStart) - rStart;
+    const to = Math.min(end, rEnd) - rStart;
+    const len = to - from;
+    let buf;
+    try { buf = new Uint8Array(r.base.add(from).readByteArray(len)); } catch (e) { continue; }
+    const baseNum = parseInt(r.base.toString(16), 16) + from;
+    for (let i = 0; i + 5 <= buf.length; i++) {
+      if (buf[i] !== 0xe8) continue;
+      const rel = buf[i+1] | (buf[i+2] << 8) | (buf[i+3] << 16) | (buf[i+4] << 24);
+      if (baseNum + i + 5 + rel === targetNum)
+        res.sites.push('0x' + (baseNum + i).toString(16));
+    }
+  }
+  res.chunkMB = Math.round((end - start) / 1048576);
+  return res;
+}
+
+rpc.exports.scanCallersChunk = function (targetStr, idxStr, chunkMBStr) {
+  return Il2Cpp.perform(() => {
+    const target = parseInt(String(targetStr).replace(/^0x/, ''), 16);
+    const CH = (parseInt(chunkMBStr, 10) || 2) * 1024 * 1024;
+    return JSON.stringify(scanChunkFor(target, parseInt(idxStr, 10) || 0, CH));
+  });
+};

@@ -115,7 +115,26 @@ def main():
         show(send({'op': 'findhex', 'hex': ' '.join(
             f'{x:02x}' for x in b.encode('utf-16-le'))}))
     elif a[0] == 'callers':
-        show(send({'op': 'callers', 'target': a[1]}, timeout=900), max_hits=40)
+        # chunked: one bounded scan per RPC, so nothing long-running can hang and
+        # Ctrl-C between chunks is safe
+        target = a[1]
+        chunk_mb = int(a[2]) if len(a) > 2 else 2
+        idx, all_sites, seen = 0, [], set()
+        while True:
+            r = json.loads(send({'op': 'scan_chunk', 'target': target,
+                                 'index': idx, 'chunkMB': chunk_mb}, timeout=300))
+            if idx == 0:
+                print(f'target {r.get("target", target)}  total={r.get("totalMB")}MB  '
+                      f'ranges={r.get("ranges")}')
+            for s2_ in r.get('sites', []):
+                if s2_ not in seen:
+                    seen.add(s2_); all_sites.append(s2_)
+            print(f'  chunk {idx}: {r.get("chunkMB")}MB -> {len(r.get("sites", []))} sites'
+                  f' (total {len(all_sites)})', flush=True)
+            idx += 1
+            if r.get('done'):
+                break
+        print('call sites:', all_sites)
     elif a[0] == 'findlitoff':
         # target address, static-fields base (the value `deref <global> 0xb8` prints)
         show(send({'op': 'findlitoff', 'target': a[1],
