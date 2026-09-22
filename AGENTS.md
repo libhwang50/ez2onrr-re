@@ -291,11 +291,15 @@ response, so experiments need no restart.
   capture sweep needs to vary a variant. During play `F7`/`F8` nudge display sync ±1 ms,
   `F9`/`F10` halve/double note speed. `_sweep.py --calibrate` derives the difficulty and
   keymode keys empirically, because the request JSON it watches names both.
-* **The Lounge is a chart-harvesting route.** The in-game Lounge (watch a BGA with the song
-  playing) goes through the same `c2s_get_pattern_file` flow and serves the song's **4K EZ**
-  chart — confirmed by capture: the Lounge chart for Conflict was `4-ez` with an `.ezi`
-  byte-identical to Conflict's. So charts can be collected by browsing BGAs, with no
-  gameplay, and per the point above those 4K EZ charts suffice to render each song.
+* **The Lounge is a stats hub; its MUSIC VIDEO tab is a chart-harvesting route.** The
+  Lounge screen is tabbed **PROFILE / PLAYINFO / RECENT / RANKING / MUSIC VIDEO**. The
+  BGA-watching route a capture confirmed is its **MUSIC VIDEO** tab: it goes through the same
+  `c2s_get_pattern_file` flow and serves the song's **4K EZ** chart (the Lounge chart for
+  Conflict was `4-ez` with an `.ezi` byte-identical to Conflict's), so charts can be collected
+  by browsing BGAs with no gameplay, and per the point above those 4K EZ charts are enough to
+  render a song. Symmetrically, its **RANKING** tab is where the rank-server traffic comes
+  from — see §3.7.
+
 * **The `.ez` per-track counts differ by keymode and difficulty** (Conflict SHD vs HD differs
   in the lanes *and* in nearly every track 23–63, while the track-22 `MR` note is the same).
   It is the track *assignment* that moves, per the point above.
@@ -451,6 +455,10 @@ the key-mode's key count — but one mode pair is not enough to pin them.
 
 **The client fetches the `.ezi` and `.ez` in either order**, and retries a failing
 chart download **5 times** (3 s apart) before booting the song to the main screen.
+
+**Where the rank traffic comes from**: the Lounge's **RANKING** tab (§3.5) is what
+issues `get<rank_id><keymode><levelmode>,<page>` and the batched `c2s_get_userinfo` calls,
+so opening it is the capture recipe for leaderboard/progression shapes.
 
 **Leaderboard structure** (from a full official-server session): one query returns the
 **whole Top100** (`get2794823,0` ≈ 2890 B ≈ 100 × 29 B of `rank,score,steamid`) — the
@@ -630,7 +638,9 @@ function onMain(fn) {
   `9824450789003347`.
 * `bbk` statics: `wdp` (32 B) = `ce2e2185e0cde39d3ef798e1678b950e7ac9f7014307a04aed8c4faabe3e58f0`,
   `wdq` (16 B) = `a5cf61a270f467ca7611cfae8bd364a5`.
-* `da.rpr` = API base; `da.ror` / `da.ros` = client version / build.
+* `da.rpr` = API base; `da.ror` / `da.ros` = client version / build. Observed on
+  screen (top right of the menus) for this install: **`2026.09.04.001 LIVE A2`** —
+  the same shape the control channel's `GET /Notice?id=…&name=…&version=…` carries.
 
 ### 4.4 Symbolication & code scanning
 
