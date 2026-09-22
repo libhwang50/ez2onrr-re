@@ -408,65 +408,10 @@ response length **varies** (48 B after a new-record play, 64 B without). `rating
 `totalranking` were empty in every captured session, and `plf` uploads happen for
 non-record plays too.
 
-**Chart-load failure 8CN26 — the files are NOT the problem.** A private-server
-chart load that fails with "게임 파일이 손상되었습니다 … ErrCode: 8CN26" has, at the
-error popup, already **downloaded, decrypted and parsed everything**: live-state
-reads showed 5 lanes with notes populated, `instrumentDic` = 1131 = exactly the
-served `.ezi` line count, and `da.rus` holding the exact ciphertext sizes. The
-verdict is a **post-parse, session-dependent check**. Ruled out by experiment:
-the URL shape (fresh Expires + well-formed 344-char signature still fails) and
-the control channel *audit being skippable when blackholed* (`battle_server.txt`
-→ `127.0.0.1:1` produced zero connections to the real server and the same
-error). The remaining difference vs a working load: a genuine server session
-over the **control channel (TCP 4649)** — where `da.rus` (ciphertexts + key) is
-relayed and/or keysound audio flows. The in-game error popup embeds a
-Bugsnag-style reporter (`event.applecrashreport`, `event.view_hierarchy`) and
-its full text (Unity TMP rich text, `<size=28>로딩 실패</size>`) is capturable
-from memory but memory scanning proved non-deterministically crash-prone.
-
-**Chart-load failure 8CN26 — SOLVED: the pattern response must be FRESH.** A
-private-server chart load that fails with "게임 파일이 손상되었습니다 … ErrCode: 8CN26"
-has, at the error popup, already **downloaded, decrypted and parsed everything**
-(live-state reads: 5 lanes, notes populated, `instrumentDic` = 1131 = exactly the
-served `.ezi` line count, `da.rus` holding the exact ciphertext sizes). Isolation
-experiments:
-
-* official login + private (synthesized) pattern + private files → 8CN26
-* private login + private pattern with **fresh-shaped** URLs (150 s expiry, 344-char
-  signature) + private files → 8CN26
-* private login + **replayed verbatim** official response (real signed URLs, real
-  per-session `bundleCryptKey` — hours stale) → 8CN26
-* official login + **PASSTHROUGH** pattern request to the upstream (fresh response)
-  + private files → **LOADS AND PLAYS**
-
-So the client validates the freshness/validity of the pattern response's signed URLs
-(and/or the per-session `bundleCryptKey`, which differs every session), and rejects
-stale or forged ones post-parse. The chart FILES are byte-identical across sessions
-(sha256 `132bb600…` matches the CDN's own `x-amz-meta-sha256`), and the control
-channel (TCP 4649) is **just a websocket-sharp Notice channel**
-(`GET /Notice?id=<steamid>&name=<nick>&version=…`) carrying pings and announcement
-banners — no session audit, no audio, no battle traffic during a full play session.
-
-**The check, isolated (the mutation matrix).** With a *passing* baseline (hybrid:
-forwarded login + forwarded pattern response) the `server/_exp.py` knobs separate
-the candidates exactly:
-
-| run | knob | result |
-|---|---|---|
-| A | none | loads |
-| B | `bck garbage` (48 random bytes, same base64 shape) | **8CN26** |
-| C | `urls skew` (`Expires` +1 s, so the CloudFront signature no longer matches) | **loads and plays** |
-| D/E | `urls future` / `expire` | fail, but only because the bCK was untouched — C proves the URL is not validated at all |
-
-So **the CloudFront URL signature and its expiry are never verified** (our own
-minted `Expires` with a stale signature loads fine), and **`bundleCryptKey` is the
-only element of the pattern response the client acts on**. Earlier URL-mutation
-results were confounded by the stale bCK; `skew` removes that confound.
-
-**8CN26 is not an integrity verdict — it means "Song Load timeout".** The literal
-pool is a ~900 KB *anonymous* `r--` mapping (at `0x71540000` in the sampled
-session — the metadata's literal blob, allocated/decrypted at runtime), and it
-holds the message table with the code and its text concatenated:
+**Chart-load failure 8CN26 = "Song Load timeout" — one flag, one coroutine.**
+The popup text ("게임 파일이 손상되었습니다 … ErrCode: 8CN26") is the generic wrapper
+the crash reporter shows; the code itself is the game's message table, where the
+code and its text are stored concatenated:
 
 ```
 8CN26Song Load timeout1YDMD : m:K14JVmLV Error : id:{0} m:{1}
@@ -474,98 +419,90 @@ An unrecoverable error has occurred.
 The program will now be terminated.
 ```
 
-So every failure chased here was a **timeout**: with a wrong bCK the load never
-completes and a watchdog reports it. The bCK therefore *gates* something in the
-load pipeline rather than being compared with a stored expectation.
-
-**Fully offline chart loads: WORKING (one borrowed value).** Private login, our
-own minted `Expires`, CDN files from the local cache, and `bck harvested` — the
-48-byte token captured from one official pattern response *in the same session*.
-Verified by decrypting the response the client accepted: our URL path +
-`Expires = now+150` + a stale signature + the official token. Recipe:
-`server/README.md`. The single remaining online contact is minting that token.
-
-**The open question: where a session's token comes from.** A full-heap scan
-(budget not exhausted, 3.4 GB) finds **exactly two** copies of the token, both
-`byte[48]` arrays derived from the response — no independent copy, and no base64
-copy in UTF-8 or UTF-16. No network exchange happens at load time either: the
-443 connections are handshake-only (a hybrid load succeeds while a stub
-transparently intercepts them), 4649 carries ping/pong notices, and 9902 is never
-dialled even when our stub is the `get_battle_server_ip` the client is served.
-Ruled out as derivations: SHA-384/SHA-512/HMAC/AES combinations over the session
-key, the Steam ticket, the login ciphertext and the SteamID. The client owns no
-local expectation, so it must *use* the token as a key somewhere in the pipeline,
-and the silent failure is what the watchdog times out on.
-
-**Why the literal-based hunt stalls (important for future scans).**
-
-* The literal blob is an anonymous runtime mapping, so its addresses are not
-  compile-time constants and the code cannot reach literals with a RIP-relative
-  `lea`: it uses a runtime literal base + offset, exactly as the older notes say.
-  `findlea` (rip-relative scan) and pointer-table searches therefore find nothing.
-* AOT code is **decrypted per method** (see §1): a method that has not executed is
-  invisible to any code scan. Scan *after* triggering 8CN26, not before.
-* `findhex`'s original 2 GB budget scanned `rw-` before the code ranges, so on a
-  process with more memory than that it silently reported `hits=0` for
-  instruction and pointer searches. It now defaults to 16 GB, scans `r-x` first,
-  and returns `budgetExhausted`.
-* The game also builds runtime **hash tables keyed by literal addresses** (17 hits
-  for a pointer to the literal-blob base, adjacent entries at `…7154…`, `…7155…`,
-  `…7156…`) — a way to find a literal's consumers that does not depend on the
-  literal offset encoding.
-
-**The 8CN26 mechanism, read from the code (endgame of the hunt).** With the
-literal's accessor located (see the addressing note below), the call site is a
-single instruction in the song-load coroutine:
+The raise site is a single instruction in the song-load coroutine, reached
+through that literal's accessor:
 
 ```
-call site: 0x6ffff2fa7327   ->  method attribution: ft.MoveNext @ 0x6ffff2f74230
-reporter : 0x6ffff2e87ec0   ->  InGameCore.dci
-getter   : 0x6ffff2ae5300   ->  oj.UI   (resolve a string by index)
+0x6ffff2fa7327  call  <accessor for "8CN26">        ; in ft.MoveNext @ 0x6ffff2f74230
+0x6ffff2fa736f  call  InGameCore.dci(this, str166, str167, "8CN26")   ; the reporter
 ```
 
 `ft.MoveNext` fetches two strings via `oj.UI(166)` / `oj.UI(167)`, fetches the
-`"8CN26"` literal, and calls `InGameCore.dci(this, str166, str167, "8CN26")` —
-the error reporter — then returns `false`. `dci` is also the **only** writer of
-the latch the coroutine checks:
+`"8CN26"` literal, and calls the reporter — then returns `false`. **`dci` is also
+the only writer of the latch the coroutine checks**, so the flag means "an error
+was already reported" and the popup shows the last report:
 
 ```
-0x6ffff2e87fb5   mov byte ptr [rbx + 0x798], 1      ; inside InGameCore.dci
-0x6ffff2fa7205   movzx eax, byte ptr [rax + 0x798]  ; inside ft.MoveNext
-0x6ffff2fa721f   jne  -> report 8CN26, return false
+0x6ffff2e87fb5  mov byte ptr [rbx + 0x798], 1       ; inside InGameCore.dci
+0x6ffff2fa7205  movzx eax, byte ptr [rax + 0x798]   ; inside ft.MoveNext
+0x6ffff2fa721f  jne  -> report 8CN26, return false
 ```
 
-So `InGameCore+0x798` means "an error was already reported", and 8CN26 is the
-coroutine's own timeout report (there is no earlier hidden error — the wait
-inside `ft.MoveNext` is the cause). **What that wait depends on is the one open
-item**, and the web of `dci` callers is *not* the answer (they are other,
-unrelated error reports).
+There is no earlier hidden error: the **wait inside `ft.MoveNext` itself is the
+cause**, and what that wait depends on is the one open item (§7.8). Earlier
+readings of 8CN26 as an integrity verdict were wrong (the client has, at the
+popup, already **downloaded, decrypted and parsed everything** — 5 lanes with
+notes, `instrumentDic` = the served `.ezi` line count — so the failure is
+post-parse, and "the game file is corrupted" is not what the code says).
 
-Verified along the way: a genuinely failing load opens exactly **one** connection
-(the handshake-only TLS probe to `3.37.247.33:443` — no 4649 frame, no 9902,
-nothing else), so the token is consumed locally, not validated over the network.
+**What the client actually checks in the pattern response: only the bCK.** With a
+*passing* baseline (hybrid: forwarded login + forwarded pattern) the
+`server/_exp.py` knobs isolate it:
+
+| run | knob | result |
+|---|---|---|
+| A | none | loads |
+| B | `bck garbage` (48 random bytes, same base64 shape) | **8CN26** |
+| C | `urls skew` (`Expires` +1 s, so the CloudFront signature no longer matches) | **loads and plays** |
+| D/E | `urls future` / `expire` | fail, but only because the bCK was untouched — C proves the URL is never validated |
+
+So the CloudFront URL signature and its expiry are **never** verified (our own
+minted `Expires` with a stale signature loads fine), and `bundleCryptKey` is the
+only element acted on. A private login cannot make the upstream mint URLs — it
+returns `{"result":0}` (24 B) and the client retries until `GPF 5 TIMES FAILED` —
+which is why hybrid mode must forward the **login** too, not just the pattern.
+
+**Fully offline chart loads: WORKING (one borrowed value).** Private login, our own
+minted `Expires`, CDN files from the local cache, plus `bck harvested` — the
+48-byte token captured from one official pattern response *in the same session*.
+Verified by decrypting the response the client accepted: our URL path +
+`Expires = now+150` + a stale signature + the official token. Recipe:
+`server/README.md`. The single remaining online step is harvesting that token.
+
+**The open question: what the bCK feeds.** A full-heap scan (budget not exhausted,
+3.4 GB) finds **exactly two** copies of the token, both `byte[48]` arrays derived
+from the response — no independent copy, no base64 copy in UTF-8 or UTF-16 — and
+a failing load opens exactly **one** connection (the handshake-only TLS probe to
+`3.37.247.33:443`; no 4649 frame, no 9902). Ruled out as derivations: SHA-384/512,
+HMAC and AES combinations over the session key, the Steam ticket, the login
+ciphertext and the SteamID. So the client owns no local expectation and the token
+is *used as a key* somewhere in the load pipeline; the timeout is what surfaces.
+Leads for resuming: the strings at `oj.UI(166)`/`oj.UI(167)` (they label the
+failed step); the wait loop in `ft.MoveNext` around the two latch checks
+(`0x6ffff2fa71c2`/`0x6ffff2fa7205`); and a field-by-field diff of the `InGameCore`
+instance (fields 0x510–0x840, §4.3) between a successful and a failing load.
 
 **How literals are addressed in this build (needed for any future hunt).**
 
-* Each assembly's literal blob sits in one anonymous mapping that also holds the
+* Each assembly's literal blob lives in one anonymous mapping that also holds the
   static-fields region; its base is stored as a *static field of `System.String`*:
-  `blob = [ [StringKlass+0xb8] + STATIC_OFF ]` — e.g. `0x8320` and `0x9f858` for
-  two sampled assemblies (`deref <global> 0xb8,0x8320`).
+  `blob = [ [StringKlass+0xb8] + STATIC_OFF ]` — sampled `STATIC_OFF` values
+  `0x8320` and `0x9f858` (`deref <global> 0xb8,0x8320`).
 * Per-literal accessors are `<PrivateImplementationDetails>{…}.a.XX` methods that
-  set `ecx` = literal index, `edx` = offset in the blob, `r8d` = length, then call
+  set `ecx` = literal index, `edx` = offset in the blob, `r8d` = length and call
   the assembly's helper (`…2fd2390`, `…27b5be0`). There is **no** `mov edx,<off>`
-  against a mapping base and **no** RIP-relative `lea` to the blob: the offset is
+  against a mapping base and **no** RIP-relative `lea` to the blob — the offset is
   relative to that runtime base, which is why every mapping-base scan returned 0.
 * A second, index-only resolver exists: `oj.UI(index)` returns a string for an
-  index in a different table (used by the error paths).
-* `InGameCore.dci` and `InGameCore.dch` are the reporter and its sibling; the
-  `dc*` cluster also holds the chart decryptor (`dcf`/`dcg`, §3.3).
+  index in a different table (the error paths use it).
+* The `dc*` cluster holds the chart decryptor (`dcf`/`dcg`, §3.3), the reporter
+  (`dci`) and `dch`.
 
 **Scanning caveats that cost time here (see `tools/README.md`).**
 
 * A byte-by-byte JS loop must only ever walk the module's **own** `r-x` ranges:
   the earlier `base >= mod.base && base < base+mod.size` filter also matched
-  Wine/Unity JIT mappings, so loops walked ~6 GB and looked like hangs while
+  Wine/Unity JIT mappings, so loops walked ~6 GB and looked like hangs, while
   native `scanSync` (~1 GB/s) merely took seconds.
 * `findhex`'s original 2 GB budget scanned `rw-` before the code and silently
   returned `hits=0` for code/pointer searches. It now defaults to 16 GB, scans
