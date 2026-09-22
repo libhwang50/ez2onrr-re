@@ -447,23 +447,77 @@ channel (TCP 4649) is **just a websocket-sharp Notice channel**
 (`GET /Notice?id=<steamid>&name=<nick>&version=…`) carrying pings and announcement
 banners — no session audit, no audio, no battle traffic during a full play session.
 
-**Where the 8CN26 check sits (refined).** Mutating a *replayed* response's URLs
-to a far-future `Expires` still fails, and the client **downloads both CDN files
-successfully from the local cache first** (32160 + 32992 B, 200) — so the check
-is neither a pre-download URL rejection nor a download failure. It is post-parse,
-against the response content. The two surviving candidates are the CloudFront URL
-signature and `bundleCryptKey`; isolating them needs a *passing* baseline, i.e. a
-forwarded pattern response, which in turn requires a forwarded **login** (a
-private login cannot make the upstream mint URLs — it answers `{"result":0}`,
-24 B, and the client retries until `GPF 5 TIMES FAILED`).
+**The check, isolated (the mutation matrix).** With a *passing* baseline (hybrid:
+forwarded login + forwarded pattern response) the `server/_exp.py` knobs separate
+the candidates exactly:
 
-**Operating modes.** Hybrid (works today): official login mints fresh pattern
-responses (addon passthrough), CDN files come from the local cache, scores/records
-stay on the private server. Fully offline: blocked only by the client's
-freshness/signature validation of the pattern URLs — the error-site hunt
-(`EZ2_HUNT=1`, literal-thunk → caller attribution) reads the exact check; if it is a
-CloudFront signature verification with an embedded public key, patching that key
-enables self-minted URLs.
+| run | knob | result |
+|---|---|---|
+| A | none | loads |
+| B | `bck garbage` (48 random bytes, same base64 shape) | **8CN26** |
+| C | `urls skew` (`Expires` +1 s, so the CloudFront signature no longer matches) | **loads and plays** |
+| D/E | `urls future` / `expire` | fail, but only because the bCK was untouched — C proves the URL is not validated at all |
+
+So **the CloudFront URL signature and its expiry are never verified** (our own
+minted `Expires` with a stale signature loads fine), and **`bundleCryptKey` is the
+only element of the pattern response the client acts on**. Earlier URL-mutation
+results were confounded by the stale bCK; `skew` removes that confound.
+
+**8CN26 is not an integrity verdict — it means "Song Load timeout".** The literal
+pool is a ~900 KB *anonymous* `r--` mapping (at `0x71540000` in the sampled
+session — the metadata's literal blob, allocated/decrypted at runtime), and it
+holds the message table with the code and its text concatenated:
+
+```
+8CN26Song Load timeout1YDMD : m:K14JVmLV Error : id:{0} m:{1}
+An unrecoverable error has occurred.
+The program will now be terminated.
+```
+
+So every failure chased here was a **timeout**: with a wrong bCK the load never
+completes and a watchdog reports it. The bCK therefore *gates* something in the
+load pipeline rather than being compared with a stored expectation.
+
+**Fully offline chart loads: WORKING (one borrowed value).** Private login, our
+own minted `Expires`, CDN files from the local cache, and `bck harvested` — the
+48-byte token captured from one official pattern response *in the same session*.
+Verified by decrypting the response the client accepted: our URL path +
+`Expires = now+150` + a stale signature + the official token. Recipe:
+`server/README.md`. The single remaining online contact is minting that token.
+
+**The open question: where a session's token comes from.** A full-heap scan
+(budget not exhausted, 3.4 GB) finds **exactly two** copies of the token, both
+`byte[48]` arrays derived from the response — no independent copy, and no base64
+copy in UTF-8 or UTF-16. No network exchange happens at load time either: the
+443 connections are handshake-only (a hybrid load succeeds while a stub
+transparently intercepts them), 4649 carries ping/pong notices, and 9902 is never
+dialled even when our stub is the `get_battle_server_ip` the client is served.
+Ruled out as derivations: SHA-384/SHA-512/HMAC/AES combinations over the session
+key, the Steam ticket, the login ciphertext and the SteamID. The client owns no
+local expectation, so it must *use* the token as a key somewhere in the pipeline,
+and the silent failure is what the watchdog times out on.
+
+**Why the literal-based hunt stalls (important for future scans).**
+
+* The literal blob is an anonymous runtime mapping, so its addresses are not
+  compile-time constants and the code cannot reach literals with a RIP-relative
+  `lea`: it uses a runtime literal base + offset, exactly as the older notes say.
+  `findlea` (rip-relative scan) and pointer-table searches therefore find nothing.
+* AOT code is **decrypted per method** (see §1): a method that has not executed is
+  invisible to any code scan. Scan *after* triggering 8CN26, not before.
+* `findhex`'s original 2 GB budget scanned `rw-` before the code ranges, so on a
+  process with more memory than that it silently reported `hits=0` for
+  instruction and pointer searches. It now defaults to 16 GB, scans `r-x` first,
+  and returns `budgetExhausted`.
+* The game also builds runtime **hash tables keyed by literal addresses** (17 hits
+  for a pointer to the literal-blob base, adjacent entries at `…7154…`, `…7155…`,
+  `…7156…`) — a way to find a literal's consumers that does not depend on the
+  literal offset encoding.
+
+**Operating modes.** (1) *Hybrid* — official login + pattern passthrough, our CDN
+cache, private scores. (2) *Offline with a harvested token* — works end-to-end
+today; the only online step is capturing that token once per session. (3) *Pure
+private* — blocked solely by the token: every HTTP element is already ours.
 
 **Private-server trap:** an unhandled exception inside a mitmproxy addon hook does *not*
 abort the request — mitmproxy logs it and **forwards the request to the real upstream**.
@@ -611,8 +665,13 @@ Private server (see **`server/README.md`** for the full guide):
 | Tool | Purpose |
 |---|---|
 | `server/_pserver.py` | **the private server** — a mitmproxy addon that stubs `game1-play` / `game1-rank` / `game1-cdn` server-side; no extra certs, no hosts edits (the Wine prefix already proxies through mitmproxy and trusts its CA) |
-| `server/_harvest_session.py` | Frida bridge: polls `zf.aes_key`/`aes_iv` at 1 Hz → `server/session_key.json` (the client generates the API session key locally and never sends it — §3.1) |
+| `server/_harvest_session.py` | Frida bridge: polls `zf.aes_key`/`aes_iv` at 1 Hz → `server/session_key.json` (the client generates the API session key locally and never sends it — §3.1). Also owns the **one-session command channel**: it polls `server/cmd.json` and answers in `server/cmd_result.json`, so memory probes never need a second Frida session (which crashes the game). Restores the default SIGINT handler while an RPC runs, so Ctrl-C aborts a slow scan and detaches cleanly |
 | `server/_build_data.py` | rebuild `server/data/` from local captures — decrypted API templates, the chart→CDN map (47 variants / 15 songs), profile overrides |
+| `server/_exp.py` | the experiment knobs: `hybrid on/off`, `urls now/skew/future/expire/noparams/host`, `bck harvested/stale/garbage/empty/literal:…`, `off` (mutations only), `reset`. Read per request — no restart. `off` deliberately does NOT touch the hybrid setting |
+| `server/_mem.py` | drive the harvester's command channel: `findhex` (byte pattern over code first, then r--, rw-; default budget 16 GB, reports `budgetExhausted`), `findlea` (rip-relative `lea` to an address), `findlit` (base-free, keyed on `mov r8d,<len>`), `findthunk`, `readbytes`, `bck` (locate the session token in memory) |
+| `server/_stub443.py` | loop-proof TLS stub for the game's **un-proxied** TLS channel to `game1-rank.ez2game.co.kr:443`, with a certificate signed by the local mitmproxy CA (the client accepts it — no pinning) |
+| `server/_stub9902.py` | capturing TCP relay/stub for the raw audit channel (`battle_server.txt`), logging both directions |
+| `server/_rawchannel.sh` | redirects that hostname and the raw IP into `_stub443.py` (`on`/`test`/`status`/`off`) |
 
 Investigation tooling — layout, build step and crash warnings: **`tools/README.md`**.
 Drivers are loaded as `bridge + driver` and regenerated with
@@ -670,12 +729,21 @@ verified end-to-end offline, in-game validation in progress.
    control/battle channel (`zf` RSA+AES) the real server presumably uses to learn the key.
 7. Broaden chart coverage in `server/data/` (uncaptured songs fail with `result:0` and
    the client retries 5× before booting to the main screen — e.g. Hyper Magic 5K HD).
-8. **Fully offline chart loads**: run the error-site hunt (`EZ2_HUNT=1`) and read the
-   client's pattern-response validation (§3.7). If it verifies the CloudFront URL
-   signature with an embedded public key, patching that key lets the private server
-   mint its own signed URLs. The control channel turned out to be a Notice websocket
-   (announcements only) - not a blocker.
+8. **Fully offline chart loads — the token's origin is the one open item.** Offline
+   loading already works (§3.7) using a token captured from one official response per
+   session; what is unknown is what the client does with it, since it keeps no local
+   copy and opens no socket at load time. Suggested attack order: (a) trigger an 8CN26
+   first — AOT code is decrypted per method, so the error path is invisible to scans
+   until it has run — then `findhex`/`findlea`/`findthunk` for the literals
+   `0x71616d97`/`0x71616d9c`; (b) use the runtime hash tables keyed by literal addresses
+   (find a pointer to the literal-blob base, then walk neighbouring entries) to reach a
+   literal's consumers without knowing the offset encoding; (c) read `da.co..ctor`'s
+   caller (`_callers.js`) to see where `da.rus` is handed off. The CloudFront side needs
+   no work at all: the URL signature is never verified.
 9. Persist progression: feed accepted `plf` uploads back into the served myinfo
    `clearlist` so scores/records survive across sessions (the client computes its
    per-key-mode rating from that data — §3.7), and RE the exact per-mode rating
    formula if precise control is wanted.
+10. Re-check the captions in the "8CN26" sections above when touching them: the code
+   means "Song Load timeout" (a watchdog), NOT "corrupt file" — the Korean popup text
+   ("게임 파일이 손상되었습니다") is the generic wrapper the reporter shows.

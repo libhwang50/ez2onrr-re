@@ -61,8 +61,16 @@ exit; tune `data/userinfo_entry.json` if that appears.
 | `data/rank_sample.csv` | fallback leaderboard body when no exact capture matches |
 | `data/rank_csv/` | real leaderboard CSVs per query (Top100 / MyRange of captured songs), served exactly |
 | `data/userinfo_entry.json` | one leaderboard-profile entry, cloned per requested SteamID (shape = best guess until a real capture) |
-| `data/bundleCryptKey.txt` | value served as `bundleCryptKey` (transport/audit record, §4.2) |
+| `data/bundleCryptKey.txt` | value served as `bundleCryptKey` when no knob overrides it |
 | `data/set_game_clear.json` | optional override for `c2s_set_game_clear` (default `{"result":1}`) |
+| `data/mutate_urls.txt` / `data/mutate_bck.txt` | the experiment knobs written by `_exp.py` (read per request) |
+| `data/passthrough_endpoints.txt` | endpoints forwarded upstream (hybrid mode), read per request |
+| `data/last_upstream_*.json` / `…​.full.json` | the last decrypted upstream response (shortened / with real URLs+key) |
+| `_exp.py` | control the experiment knobs from the shell (`hybrid`, `urls`, `bck`, `off`, `reset`) |
+| `_mem.py` | drive the harvester's command channel: `findhex`, `findlea`, `findlit`, `findthunk`, `readbytes`, `bck` |
+| `_stub443.py` | loop-proof TLS stub for the game's un-proxied 443 channel (mitmproxy-CA-signed cert) |
+| `_stub9902.py` | capturing TCP relay for the raw audit channel; address comes from `data/battle_server.txt` |
+| `_rawchannel.sh` | `on`/`test`/`status`/`off` — redirects the un-proxied channel into `_stub443.py` |
 
 All of `data/` is generated locally and git-ignored (it contains your profile, play
 history, the music DB and captured key material). Rebuilding needs the session key of
@@ -114,143 +122,74 @@ Notes:
   real captured CSVs when available (`data/rank_csv/`, Top100 + MyRange for
   Finite) and fall back to a static sample.
 
-## Fully-offline chart loads: the mutation experiments
+## Fully offline chart loads — WORKING, and what's still open
 
-the 8CN26 check is *post-parse*: the client has the chart downloaded, decrypted
-and parsed, then rejects the session. A fresh upstream pattern response loads;
-a replayed (stale) or synthesized one does not. To find out *which part* of the
-response is validated, mutate a known-good response in flight.
+The client does **not** verify the CloudFront URL signature, does not care about
+`Expires`, and accepts a response we build entirely ourselves. It checks exactly
+one thing: the 48-byte `bundleCryptKey`. And the failure it raises otherwise is
+not an integrity complaint at all — the code is literally:
 
-Use `server/_exp.py` (knobs are re-read on **every** response, so nothing needs
-a restart):
-
-```bash
-python server/_exp.py                    # show the current state
-python server/_exp.py hybrid on          # forward login+pattern upstream
-python server/_exp.py urls future        # Expires +10y (breaks the signature)
-python server/_exp.py bck garbage        # 48 random bytes
-python server/_exp.py off                # everything back to private
+```
+8CN26Song Load timeout1YDMD : m:K14JVmLV Error : id:{0} m:{1}
+An unrecoverable error has occurred.
 ```
 
-⚠ `python server/_exp.py off` clears the **url/bck mutations only** — the hybrid
-setting is untouched. Use `hybrid off` for that, `reset` for everything. (It used
-to clear the endpoints too, which silently turned a mutation test back into a
-replay test — check `pserver.log`: a valid upstream test logs `UPSTREAM
-c2s_get_pattern_file: …`, a replay test logs `REPLAYED official response`.)
+i.e. **8CN26 = "Song Load timeout"** (that string pair sits in the game's literal
+pool; see `AGENTS.md` §3.7). With a wrong bCK the load simply never completes and
+a watchdog reports it.
 
-⚠ **The Frida harvester must be running** (`.venv/bin/python
-server/_harvest_session.py`) even in hybrid mode: forwarding the login upstream
-gets the *upstream* session working, but this addon still has to encrypt its own
-stub responses (`c2s_get_gameinfo`, `c2s_get_myinfo`) with the client's
-per-session key. Without it the addon answers `502 no session key` and the game
-shows `RESULT : TD3 HTTP/1.1 502 Bad Gateway`. The alternative, if no bridge is
-wanted, is to forward those endpoints too:
-`passthrough_endpoints.txt = login,gameinfo,myinfo,pattern`.
-
-| knob | value | effect |
-|---|---|---|
-| `urls` | `skew` | `Expires` +1 s — still "fresh", but the signature no longer matches |
-| | `future` | `Expires` +10 years — signature no longer matches |
-| | `expire` | `Expires` in the past — signature still valid |
-| | `noparams` | strip the whole query string |
-| | `host` | swap the CDN host, keep path/params |
-| `bck` | `stale` | the older captured real `bundleCryptKey` |
-| | `garbage` | 48 random bytes, valid base64 shape |
-| | `empty` | the field emptied |
-| | `literal:<b64>` | any exact value |
-
-Both mutations apply to a **passthrough** (fresh upstream) response *and* to a
-**replayed** one, so a decisive test can be run without an official login.
-
-### Two experiments already done
-
-* **replay + `urls future` → 8CN26.** Both CDN files were downloaded successfully
-  (served from our cache) and the load still failed, so the check is neither a
-  pre-download URL rejection nor a download failure — it happens after parse.
-* **`hybrid` off + knobs set → `{"result":0}` from upstream** (24 B) → the client
-  retries the download 5× and shows `ErrCode: GPF 5 TIMES FAILED`. A forwarded
-  pattern request is meaningless unless the **login** was forwarded too — the
-  real server has no session to mint URLs for. Hence `hybrid on` = `login,pattern`.
-
-### The discriminating tests (one hybrid session, one entry each)
-
-With `hybrid on` and an official login in the same instance:
-
-| run | knob | loads | fails 8CN26 | conclusion |
-|---|---|---|---|---|
-| A | none | ✓ | | control — hybrid works |
-| B | `bck garbage` | | | `bundleCryptKey` is **not** validated |
-| C | `urls skew` | | | **no signature verification** — an offline server may mint its own URLs (any fresh-looking `Expires`) |
-| D | `urls future` | | | signature **is** checked → need the embedded public key (or the check is an `Expires` window) |
-| E | `urls expire` | | | expiry is a real check |
-
-`skew` (`Expires` +1 s) is the decisive one: the URL still looks perfectly fresh
-to any expiry-window check, but its CloudFront signature is invalid. It separates
-"the signature is verified" from "the URL just has to look recent". `future`
-(+10 years) fails under *both* explanations, so it cannot separate them on its
-own.
-
-`pserver.log` logs every upstream response it decrypted
-(`UPSTREAM c2s_get_pattern_file: {result=1, final_url_ez=…, …}` plus each URL's
-path/`Expires`/signature length) and saves it to
-`data/last_upstream_c2s_get_pattern_file.json` (shortened) and
-`…​.full.json` (real URLs + key, git-ignored) — so a known-good response can be
-diffed against the replay and reused.
-
-## The raw channel — where the `bundleCryptKey` is actually checked
-
-The mutation matrix settled the two open questions:
-
-* **CloudFront URL signature: not verified.** `urls skew` (`Expires` +1 s, so the
-  signature no longer matches, while the URL still looks perfectly fresh) **loads
-  and plays**. So a private server may mint its own URLs with any plausible
-  `Expires` and a shape-valid signature.
-* **`bundleCryptKey`: validated.** `bck garbage` against a fresh, correctly
-  signed upstream response (48 random bytes, same base64 shape) **fails with
-  8CN26**. It is therefore the *only* thing about the pattern response the client
-  checks. It is not derived from the session key (SHA-384/HMAC/AES against
-  `zf.aes_key`/`aes_iv` and the unused `bbk.wdp`/`wdq` static pair all miss), so it
-  is server-minted random data.
-
-Where can it be checked, if not over the proxied HTTP? A `tcpdump` of a
-successful hybrid load (`host 3.37.247.33`) shows, besides the documented
-`websocket-sharp` Notice channel on **4649** (verified again: `GET /Notice?id=…`,
-`101`, then ping/pong — no audit payload, and no port **9902** traffic at all),
-about **nine direct TLS connections to `game1-rank.ez2game.co.kr:443`** whose
-`Sectigo *.ez2game.co.kr` certificate and `1562`-byte ClientHello are followed by
-an encrypted request and no plaintext HTTP — and they cluster **right before the
-chart load**. They are *not* mitmproxy's: with the addon stubbing the rank host,
-mitmproxy provably never dials upstream (verified with a local request through a
-second instance: the addon answers `3.37.247.33:9902` with no `server connect`).
-So the game uses a **second, custom TLS client that ignores the WinHTTP proxy**,
-and *that* is the one channel no amount of addon stubbing has ever touched. The
-`bundleCryptKey` verdict matches its timing exactly.
-
-Interception harness — redirects both the hostname and the raw IP to
-`server/_stub443.py`, a small **loop-proof** TLS stub that signs its certificate
-with the user's mitmproxy CA, logs every request byte-for-byte, and never
-connects upstream:
+### The knobs and what they proved
 
 ```bash
-sudo server/_rawchannel.sh on      # hosts entry + iptables REDIRECT + stub on 443
-sudo server/_rawchannel.sh test    # self-test; should print 3.37.247.33:9902
-# now relaunch the game, log in, load a song, then:
-sudo server/_rawchannel.sh status  # redirect state, matched-packet count, stub log
-tail -40 server/stub443.log
-sudo server/_rawchannel.sh off     # stub down, hosts + iptables restored
+python server/_exp.py                 # show state
+python server/_exp.py hybrid on       # forward login+pattern upstream (harvest a token)
+python server/_exp.py urls now        # mint our own Expires = now+150
+python server/_exp.py bck harvested   # reuse the token from the last official response
+python server/_exp.py off             # clear the url/bck mutations (hybrid untouched)
+python server/_exp.py reset           # clear everything
 ```
 
-⚠ Do **not** use mitmproxy in reverse mode for this. With the hostname redirected
-to 127.0.0.1, a reverse proxy resolves its own upstream to 127.0.0.1, so every
-request it does not intercept opens a connection to itself: an escalating loop
-that ends in `OSError: [Errno 24] Too many open files` and a hung client. (First
-attempt did exactly that.) A stub that never dials upstream cannot loop.
+| run | knob | result | conclusion |
+|---|---|---|---|
+| A | none (hybrid) | loads | baseline |
+| B | `bck garbage` | 8CN26 | `bundleCryptKey` **is** acted on |
+| C | `urls skew` (`Expires` +1 s → invalid signature) | **loads** | the URL signature is **never** verified |
+| D/E | `urls future` / `expire` | fail | only because the bCK was stale, not because of the URL |
 
-If the client accepts the CA-signed certificate (likely — the same Wine trust
-store already validates it for the proxied hosts) the requests become readable
-and a fully-offline server is a matter of answering them. If the handshake is
-rejected (`TLS FAILED ... in stub443.log`) the client pins its own CA bundle and
-the next step is to find and extend that bundle.
+### The offline recipe
+
+One official contact per session, only to obtain the token:
+
+```bash
+# 1. arm the harvester + server, then do ONE hybrid load to learn the token
+.venv/bin/python server/_harvest_session.py          # terminal 1
+python server/_exp.py hybrid on
+mitmdump -s server/_pserver.py -w ./mitm_parsed/flow_dump_harvest   # terminal 2
+#    launch the game, log in, enter one song → server/data/last_upstream_c2s_get_pattern_file.full.json
+
+# 2. go fully offline (no official login, no passthrough, no CloudFront)
+python server/_exp.py hybrid off
+python server/_exp.py urls now
+python server/_exp.py bck harvested
+#    every song entry now loads with: our login, our music list, our profile,
+#    our minted URL, our cached CDN files, the captured token
+```
+
+Verified by decrypting the response the client accepted: our URL path,
+`Expires = now+150`, a *stale* signature, and the official token.
+
+### What is still unknown
+
+The client owns no local copy of the token (a full-heap scan finds exactly two
+copies, both derived from the response — no independent copy, no base64 copy in
+UTF-8 or UTF-16) and opens no socket at load time (443 probes are handshake-only,
+4649 carries ping/pong, 9902 is never dialled — even when our stub is the
+`get_battle_server_ip` it is served). Tested and rejected as derivations:
+SHA-384/512, HMAC and AES combinations over the session key, the Steam ticket,
+the login ciphertext, the SteamID. So it is *used as a key* somewhere in the load
+pipeline and the silent failure is what times out. The trail forward
+(`findhex`/`findlea`/`findthunk`, the literal-keyed runtime hash tables, `da.rus`'s
+hand-off) is described in `AGENTS.md` §3.7 and §7.8.
 
 ## Known simplifications / next steps
 
@@ -267,3 +206,13 @@ the next step is to find and extend that bundle.
 * Rank endpoints accept any signature; nothing is verified or persisted.
 * Songs without a captured chart fail at chart load (`result:0`) — extend
   coverage with `dump_song.py` and re-run `_build_data.py`.
+* **Fully offline loads work** (see above) but need one token per session, captured
+  from a single official pattern response (`bck harvested`). What the client does
+  with that token is still unknown — it keeps no local copy and opens no socket at
+  load time, so it must be used as a key inside the load pipeline; the trail is
+  written up in `AGENTS.md` §3.7 / §7.8. Until that is cracked, the fully offline
+  mode is: one hybrid load to harvest, then pure private with `urls now` +
+  `bck harvested`.
+* The session key still requires the Frida bridge (and, in hybrid mode, so does
+  the token). Patching `zf.gnf` to a fixed key and the token question are the two
+  routes to a bridge-free server.

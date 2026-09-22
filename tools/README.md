@@ -8,7 +8,7 @@ ripper scripts at the repository root (`extract_assets.py`, `find_bundle.py`,
 
 | directory | contents |
 |---|---|
-| `il2cpp/` | `frida-il2cpp-bridge` (`_il2cpp_bridge.js`) plus all IL2CPP drivers: symbolication (`_sym.js`, `_encl.js`), **call-site scanning and enclosing-method attribution (`_callers.js` — the workhorse)**, **klass/vtable inspection (`_slotfind.js`, `_probe_cls.js`)**, **static-field extraction (`_statics.js`, `_mem.js`, `_methods.js`, `_vt.js`, `_clsstr.js` — static string values)**, code dumping (`_dump_code.js`), field/class inspection (`_igc.js`, `_tables.js`, `_cova.js`, `_namemap.js`, `_klassname.js`), scanners (`_staticscan.js`, `_zfscan.js` — klass-verified static-write scan, `_finddisp.js`, `_sbox3.js`, `_asascan.js`), one-shot probes (`_zfdbg.js`, `_zflit.js` — string-literal thunks, `_zfinst.js`), the private server's session-key reader (`_sesskey.js`), and older live-introspection tools (`_diag.py`, `_poll_capture.py`). |
+| `il2cpp/` | `frida-il2cpp-bridge` (`_il2cpp_bridge.js`) plus all IL2CPP drivers: symbolication (`_sym.js`, `_encl.js`), **call-site scanning and enclosing-method attribution (`_callers.js` — the workhorse)**, **klass/vtable inspection (`_slotfind.js`, `_probe_cls.js`)**, **static-field extraction (`_statics.js`, `_mem.js`, `_methods.js`, `_vt.js`, `_clsstr.js` — static string values)**, code dumping (`_dump_code.js`), field/class inspection (`_igc.js`, `_tables.js`, `_cova.js`, `_namemap.js`, `_klassname.js`), scanners (`_staticscan.js`, `_zfscan.js` — klass-verified static-write scan, `_finddisp.js`, `_sbox3.js`, `_asascan.js`), one-shot probes (`_zfdbg.js`, `_zflit.js` — string-literal thunks, `_zfinst.js`), the private server's session-key reader **and memory-probe toolkit** (`_sesskey.js`), and older live-introspection tools (`_diag.py`, `_poll_capture.py`). |
 | `probes/` | Passive runtime probes (safe) and the hook experiments. |
 | `mitm/` | mitmproxy addons (`_cdn_rewrite.py` rewrite oracle, `_capture_all.py` full-corpus capture), flow parsing (`_replay_extract.py` — native `-w` dump → per-flow JSONL + bodies), API decryption. |
 | `crypto/` | Cipher analysis. `_chart_cipher.py` is the **reference implementation of the (now-solved) CDN chart cipher** — mask + AES-256-CBC; the production CLI lives at the repo root as `decrypt_chart.py`. Also a verified parameterised Rijndael (`_rijndael256.py`, `_rijsearch.py`), key sweeps, brute-forcers. |
@@ -53,6 +53,40 @@ python3 tools/_dis.py 0x6ffff2d971b0 0x1e0                  # disassemble a rang
 
 `tools/_dis.py` reads live module bytes through the gadget and disassembles with capstone,
 so it needs no local copy of `GameAssembly.dll`.
+
+### `_sesskey.js` — the one-session memory-probe toolkit
+
+Because a second Frida session crashes the game, all live probing goes through the
+harvester's session. `server/_harvest_session.py` polls `server/cmd.json` once a
+second, calls the matching export and writes `server/cmd_result.json`;
+`server/_mem.py` is the client for it:
+
+```bash
+python server/_mem.py findhex "38 43 4e 32 36"     # byte pattern (code ranges first)
+python server/_mem.py findhex <addr-pattern> 16384  # with an explicit MB budget
+python server/_mem.py findlea 0x71616d97            # rip-relative lea to an address
+python server/_mem.py findlit 17 0x71616d9c         # `mov r8d,<len>` sites (base-free)
+python server/_mem.py findthunk 0x71616d97          # mov edx,<off> + call, all bases
+python server/_mem.py readbytes 0x137365560 256     # hex + ascii dump
+python server/_mem.py bck                           # locate the session token in memory
+```
+
+Behaviour worth knowing before trusting a result:
+
+* **`findhex` scans `r-x` first, then `r--`, then `rw-`.** It used to do the reverse
+  with a 2 GB budget, so on a process with more heap than that it returned `hits=0`
+  for code/pointer searches while never having looked at the code. It now defaults
+  to 16 GB and reports `budgetExhausted`.
+* **AOT code is decrypted per method**, so a method that has not executed is
+  invisible to any scan — trigger the code path first (e.g. produce the error you
+  are chasing), then scan.
+* Literals in this build live in an **anonymous runtime mapping**, so code cannot
+  reach them with a RIP-relative `lea`: expect a runtime base + offset (hence
+  `findlit`/`findthunk`) — and `findlea` returning nothing is normal for them.
+* The driver restores the default `SIGINT` handler while an RPC runs, so Ctrl-C
+  aborts a slow scan and detaches cleanly instead of looking hung.
+* A second Frida session still **crashes the game** — never bypass the command
+  channel, however tempting it looks for a quick probe.
 
 ## ⚠️ Things that crash the game — do not repeat
 
