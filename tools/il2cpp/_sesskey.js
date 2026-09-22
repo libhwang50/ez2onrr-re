@@ -51,13 +51,33 @@ function utf16hex(s) {
 // JS loops walked gigabytes: that is why the "callers" scan appeared to hang
 // while native scanSync (about 1 GB/s) merely took seconds.
 function moduleCodeRanges(mod) {
+  // Hard cap: never scan outside [mod.base, mod.base + 64 MB). GameAssembly.dll
+  // is ~26 MB, so anything beyond that is a different (JIT/Wine) mapping that
+  // merely sits in the same address window - including it made JS byte loops
+  // walk gigabytes.
+  const CAP = 64 * 1024 * 1024;
+  const lo = mod.base;
+  const hi = mod.base.add(CAP);
   let rs = [];
   try { rs = mod.enumerateRanges('r-x'); } catch (e) { rs = []; }
   if (!rs.length)
     rs = Process.enumerateRanges('x')
-      .filter(r => r.base.compare(mod.base) >= 0 &&
-                   r.base.compare(mod.base.add(mod.size)) < 0);
-  return rs;
+      .filter(r => r.base.compare(lo) >= 0 && r.base.compare(hi) < 0);
+  const out = [];
+  for (const r of rs) {
+    if (r.base.compare(lo) < 0 || r.base.compare(hi) >= 0) continue;
+    const size = Math.min(typeof r.size === 'number' ? r.size : 0, CAP);
+    if (size > 0) out.push({ base: r.base, size: size });
+  }
+  out.sort((a, b) => a.base.compare(b.base));
+  return out;
+}
+
+function describeRanges(rs) {
+  let total = 0;
+  const list = rs.map(r => { total += r.size;
+    return r.base.toString(16) + '+0x' + r.size.toString(16); });
+  return { ranges: list, totalMB: Math.round(total / 1048576) };
 }
 
 const HELPER_RVA = 0xc12390;
@@ -773,8 +793,11 @@ rpc.exports.callers = function (targetStr) {
         pos += len - 8;
       }
     }
+    const info = describeRanges(xr);
     return JSON.stringify({ target: '0x' + tvaNum.toString(16),
-                            ranges: xr.length, scannedMB: Math.round(bytesScanned / 1048576),
+                            ranges: info.ranges, rangeCount: xr.length,
+                            rangeTotalMB: info.totalMB,
+                            scannedMB: Math.round(bytesScanned / 1048576),
                             sites: sites, count: sites.length,
                             elapsedSec: ((Date.now() - t0) / 1000).toFixed(1) });
   });
