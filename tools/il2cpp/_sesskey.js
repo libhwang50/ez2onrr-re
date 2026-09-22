@@ -270,8 +270,11 @@ rpc.exports.findhex = function (hexstr, budgetMB) {
     const t0 = Date.now();
     let scanned = 0;
     const hits = [];
+    // r-x matters too: searching for an instruction pattern (e.g. `mov r8d,<len>`)
+    // needs the code ranges, which the earlier version never scanned
     const ranges = Process.enumerateRanges({ protection: 'rw-', coalesce: true })
-      .concat(Process.enumerateRanges({ protection: 'r--', coalesce: true }));
+      .concat(Process.enumerateRanges({ protection: 'r--', coalesce: true }))
+      .concat(Process.enumerateRanges({ protection: 'r-x', coalesce: true }));
     const CHUNK = 64 * 1024 * 1024;          // big ranges are scanned in chunks:
     const plen = Math.floor(pat.split(' ').length);   // skipping them entirely
     for (const r of ranges) {                        // (as an earlier version did)
@@ -303,7 +306,8 @@ rpc.exports.findhex = function (hexstr, budgetMB) {
           const hb = new Uint8Array(m.address.sub(16).readByteArray(80));
           for (const b of hb) hex += b.toString(16).padStart(2, '0');
         } catch (e) {}
-        hits.push({ addr: m.address.toString(16), ascii: ctx, hex: hex });
+        let prot = ''; try { prot = Process.findRangeByAddress(m.address).protection; } catch (e) {}
+        hits.push({ addr: '0x' + m.address.toString(16), ascii: ctx, hex: hex, prot: prot });
       }
     }
     return JSON.stringify({ pattern: pat, scannedMB: Math.round(scanned / 1048576),
@@ -364,6 +368,7 @@ rpc.exports.findthunk = function (targetStr, extraBasesCsv) {
       .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
 
     for (const c of cands) {
+      if (c.base.compare(target) >= 0) continue;   // base above target -> nonsense
       const off = target.sub(c.base).toInt32() >>> 0;
       const ob = [off & 0xff, (off >> 8) & 0xff, (off >> 16) & 0xff, (off >>> 24) & 0xff];
       const pat = 'ba ' + ob.map(b => b.toString(16).padStart(2, '0')).join(' ');
@@ -377,7 +382,7 @@ rpc.exports.findthunk = function (targetStr, extraBasesCsv) {
           let callAt = -1;
           for (let j = 5; j < 34; j++) if (buf[j] === 0xe8) { callAt = j; break; }
           out.sites.push({ base: c.name + ':' + c.base.toString(16), off: off,
-                           site: m.address.toString(16),
+                           site: '0x' + m.address.toString(16),
                            callAt: callAt < 0 ? null : m.address.add(callAt).toString(16) });
         }
       }
@@ -447,7 +452,13 @@ rpc.exports.findlit = function (lenStr, targetStr) {
             callRel = back[j+1] | (back[j+2] << 8) | (back[j+3] << 16) | (back[j+4] << 24);
             callIdx = j; break;
           }
-        out.sites.push({ site: m.address.toString(16), edxImm: edxImm,
+        let rawHex = '';
+        try {
+          const start = m.address.sub(24);
+          const b2 = new Uint8Array(start.readByteArray(72));
+          for (const x of b2) rawHex += x.toString(16).padStart(2, '0');
+        } catch (e) {}
+        out.sites.push({ site: '0x' + m.address.toString(16), rawHex: rawHex, edxImm: edxImm,
                          callAt: callIdx < 0 ? null : m.address.sub(24).add(callIdx).toString(16),
                          callTarget: callIdx < 0 ? null : m.address.sub(24).add(callIdx + 5 + callRel).toString(16),
                          impliedBase: (edxImm !== null && targetStr)
