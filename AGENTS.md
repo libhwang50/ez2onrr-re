@@ -289,8 +289,11 @@ response, so experiments need no restart.
   ignored, so *The Ashtray* is under `A`), `F6` picks randomly, and the **keypad
   4/5/6/8** change the on-screen values (difficulty and keymode) — which is exactly what a
   capture sweep needs to vary a variant. During play `F7`/`F8` nudge display sync ±1 ms,
-  `F9`/`F10` halve/double note speed. `_sweep.py --calibrate` derives the difficulty and
-  keymode keys empirically, because the request JSON it watches names both.
+  `F9`/`F10` halve/double note speed. `Enter` is 결정 (confirm, and starts a song — the
+  pause screen's hint bar shows it; the song select's shows `SHIFT`). Leaving a running song
+  is `Esc` → `Up` (the focus wraps to the bottom button) → `Enter` (MUSIC SELECT), which is
+  how a capture sweep abandons each song instead of playing it. `_sweep.py --calibrate`
+  derives the difficulty/keymode keys empirically, because the request JSON names both.
 * **The Lounge is a stats hub; its MUSIC VIDEO tab is a chart-harvesting route.** The
   Lounge screen is tabbed **PROFILE / PLAYINFO / RECENT / RANKING / MUSIC VIDEO**. The
   BGA-watching route a capture confirmed is its **MUSIC VIDEO** tab: it goes through the same

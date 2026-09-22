@@ -258,12 +258,15 @@ The bindings come from the game's own bottom hint bar:
 |---|---|
 | song select (BASIC and STANDARD are the same layout — different colours, and a big rotated `<4/5/6/8K><MODE>` label) | `TAB` = mode (4B/5B/6B/8B) change, arrows = song / difficulty, `SPACE` = equipment, `F1` = replay, **`SHIFT` = decide/start**, `ESC` = leave |
 | list jumps | `0`–`9` section, `PageUp/PageDown` 8 rows, `a`–`z` by initial, `F6` random, `L/R SHIFT` = sort/version tabs |
-| main menu | a horizontal card row — BASIC, STANDARD, MULTIPLAYER, COURSE, then LOUNGE and OPTION — arrow-navigated (`--mode` uses it) |
+| main menu | a **wrapping** card ring — BASIC, STANDARD, MULTIPLAYER, COURSE, LOUNGE, OPTION — arrow-navigated (`Left` from BASIC wraps to OPTION, so never spam a direction; `--mode` steps the short way and verifies) |
+| after starting a song | loading screen → gameplay → **`Esc` opens PAUSE with RESUME focused → `Up` wraps to MUSIC SELECT → `Enter` confirms** → back at song select. That is the capture loop: it never plays a song to the end |
+| pause menu | `Enter` = 결정 (confirm) — also the key that starts a song (the song select's hint bar additionally shows `SHIFT` as 결정) |
 
 Screenshot tell: the **keyboard-focused** card's label panel is in saturated mode colours;
 a mouse-hovered one is only a faint grey lift. For mode coverage run the sweep once per
-mode (`--mode STANDARD`, then the default BASIC) — `gamemode` changes the chart for the
-EZ~NM patterns of high-level songs.
+mode (`--mode STANDARD --from BASIC`, then the default) — `gamemode` changes the chart
+for the EZ~NM patterns of high-level songs, and the sweep checks the switch took by
+comparing the next request's `gamemode` with the previous one.
 Note `gamemode` (BASIC 1 / STANDARD 2) is a real chart selector for some songs —
 recorded per capture, and worth preferring on serve once the captures carry it.
 

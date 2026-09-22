@@ -9,7 +9,7 @@ It presses keys, waits for a request it has not seen before, and moves on.
     python server/_sweep.py --dry-run          # show bindings + plan, send nothing
     python server/_sweep.py --calibrate --write # DEDUCE the keys from the request JSON
     python server/_sweep.py --limit 50         # capture 50 song entries
-    python server/_sweep.py --mode STANDARD    # walk the menu to the STANDARD card first
+    python server/_sweep.py --mode STANDARD [--from BASIC]   # step to that card first
     python server/_sweep.py --variants         # also cycle difficulty/keymode
     python server/_sweep.py --shot             # save a screenshot before each entry
 
@@ -50,23 +50,27 @@ DEFAULTS = {
                  'with --write.'),
     'game_app_id': 'steam_app_1477590',
     'keys': {
-        # song select
+        # song select. The card row WRAPS (Left from BASIC goes to OPTION), so
+        # never spam a direction to reach a card - use --mode, which steps and
+        # then verifies from the next request's gamemode.
         'next_song': 'Right', 'prev_song': 'Left',
         'next_diff': 'Down', 'prev_diff': 'Up',
         'keymode_next': 'Tab', 'keymode_prev': 'Tab',
-        'enter_song': 'shift', 'back': 'Escape',
+        'enter_song': 'Return',          # ENTER 결정 (also starts a song)
         # list paging / jumps (NamuWiki): 0-9 sections, PageUp/Down 8 rows, a-z initial
         'page_down': 'Next', 'page_up': 'Prior',
     },
-    'resync': ['Escape', 'Escape', 'Escape'],
-    # main menu: a horizontal card row (BASIC, STANDARD, MULTIPLAYER, COURSE, then
-    # LOUNGE/OPTION). 'home' spams Left to reach the leftmost card, then offset
-    # Rights and SHIFT. Used only with --mode.
-    'menu': {'home': 'Left', 'home_count': 8, 'confirm': 'shift',
-             'cards': {'BASIC': 0, 'STANDARD': 1, 'MULTIPLAYER': 2,
-                       'COURSE': 3, 'LOUNGE': 4, 'OPTION': 5}},
+    # Leaving a song: ESC opens the pause menu with RESUME focused; Up uses the
+    # focus wrap to land on the bottom button, MUSIC SELECT; ENTER confirms.
+    'exit_song': ['Escape', 'Up', 'Return'],
+    'resync': ['Escape', 'Up', 'Return'],
+    # main menu: a WRAPPING card ring; 'cards' is its order (adjacent for the two
+    # play modes), and --mode steps the short way round from --from.
+    'menu': {'cards': ['BASIC', 'STANDARD', 'MULTIPLAYER', 'COURSE', 'LOUNGE', 'OPTION'],
+             'confirm': 'Return'},
     'timing': {'after_key': 0.35, 'settle': 1.0, 'wait_for_request': 25.0,
-               'after_back': 1.5, 'poll': 0.25, 'after_confirm': 3.0},
+               'after_exit': 2.5, 'after_start': 6.0, 'poll': 0.25,
+               'after_confirm': 3.0},
 }
 
 REQ = re.compile(r'c2s_get_pattern_file request: (\{.*\})')
@@ -307,14 +311,14 @@ def calibrate(write=False):
 
 
 def enter_and_read(tail, tag, quiet=False):
-    """Press enter (and later back), returning the request the game made."""
+    """Start a song, return the request it made, then leave via the pause menu."""
     tail.poll()                      # clear
-    send(K['enter_song'], None if quiet else f'{tag}: enter')
+    send(K['enter_song'], None if quiet else f'{tag}: Enter')
     req = tail.wait(T['wait_for_request'])
-    send(K['back'], None if quiet else f'{tag}: back')
-    time.sleep(T['after_back'])
     if req is None:
-        return None
+        return None                  # never entered — do not send the exit keys
+    time.sleep(T['after_start'])     # reach gameplay, so ESC opens PAUSE
+    exit_song()
     return (req.get('musicresourcename'), int(req.get('keymode') or 0),
             int(req.get('levelmode') or 0), req.get('gamemode'))
 
@@ -322,56 +326,84 @@ def enter_and_read(tail, tag, quiet=False):
 GAMEMODE = {'BASIC': '1', 'STANDARD': '2'}
 
 
-def goto_mode(name):
-    """Blindly walk the main menu's horizontal card row to a mode card.
+def last_gamemode():
+    """gamemode of the most recent pattern request in the log (mode tracking)."""
+    try:
+        tail = Tail(LOG)
+        reqs = tail.read_all()
+        return reqs[-1].get('gamemode') if reqs else None
+    except Exception:
+        return None
 
-    The row is BASIC, STANDARD, MULTIPLAYER, COURSE, LOUNGE, OPTION; `home`
-    (Left, repeated) reaches the leftmost card, then we step right by the card's
-    index and confirm. Nothing here is verified by the game, so the caller
-    checks the first request's gamemode afterwards.
+
+def exit_song():
+    """Leave the song via the pause menu and return to the song select.
+
+    ESC opens PAUSE (RESUME focused), Up wraps to MUSIC SELECT, ENTER confirms.
     """
-    menu = CFG['menu']
-    idx = menu.get('cards', {}).get(name.upper())
-    if idx is None:
-        print(f'  unknown mode {name!r} (known: {", ".join(menu.get("cards", {}))})')
+    for key in CFG.get('exit_song', ['Escape', 'Up', 'Return']):
+        send(key)
+        time.sleep(0.5)
+    time.sleep(T['after_exit'])
+
+
+def goto_mode(target, frm='BASIC'):
+    """Step to a mode card by the short way round the ring, then confirm.
+
+    `frm` must be the card that currently has focus. The ring wraps, so the
+    direction is chosen by shortest distance; BASIC and STANDARD are adjacent,
+    so this is one keypress in practice.
+    """
+    cards = [c.upper() for c in CFG['menu']['cards']]
+    try:
+        i, j = cards.index(frm.upper()), cards.index(target.upper())
+    except ValueError:
+        print(f'  unknown card (known: {", ".join(cards)})')
         return False
-    print(f'  switching to {name.upper()}: {menu["home"]}x{menu["home_count"]} then '
-          f'{idx}x Right then {menu["confirm"]!r}')
-    for _ in range(int(menu['home_count'])):
-        send(menu['home'])
-    for _ in range(idx):
-        send('Right')
-    send(menu['confirm'])
+    n = len(cards)
+    steps, direction = (j - i) % n, 'Right'
+    if steps > n - steps:
+        steps, direction = n - steps, 'Left'
+    print(f'  {frm.upper()} -> {target.upper()}: {steps}x {direction} then '
+          f'{CFG["menu"]["confirm"]!r}')
+    for _ in range(steps):
+        send(direction)
+    send(CFG['menu']['confirm'])
     time.sleep(T['after_confirm'])
     return True
 
 
 def resync():
+    """Best effort return to the song select: the exit sequence again."""
     if not game_focused(verbose=True):
         return
-    for key in CFG['resync']:
+    print('  resync: sending the exit sequence')
+    for key in CFG.get('resync', ['Escape', 'Up', 'Return']):
         run(['xdotool', 'key', '--clearmodifiers', key])
         time.sleep(0.5)
-    print('  resync sent')
+    time.sleep(T['after_exit'])
 
 
 def sweep(limit, variants, shot, dry, mode=None):
     tail = Tail(LOG)
     print(f'{"DRY RUN — " if dry else ""}sweep: up to {limit} entries, '
           f'{len(tail.seen)} requests already in the log')
-    print(f'  bindings: enter={K["enter_song"]!r} back={K["back"]!r} '
-          f'next={K["next_song"]!r}')
+    print(f'  bindings: enter={K["enter_song"]!r} '
+          f'exit={CFG.get("exit_song")} next={K["next_song"]!r} '
+          f'song/diff axes: {K["next_song"]}/{K["next_diff"]} '
+          f'keymode={K["keymode_next"]!r}')
     if dry:
-        print('  would: [shot] enter -> wait for a new request -> back -> '
-              'next_song -> repeat')
+        print('  would: [shot] Enter -> wait for the request -> wait '
+              f'{T["after_start"]}s for gameplay -> Esc/Up/Enter (MUSIC SELECT) '
+              '-> next song -> repeat')
         return 0
     if not game_focused(verbose=True):
         return 2
+    prev_gm = last_gamemode()
     if mode:
-        if not goto_mode(mode):
+        if not goto_mode(mode, arg(sys.argv[1:], '--from', 'BASIC')):
             return 2
     captured = skipped = failed = 0
-    expect_gm = GAMEMODE.get(mode.upper()) if mode else None
     try:
         for i in range(limit):
             if shot:
@@ -385,10 +417,10 @@ def sweep(limit, variants, shot, dry, mode=None):
                 send(K['next_song'])
                 continue
             k = tail.key(req)
-            if expect_gm and k[3] != expect_gm and captured == 0:
-                print(f'    WARNING: asked for {mode.upper()} (gamemode {expect_gm}) '
-                      f'but the first request says gamemode {k[3]} — the menu '
-                      f'navigation guessed wrong; check sweep_keys.json menu')
+            if mode and captured == 0 and prev_gm and k[3] == prev_gm:
+                print(f'    WARNING: gamemode is still {k[3]} after switching to '
+                      f'{mode.upper()} — the menu step probably missed '
+                      f'(check --from / sweep_keys.json menu)')
             if k in tail.seen:
                 skipped += 1
                 print(f'    already known: {k[0]} km={k[1]} lm={k[2]} gm={k[3]}')
@@ -399,8 +431,8 @@ def sweep(limit, variants, shot, dry, mode=None):
                           'levelmode': k[2], 'gamemode': k[3]})
                 print(f'    CAPTURED  {k[0]:24s} km={k[1]} lm={k[2]} gm={k[3]}'
                       f'   ({captured} new)')
-            send(K['back'], 'back')
-            time.sleep(T['after_back'])
+            time.sleep(T['after_start'])     # let the load reach gameplay
+            exit_song()
             if variants:
                 for which, key in (('diff', K['next_diff']), ('diff', K['next_diff']),
                                    ('diff', K['next_diff']), ('mode', K['keymode_next'])):
