@@ -88,9 +88,14 @@ def main():
         print('scanning for the raw bytes…')
         show(send({'op': 'findhex',
                    'hex': ' '.join(f'{x:02x}' for x in raw)}))
-        print('\nscanning for the base64 string form…')
+        print('\nscanning for the base64 string form (UTF-8)…')
         show(send({'op': 'findhex', 'hex': ' '.join(
             f'{x:02x}' for x in b.encode())}))
+        # the game's own strings are UTF-16, so a C# string field holding the
+        # token would NOT match the UTF-8 scan above
+        print('scanning for the base64 string form (UTF-16LE)…')
+        show(send({'op': 'findhex', 'hex': ' '.join(
+            f'{x:02x}' for x in b.encode('utf-16-le'))}))
     elif a[0] == 'hunt':
         print('the hunt runs automatically at attach when EZ2_HUNT=1; '
               'restart the harvester with that env var')
