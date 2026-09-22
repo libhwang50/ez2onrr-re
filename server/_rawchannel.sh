@@ -37,19 +37,29 @@ on)
   # with the hostname only as TLS SNI)
   iptables -t nat -C OUTPUT -p tcp -d "$IP" --dport 443 -j REDIRECT --to-ports 443 2>/dev/null \
     || iptables -t nat -A OUTPUT -p tcp -d "$IP" --dport 443 -j REDIRECT --to-ports 443
+  # ALWAYS use the invoking user's mitmproxy CA: run as root, mitmproxy would
+  # fall back to /root/.mitmproxy and mint a NEW CA that the game (whose Wine
+  # trust store holds *your* CA) rejects - the handshake then dies with an
+  # 'unexpected eof'. Also keep stdout unbuffered so the log is readable live.
+  CONF="${SUDO_USER:+/home/$SUDO_USER/.mitmproxy}"
+  [ -d "$CONF" ] || CONF="$HOME/.mitmproxy"
+  [ -d "$CONF" ] || die "no mitmproxy confdir at $CONF"
   if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-    echo "listener already running (pid $(cat "$PIDFILE"))"
-  else
-    nohup mitmdump -q --mode "reverse:https://$HOST" --listen-port 443 \
-      -s "$ROOT/server/_pserver.py" >"$LOG" 2>&1 &
-    echo $! >"$PIDFILE"
-    sleep 3
-    kill -0 "$(cat "$PIDFILE")" 2>/dev/null || { echo "listener failed:"; tail -5 "$LOG"; exit 1; }
-    echo "listener up (pid $(cat "$PIDFILE")), log: $LOG"
+    kill "$(cat "$PIDFILE")" 2>/dev/null; sleep 1
   fi
+  PYTHONUNBUFFERED=1 nohup mitmdump --mode "reverse:https://$HOST" --listen-port 443 \
+    --set confdir="$CONF" -s "$ROOT/server/_pserver.py" >"$LOG" 2>&1 &
+  echo $! >"$PIDFILE"
+  sleep 3
+  kill -0 "$(cat "$PIDFILE")" 2>/dev/null || { echo "listener failed:"; tail -5 "$LOG"; exit 1; }
+  echo "listener up (pid $(cat "$PIDFILE")), CA: $CONF, log: $LOG"
   echo
   echo "hosts:   $(grep -c "$HOST" /etc/hosts) entry for $HOST -> 127.0.0.1"
   echo "iptables: $(iptables -t nat -S OUTPUT | grep -c "$IP.*REDIRECT") redirect rule"
+  echo "          $(iptables -t nat -L OUTPUT -v -n 2>/dev/null | awk '/REDIRECT/ {print $1" packets matched so far"}')"
+  echo
+  echo "verify the listener itself (should print 3.37.247.33:9902):"
+  echo "    curl -sk https://127.0.0.1:443/\?data=get_battle_server_ip"
   echo "now do a HYBRID load (python server/_exp.py hybrid on, no knobs) and then:"
   echo "    grep -E '^\\[[0-9:]+\] rank ' $ROOT/server/pserver.log | tail -20"
   ;;
@@ -72,6 +82,7 @@ status)
   echo "iptables   : $(iptables -t nat -S OUTPUT 2>/dev/null | grep "$IP.*REDIRECT" || echo none)"
   if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
     echo "listener   : running (pid $(cat "$PIDFILE"))"
+    echo "packets   : $(iptables -t nat -L OUTPUT -v -n 2>/dev/null | awk '/REDIRECT/ {print $1}') matched by the redirect"
   else
     echo "listener   : not running"
   fi
