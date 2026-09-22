@@ -4,6 +4,11 @@ A first working private-server implementation for the Standard/Basic online
 flow. It stubs the game's three HTTPS hosts entirely server-side and keeps the
 raw-TCP channels (battle/control, raw IPs) pointed at the real servers.
 
+**Chart loads work fully offline** (no official login, no CloudFront): the client
+verifies only the per-session `bundleCryptKey`, not the URL signature — see
+"Fully offline chart loads" below for the knob recipe and the one open question.
+
+
 Everything cryptographic is already solved (see AGENTS.md §3.1/§3.3); this is
 "just" the serving layer.
 

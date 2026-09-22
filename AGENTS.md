@@ -125,6 +125,10 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
   songs sampled in one session, so the earlier “per-song” reading is superseded — which
   also retracts the note that had superseded the original per-session claim. It is **not**
   the chart key (§3.3).
+  **It is, however, the only element of the pattern response the client acts on**: a
+  garbage value (same shape) fails the load while a stale CloudFront URL signature and
+  an `Expires` we mint ourselves are accepted — the full matrix, and what the token is
+  still unknown to *do*, are in §3.7.
 * **`CRYPT_KEY`** — a per-song 16-element `{1,2,3}` sequence; a chart/note-obfuscation
   parameter, **not** cipher key material.
 * **Naming is correct**: `final_url_ez` = the **chart**, `final_url_ezi` = the
@@ -726,17 +730,25 @@ verified end-to-end offline, in-game validation in progress.
    control/battle channel (`zf` RSA+AES) the real server presumably uses to learn the key.
 7. Broaden chart coverage in `server/data/` (uncaptured songs fail with `result:0` and
    the client retries 5× before booting to the main screen — e.g. Hyper Magic 5K HD).
-8. **Fully offline chart loads — the token's origin is the one open item.** Offline
-   loading already works (§3.7) using a token captured from one official response per
-   session; what is unknown is what the client does with it, since it keeps no local
-   copy and opens no socket at load time. Suggested attack order: (a) trigger an 8CN26
-   first — AOT code is decrypted per method, so the error path is invisible to scans
-   until it has run — then `findhex`/`findlea`/`findthunk` for the literals
-   `0x71616d97`/`0x71616d9c`; (b) use the runtime hash tables keyed by literal addresses
-   (find a pointer to the literal-blob base, then walk neighbouring entries) to reach a
-   literal's consumers without knowing the offset encoding; (c) read `da.co..ctor`'s
-   caller (`_callers.js`) to see where `da.rus` is handed off. The CloudFront side needs
-   no work at all: the URL signature is never verified.
+8. **What the `bundleCryptKey` feeds — the one open item.** Offline chart loads
+   already work (§3.7): the client verifies only the bCK, never the URL signature,
+   so one hybrid load per session to harvest that 48-byte token is the sole online
+   step. What the token is *used for* is unknown — it has no second copy in memory
+   and no socket is opened at load time, so it is consumed locally as a key and
+   the surface symptom is a timeout inside `ft.MoveNext`. Three concrete leads,
+   in order of expected effort:
+   (a) **state diff** — dump the `InGameCore` instance (fields 0x510–0x840, §4.3)
+   after a successful load and after a failing one (the latch at `+0x798` marks
+   the failure) and compare: whatever is unset only in the failing case is what
+   the token feeds;
+   (b) **the two strings** `ft.MoveNext` passes to the reporter — resolve
+   `oj.UI(166)` / `oj.UI(167)` (the resolver checks a lazily-built table at
+   `String.static_fields+0x358`), since they label the failed step;
+   (c) **the wait loop** in `ft.MoveNext`@`0x6ffff2f74230` around the latch checks
+   at `0x6ffff2fa71c2` / `0x6ffff2fa7205`.
+   AOT code is decrypted per method, so trigger the failure before scanning, and
+   remember the engine details in §3.7 (per-assembly blob base in a `System.String`
+   static; chunked scans so an abandoned RPC cannot wedge the Gadget).
 9. Persist progression: feed accepted `plf` uploads back into the served myinfo
    `clearlist` so scores/records survive across sessions (the client computes its
    per-key-mode rating from that data — §3.7), and RE the exact per-mode rating

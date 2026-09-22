@@ -16,7 +16,8 @@ from its CDN. The full technical write-up is in **`AGENTS.md`**.
 | ✅ API traffic | `game1-play.ez2game.co.kr` decrypted (AES-CBC, live session key) |
 | ✅ Charts & keysound index | **cracked** — `decrypt_chart.py` decrypts CDN payloads offline |
 | ✅ Basic private server | login → music list → profile → chart download → score upload, all served locally (`server/`) |
-| 🔧 Server in-game validation | wire formats verified offline; first live test pending |
+| ✅ **Offline chart loads** | our own minted `Expires` + a stale CloudFront signature are accepted: the client verifies **only** `bundleCryptKey` (§3.7). One hybrid load per session harvests that 48-byte token, after which the whole session runs offline |
+| 🔧 Fully self-sufficient server | blocked on one open question: which step of the load pipeline the token feeds (`AGENTS.md` §3.7/§7.8); the network is ruled out |
 
 ## Private server
 
@@ -39,6 +40,25 @@ Then start the game as usual; `server/pserver.log` shows every request. Songs wi
 captured chart are playable (47 variants across 15 songs so far); regenerate the data
 from your own captures with `server/_build_data.py`. Full details and caveats:
 **`server/README.md`**.
+
+### Offline play
+
+Chart loads work **without the official servers**: the client does not verify the
+CloudFront URL signature or its expiry at all, so the server mints its own `Expires`
+and serves the cached payloads. The one thing it does check is the 48-byte
+`bundleCryptKey`, which is per session — do a single hybrid load to capture it, then
+go fully private for the rest of the session:
+
+```bash
+python server/_exp.py hybrid on        # forward login+pattern once, then load a song
+python server/_exp.py hybrid off       # from here on: no official contact
+python server/_exp.py urls now
+python server/_exp.py bck harvested
+```
+
+(`server/_exp.py` re-reads its knobs on every request, so the switch is live — and
+`off` deliberately leaves the hybrid setting alone.) What the token is ultimately
+*used for* is still open; the reasoning and the leads are in `AGENTS.md` §3.7.
 
 ## Setup
 
