@@ -490,3 +490,65 @@ rpc.exports.findlit = function (lenStr, targetStr) {
     return JSON.stringify(out);
   });
 };
+
+// findlea(targetAddr): find the code that addresses the literal at targetAddr.
+// In this build literals are reached with a RIP-relative `lea` (e.g.
+// `mov r8d,<len>; lea rcx,[rip+disp32]; ...; call`), not with the
+// `mov edx,<offset>` + runtime-base scheme the older notes describe - which is
+// why every base-relative scan found nothing. Scan every RIP-relative LEA
+// ModRM form, compute the target, and attribute the hit to its method.
+rpc.exports.findlea = function (targetStr) {
+  return Il2Cpp.perform(() => {
+    const t0 = Date.now();
+    const target = parseInt(String(targetStr).replace(/^0x/, ''), 16);
+    const mod = Process.getModuleByName('GameAssembly.dll');
+    const xr = Process.enumerateRanges('x')
+      .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
+    const out = { target: '0x' + target.toString(16), module: mod.base.toString(16),
+                  scannedRanges: xr.length, hits: [], uniqueMethods: [] };
+    const modrms = [0x05, 0x0d, 0x15, 0x1d, 0x25, 0x2d, 0x35, 0x3d];
+    const rexes = [0x48, 0x4c];
+    for (const rex of rexes) {
+      for (const mrm of modrms) {
+        const pat = rex.toString(16) + ' 8d ' + mrm.toString(16);
+        for (const r of xr) {
+          let hits; try { hits = Memory.scanSync(r.base, r.size, pat); } catch (e) { continue; }
+          for (const h of hits) {
+            if (out.hits.length >= 80) break;
+            let disp;
+            try { disp = h.address.add(3).readS32(); } catch (e) { continue; }
+            const site = parseInt(h.address.toString(16), 16);
+            const tgt = site + 7 + disp;
+            if (tgt === target)
+              out.hits.push({ site: '0x' + site.toString(16), disp: disp,
+                              instr: rex.toString(16) + ' 8d ' + mrm.toString(16) });
+          }
+        }
+      }
+    }
+    const mmap = [];
+    for (const asm of Il2Cpp.domain.assemblies) {
+      let img, classes;
+      try { img = asm.image; } catch (e) { continue; }
+      try { classes = img.classes; } catch (e) { continue; }
+      for (const cls of classes) {
+        let ms; try { ms = cls.methods; } catch (e) { ms = []; }
+        for (const m of ms) { let va; try { va = m.virtualAddress; } catch (e) { continue; }
+          if (!va.isNull()) mmap.push({ va: va, name: (cls.namespace ? cls.namespace + '.' : '') + cls.name + '.' + m.name }); }
+      }
+    }
+    mmap.sort((a, b) => a.va.compare(b.va));
+    const attr = (sp) => { let lo = 0, hi = mmap.length - 1, best = null;
+      while (lo <= hi) { const mid = (lo + hi) >> 1;
+        if (mmap[mid].va.compare(sp) <= 0) { best = mmap[mid]; lo = mid + 1; } else hi = mid - 1; }
+      return best; };
+    for (const h of out.hits) {
+      const e = attr(ptr(h.site));
+      h.inMethod = e ? e.name + ' @ ' + e.va.toString(16) : '?';
+      h.delta = e ? (parseInt(h.site, 16) - parseInt(e.va.toString(16), 16)) : null;
+    }
+    out.uniqueMethods = [...new Set(out.hits.map(h => h.inMethod))];
+    out.elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+    return JSON.stringify(out);
+  });
+};
