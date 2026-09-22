@@ -252,11 +252,13 @@ song/keymode/levelmode back out of the request JSON, backs out, presses one cand
 key, and enters again — whatever changed is what that key does. So the bindings are
 *derived*, not guessed, and `--write` stores them in `server/data/sweep_keys.json`.
 
-The bindings come from the game's own bottom hint bar:
+The bindings were confirmed in game (note that the bottom hint bar labels the two arrow
+pairs with icons that read the other way round — up/down is the song, left/right the
+difficulty):
 
 | screen | keys |
 |---|---|
-| song select (BASIC and STANDARD are the same layout — different colours, and a big rotated `<4/5/6/8K><MODE>` label) | `TAB` = mode (4B/5B/6B/8B) change, arrows = song / difficulty, `SPACE` = equipment, `F1` = replay, **`SHIFT` = decide/start**, `ESC` = leave |
+| song select (BASIC and STANDARD are the same layout — different colours, and a big rotated `<4/5/6/8K><MODE>` label) | `TAB` = key mode (4B/5B/6B/8B), **`Up`/`Down` = song, `Left`/`Right` = difficulty**, `SPACE` = equipment, `F1` = replay, **`Enter` = decide/start** (the hint bar also shows `SHIFT`), `ESC` = leave |
 | list jumps | `0`–`9` section, `PageUp/PageDown` 8 rows, `a`–`z` by initial, `F6` random, `L/R SHIFT` = sort/version tabs |
 | main menu | a **wrapping** card ring — BASIC, STANDARD, MULTIPLAYER, COURSE, LOUNGE, OPTION — arrow-navigated (`Left` from BASIC wraps to OPTION, so never spam a direction; `--mode` steps the short way and verifies) |
 | after starting a song | loading screen → gameplay → **`Esc` opens PAUSE with RESUME focused → `Up` wraps to MUSIC SELECT → `Enter` confirms** → back at song select. That is the capture loop: it never plays a song to the end |

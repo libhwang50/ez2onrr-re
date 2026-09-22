@@ -286,9 +286,10 @@ response, so experiments need no restart.
 * **Song-select and in-game commands** (from the same page, and the basis of
   `server/_sweep.py`): in song select `0`–`9` jump to a list section, `PageUp`/`PageDown`
   move 8 rows, `a`–`z` jump to songs starting with that letter (leading articles are
-  ignored, so *The Ashtray* is under `A`), `F6` picks randomly, and the **keypad
-  4/5/6/8** change the on-screen values (difficulty and keymode) — which is exactly what a
-  capture sweep needs to vary a variant. During play `F7`/`F8` nudge display sync ±1 ms,
+  ignored, so *The Ashtray* is under `A`), `F6` picks randomly, `Up`/`Down` moves the song
+  selection, `Left`/`Right` the difficulty, and `TAB` cycles the key mode (4B/5B/6B/8B) —
+  which is exactly what a capture sweep needs to vary a variant. (Confirmed in game: the
+  bottom hint bar's icons for the two arrow pairs read the wrong way round.) During play `F7`/`F8` nudge display sync ±1 ms,
   `F9`/`F10` halve/double note speed. `Enter` is 결정 (confirm, and starts a song — the
   pause screen's hint bar shows it; the song select's shows `SHIFT`). Leaving a running song
   is `Esc` → `Up` (the focus wraps to the bottom button) → `Enter` (MUSIC SELECT), which is

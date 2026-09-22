@@ -41,20 +41,19 @@ SHOTS = os.path.join(ROOT, 'server', 'shots')
 SHOTDIR = os.path.expanduser('~/Pictures/Screenshots')
 
 DEFAULTS = {
-    '_comment': ('Song-select key names for xdotool, taken from the game\'s own '
-                 'hint bar: TAB = mode(kind of key) change, arrows = song / '
-                 'difficulty, SHIFT = decide, ESC = leave. The hint bar shows '
-                 '"<arrows> song select" and "<up/down> difficulty select"; if '
-                 'your copy behaves the other way round, run --calibrate, which '
-                 'derives all of it from the request JSON and can write it back '
-                 'with --write.'),
+    '_comment': ('Song-select key names for xdotool: TAB = key mode (4B/5B/6B/8B) '
+                 'change, UP/DOWN = song, LEFT/RIGHT = difficulty, ENTER = decide '
+                 'and start. Careful: the game\'s hint bar labels those two arrow '
+                 'pairs with icons that read the other way round - this mapping was '
+                 'confirmed in game. --calibrate (--write) derives it empirically '
+                 'from the request JSON if a build ever differs.'),
     'game_app_id': 'steam_app_1477590',
     'keys': {
         # song select. The card row WRAPS (Left from BASIC goes to OPTION), so
         # never spam a direction to reach a card - use --mode, which steps and
         # then verifies from the next request's gamemode.
-        'next_song': 'Right', 'prev_song': 'Left',
-        'next_diff': 'Down', 'prev_diff': 'Up',
+        'next_song': 'Down', 'prev_song': 'Up',
+        'next_diff': 'Right', 'prev_diff': 'Left',
         'keymode_next': 'Tab', 'keymode_prev': 'Tab',
         'enter_song': 'Return',          # ENTER 결정 (also starts a song)
         # list paging / jumps (NamuWiki): 0-9 sections, PageUp/Down 8 rows, a-z initial
