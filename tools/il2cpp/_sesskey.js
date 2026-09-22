@@ -327,54 +327,67 @@ rpc.exports.readbytes = function (addrStr, lenStr) {
 // its file offset, compute the literal's offset, and search the executable
 // ranges for `mov edx,<off>` + a call right after - the literal thunk. Then
 // attribute the callers of that thunk to methods, all in one go.
-rpc.exports.findthunk = function (targetStr) {
+// findthunk(targetAddr): find the code that references the literal at
+// targetAddr. The literal data lives in an anonymous r-- mapping (the metadata
+// is decrypted into memory), so the offset the code uses may be relative to a
+// different base than the containing range. Try every range base near the target,
+// and additionally provide findlit(length) - a base-free scan that keys off the
+// literal's LENGTH (`mov r8d,<len>` before the literal-helper call).
+rpc.exports.findthunk = function (targetStr, extraBasesCsv) {
   return Il2Cpp.perform(() => {
     const t0 = Date.now();
     const target = ptr(targetStr);
     const mod = Process.getModuleByName('GameAssembly.dll');
-    const out = { target: targetStr, offsets: [], sites: [], methods: [] };
+    const out = { target: targetStr, basesTried: [], sites: [], uniqueMethods: [] };
 
-    // the mapped range containing the literal -> image base from its file offset
-    const cands = [];
+    // candidate bases: the containing range's base plus the base of every r--
+    // range within 96 MB (covers a separately-mapped metadata image)
+    const cands = []; const seen = {};
+    const add = (b, tag) => { const k = b.toString(16);
+      if (!seen[k]) { seen[k] = 1; cands.push({ name: tag, base: b }); } };
     for (const r of Process.enumerateRanges('r--')) {
       if (r.base.compare(target) <= 0 && r.base.add(r.size).compare(target) > 0) {
         out.range = r.base.toString(16) + '+0x' + r.size.toString(16)
                   + ' file=' + JSON.stringify(r.file || null);
+        add(r.base, 'containing');
         if (r.file && typeof r.file.offset === 'number')
-          cands.push({ name: 'imageBase', base: r.base.sub(r.file.offset) });
-        cands.push({ name: 'rangeBase', base: r.base });
-        break;
+          add(r.base.sub(r.file.offset), 'imgOfContaining');
       }
     }
-    if (!cands.length) return JSON.stringify({ ...out, err: 'no containing r-- range' });
+    const lo = target.sub(96 * 1024 * 1024), hi = target.add(96 * 1024 * 1024);
+    for (const r of Process.enumerateRanges('r--'))
+      if (r.base.compare(lo) > 0 && r.base.compare(hi) < 0) add(r.base, 'nearby');
+    if (extraBasesCsv) for (const b of String(extraBasesCsv).split(','))
+      if (b.trim()) add(ptr(b.trim()), 'given');
 
     const xr = Process.enumerateRanges('x')
       .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
 
-    // native scanSync for `mov edx,<off>` (BA imm32); no byte loops, no
-    // per-candidate NativePointer allocation
     for (const c of cands) {
       const off = target.sub(c.base).toInt32() >>> 0;
-      out.offsets.push({ name: c.name, base: c.base.toString(16), off: off });
       const ob = [off & 0xff, (off >> 8) & 0xff, (off >> 16) & 0xff, (off >>> 24) & 0xff];
       const pat = 'ba ' + ob.map(b => b.toString(16).padStart(2, '0')).join(' ');
+      let hits = 0;
       for (const r of xr) {
-        let hits; try { hits = Memory.scanSync(r.base, r.size, pat); } catch (e) { continue; }
-        for (const m of hits) {
+        let h; try { h = Memory.scanSync(r.base, r.size, pat); } catch (e) { continue; }
+        for (const m of h) {
+          hits++;
           if (out.sites.length >= 24) break;
           let buf; try { buf = new Uint8Array(m.address.readByteArray(40)); } catch (e) { continue; }
-          let callOff = -1;
-          for (let j = 5; j < 34; j++) if (buf[j] === 0xe8) { callOff = j; break; }
-          if (callOff < 0) continue;
-          out.sites.push({ via: c.name, off: off, site: m.address.toString(16),
-                           callAt: m.address.add(callOff).toString(16) });
+          let callAt = -1;
+          for (let j = 5; j < 34; j++) if (buf[j] === 0xe8) { callAt = j; break; }
+          out.sites.push({ base: c.name + ':' + c.base.toString(16), off: off,
+                           site: m.address.toString(16),
+                           callAt: callAt < 0 ? null : m.address.add(callAt).toString(16) });
         }
       }
+      out.basesTried.push({ name: c.name, base: c.base.toString(16), off: off, hits: hits });
     }
+    out.sites = out.sites.map(s => {
+      const e = out.__attr ? out.__attr(ptr(s.site)) : null; return s;
+    });
 
-    // attribute every site to its enclosing method (nearest preceding VA) - the
-    // method that references the literal is what we are after, and this needs no
-    // second scan of the module
+    // attribute the sites to enclosing methods (one method map build)
     const mmap = [];
     for (const asm of Il2Cpp.domain.assemblies) {
       let img, classes;
@@ -389,18 +402,77 @@ rpc.exports.findthunk = function (targetStr) {
       }
     }
     mmap.sort((a, b) => a.va.compare(b.va));
-    const attr = (sp) => {
-      let lo = 0, hi = mmap.length - 1, best = null;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (mmap[mid].va.compare(sp) <= 0) { best = mmap[mid]; lo = mid + 1; } else hi = mid - 1;
+    const attr = (sp) => { let lo2 = 0, hi2 = mmap.length - 1, best = null;
+      while (lo2 <= hi2) { const mid = (lo2 + hi2) >> 1;
+        if (mmap[mid].va.compare(sp) <= 0) { best = mmap[mid]; lo2 = mid + 1; } else hi2 = mid - 1; }
+      return best; };
+    for (const s of out.sites) {
+      const e = attr(ptr(s.site));
+      s.inMethod = e ? e.name + ' @ ' + e.va.toString(16) : '?';
+    }
+    out.uniqueMethods = [...new Set(out.sites.map(s => s.inMethod))];
+    out.elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+    return JSON.stringify(out);
+  });
+};
+
+// findlit(length): base-free. The literal helper is called with r8d = the
+// literal's length, so scanning for `mov r8d,<len>` immediately before a call
+// finds every code path that references a literal of that length. For each hit
+// we also report the `mov edx,<imm32>` (the literal offset) so the correct base
+// can be derived as literalAddress - imm32.
+rpc.exports.findlit = function (lenStr, targetStr) {
+  return Il2Cpp.perform(() => {
+    const t0 = Date.now();
+    const len = parseInt(lenStr, 10) || 0;
+    const lb = [len & 0xff, (len >> 8) & 0xff, (len >> 16) & 0xff, (len >>> 24) & 0xff];
+    const pat = '41 b8 ' + lb.map(b => b.toString(16).padStart(2, '0')).join(' ');
+    const mod = Process.getModuleByName('GameAssembly.dll');
+    const xr = Process.enumerateRanges('x')
+      .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
+    const out = { len: len, target: targetStr || null, sites: [], uniqueMethods: [] };
+    const cands = [];
+    for (const r of xr) {
+      let h; try { h = Memory.scanSync(r.base, r.size, pat); } catch (e) { continue; }
+      for (const m of h) {
+        if (out.sites.length >= 40) break;
+        let back; try { back = new Uint8Array(m.address.sub(24).readByteArray(24 + 48)); }
+        catch (e) { continue; }
+        let edxImm = null;
+        for (let j = 0; j + 5 <= 24; j++)
+          if (back[j] === 0xba) edxImm = back[j+1] | (back[j+2] << 8) | (back[j+3] << 16) | ((back[j+4] << 24) >>> 0);
+        let callRel = null, callIdx = -1;
+        for (let j = 24; j + 5 <= back.length; j++)
+          if (back[j] === 0xe8) {
+            callRel = back[j+1] | (back[j+2] << 8) | (back[j+3] << 16) | (back[j+4] << 24);
+            callIdx = j; break;
+          }
+        out.sites.push({ site: m.address.toString(16), edxImm: edxImm,
+                         callAt: callIdx < 0 ? null : m.address.sub(24).add(callIdx).toString(16),
+                         callTarget: callIdx < 0 ? null : m.address.sub(24).add(callIdx + 5 + callRel).toString(16),
+                         impliedBase: (edxImm !== null && targetStr)
+                           ? ptr(targetStr).sub(edxImm).toString(16) : null });
       }
-      return best;
-    };
-    for (const site of out.sites) {
-      const e = attr(ptr(site.site));
-      site.inMethod = e ? e.name + ' @ ' + e.va.toString(16) : '?';
-      site.delta = e ? (parseInt(site.site, 16) - parseInt(e.va.toString(16), 16)) : null;
+    }
+    const mmap = [];
+    for (const asm of Il2Cpp.domain.assemblies) {
+      let img, classes;
+      try { img = asm.image; } catch (e) { continue; }
+      try { classes = img.classes; } catch (e) { continue; }
+      for (const cls of classes) {
+        let ms; try { ms = cls.methods; } catch (e) { ms = []; }
+        for (const m of ms) { let va; try { va = m.virtualAddress; } catch (e) { continue; }
+          if (!va.isNull()) mmap.push({ va: va, name: (cls.namespace ? cls.namespace + '.' : '') + cls.name + '.' + m.name }); }
+      }
+    }
+    mmap.sort((a, b) => a.va.compare(b.va));
+    const attr = (sp) => { let lo2 = 0, hi2 = mmap.length - 1, best = null;
+      while (lo2 <= hi2) { const mid = (lo2 + hi2) >> 1;
+        if (mmap[mid].va.compare(sp) <= 0) { best = mmap[mid]; lo2 = mid + 1; } else hi2 = mid - 1; }
+      return best; };
+    for (const s of out.sites) {
+      const e = attr(ptr(s.site));
+      s.inMethod = e ? e.name + ' @ ' + e.va.toString(16) : '?';
     }
     out.uniqueMethods = [...new Set(out.sites.map(s => s.inMethod))];
     out.elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);

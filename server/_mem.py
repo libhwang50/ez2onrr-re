@@ -96,6 +96,10 @@ def main():
         print('scanning for the base64 string form (UTF-16LE)…')
         show(send({'op': 'findhex', 'hex': ' '.join(
             f'{x:02x}' for x in b.encode('utf-16-le'))}))
+    elif a[0] == 'findlit':
+        show(send({'op': 'findlit',
+                   'len': int(a[1]),
+                   'target': a[2] if len(a) > 2 else ''}, timeout=600), max_hits=45)
     elif a[0] == 'findthunk':
         show(send({'op': 'findthunk', 'target': a[1]}, timeout=900), max_hits=40)
     elif a[0] == 'hunt1':

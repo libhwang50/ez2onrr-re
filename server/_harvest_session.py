@@ -168,7 +168,11 @@ def main():
                 signal.signal(signal.SIGINT, signal.default_int_handler)
                 try:
                     if cmd.get('op') == 'findthunk':
-                        res = script.exports_sync.findthunk(cmd.get('target', ''))
+                        res = script.exports_sync.findthunk(cmd.get('target', ''),
+                                                            cmd.get('bases', ''))
+                    elif cmd.get('op') == 'findlit':
+                        res = script.exports_sync.findlit(str(cmd.get('len', 0)),
+                                                          cmd.get('target', ''))
                     elif cmd.get('op') == 'hunt1':
                         res = script.exports_sync.hunt1(cmd.get('needle', '8CN26'))
                     elif cmd.get('op') == 'hunt2':
