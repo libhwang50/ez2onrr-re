@@ -27,11 +27,19 @@ def send(cmd, timeout=180):
     if os.path.exists(RES):
         os.remove(RES)
     json.dump(cmd, open(CMD, 'w'))
+    global LAST_SAVED
+    LAST_SAVED = None
     t0 = time.time()
     while time.time() - t0 < timeout:
         if os.path.exists(RES):
             d = json.load(open(RES))
             if d.get('cmd') == cmd:
+                # keep a copy so a result is never lost to display quirks
+                try:
+                    json.dump(d, open(os.path.join(ROOT, 'server', 'last_probe.json'), 'w'),
+                              indent=1, ensure_ascii=False)
+                except Exception:
+                    pass
                 return d['result']
         time.sleep(0.5)
     raise SystemExit('timed out waiting for the harvester '
@@ -64,7 +72,8 @@ def show(result, max_hits=20):
         print(f'  ascii: {d["ascii"]}')
         print(f'  hex  : {d["hex"]}')
     else:
-        print(json.dumps(d, indent=1)[:4000])
+        # unknown shape: print it in full (truncated) rather than mis-formatting
+        print(json.dumps(d, indent=1, ensure_ascii=False)[:4000])
 
 
 def main():

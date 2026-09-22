@@ -618,21 +618,23 @@ rpc.exports.findaccessor = function (offsetStr, lenStr) {
       for (const h of hits) {
         if (out.sites.length >= 16) break;
         let buf;
-        try { buf = new Uint8Array(h.address.readByteArray(48)); } catch (e) { continue; }
+        try { buf = new Uint8Array(h.address.readByteArray(128)); } catch (e) { continue; }
+        // Lenient: some accessors set their arguments in a different order or
+        // spread further apart, so a site is reported even when no `mov r8d,<len>`
+        // or call is found nearby - the enclosing method is what matters.
         let len2 = null, idx = null, callRel = null, callAt = -1;
-        for (let j = 5; j + 5 <= 40; j++) {
-          if (buf[j] === 0x41 && buf[j+1] === 0xb8)
+        for (let j = 5; j + 5 <= 96; j++) {
+          if (buf[j] === 0x41 && buf[j+1] === 0xb8 && len2 === null)
             len2 = (buf[j+2] | (buf[j+3] << 8) | (buf[j+4] << 16) | ((buf[j+5] << 24) >>> 0)) >>> 0;
           if (buf[j] === 0xb9 && idx === null)
             idx = (buf[j+1] | (buf[j+2] << 8) | (buf[j+3] << 16) | ((buf[j+4] << 24) >>> 0)) >>> 0;
-          if (buf[j] === 0xe8) { callRel = buf[j+1] | (buf[j+2] << 8) | (buf[j+3] << 16) | (buf[j+4] << 24);
-                                 callAt = j; break; }
+          if (buf[j] === 0xe8 && callAt < 0) { callRel = buf[j+1] | (buf[j+2] << 8) | (buf[j+3] << 16) | (buf[j+4] << 24);
+                                               callAt = j; }
         }
-        if (callAt < 0) continue;
-        if (lenStr && len2 !== (parseInt(lenStr, 10) >>> 0)) continue;
+        if (lenStr && len2 !== null && len2 !== (parseInt(lenStr, 10) >>> 0)) continue;
         out.sites.push({ site: '0x' + h.address.toString(16), off: off, len: len2, idx: idx,
-                         callAt: h.address.add(callAt).toString(16),
-                         helper: h.address.add(callAt + 5 + callRel).toString(16) });
+                         callAt: callAt < 0 ? null : h.address.add(callAt).toString(16),
+                         helper: callAt < 0 ? null : h.address.add(callAt + 5 + callRel).toString(16) });
       }
     }
     // attribute the sites (the accessor methods) and build the method map
