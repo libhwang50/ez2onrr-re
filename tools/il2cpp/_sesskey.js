@@ -256,3 +256,56 @@ rpc.exports.hunt3 = function (funcStr) {
     }) });
   });
 };
+
+// --- memory probing for the command channel (server/cmd.json) ---------------
+// findhex(hexPattern[, budgetMB]) -> every occurrence of the byte pattern in
+// rw-/r-- ranges, with a window of context around each hit. Used to locate the
+// client's own copy of the session bCK (the value the pattern response must
+// echo), which the private server can then serve.
+rpc.exports.findhex = function (hexstr, budgetMB) {
+  return Il2Cpp.perform(() => {
+    const pat = (hexstr || '').trim();
+    if (!pat) return JSON.stringify({ err: 'no pattern' });
+    const budget = (budgetMB ? parseInt(budgetMB, 10) : 2048) * 1024 * 1024;
+    const t0 = Date.now();
+    let scanned = 0;
+    const hits = [];
+    const ranges = Process.enumerateRanges({ protection: 'rw-', coalesce: true })
+      .concat(Process.enumerateRanges({ protection: 'r--', coalesce: true }));
+    for (const r of ranges) {
+      if (scanned > budget || Date.now() - t0 > 120000) break;
+      if (r.size > 400 * 1024 * 1024) continue;      // skip absurd ranges
+      scanned += r.size;
+      let found;
+      try { found = Memory.scanSync(r.base, r.size, pat); } catch (e) { continue; }
+      for (const m of found) {
+        if (hits.length >= 64) break;
+        let ctx = '';
+        try {
+          const back = Math.min(64, m.address.sub(r.base).toInt32());
+          const fwd = 64;
+          const buf = new Uint8Array(m.address.sub(back).readByteArray(back + pat.split(' ').length + fwd));
+          for (const b of buf) ctx += (b >= 32 && b < 127) ? String.fromCharCode(b) : '.';
+        } catch (e) { ctx = 'ctx?'; }
+        let hex = '';
+        try {
+          const hb = new Uint8Array(m.address.sub(16).readByteArray(80));
+          for (const b of hb) hex += b.toString(16).padStart(2, '0');
+        } catch (e) {}
+        hits.push({ addr: m.address.toString(16), ascii: ctx, hex: hex });
+      }
+    }
+    return JSON.stringify({ pattern: pat, scannedMB: Math.round(scanned / 1048576),
+                            seconds: ((Date.now() - t0) / 1000).toFixed(1), hits: hits });
+  });
+};
+
+rpc.exports.readbytes = function (addrStr, lenStr) {
+  return Il2Cpp.perform(() => {
+    const n = Math.min(4096, parseInt(lenStr, 10) || 64);
+    const b = new Uint8Array(ptr(addrStr).readByteArray(n));
+    let hex = '', asc = '';
+    for (const x of b) { hex += x.toString(16).padStart(2, '0'); asc += (x >= 32 && x < 127) ? String.fromCharCode(x) : '.'; }
+    return JSON.stringify({ addr: addrStr, len: n, hex: hex, ascii: asc });
+  });
+};

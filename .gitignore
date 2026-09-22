@@ -59,3 +59,4 @@ server/data/stub443-key.pem
 server/data/stub443.csr
 server/data/stub443-cert.srl
 server/stub443.log
+server/cmd*.json

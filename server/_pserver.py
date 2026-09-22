@@ -316,6 +316,11 @@ def mutate_url(u, mode):
         q['Expires'] = str(int(time.time()) + 315360000)   # +10 years
     elif mode == 'expire':
         q['Expires'] = str(int(time.time()) - 3600)
+    elif mode == 'now':
+        # mint a fresh-looking expiry exactly like the official server does
+        # (Expires ~150 s out). The signature stays whatever it was — proven
+        # irrelevant by the `urls skew` test — so this is a fully offline URL.
+        q['Expires'] = str(int(time.time()) + 150)
     elif mode == 'skew':
         # +1 s: still perfectly "fresh" for any expiry-window check, but the
         # CloudFront signature no longer matches -> isolates signature
@@ -342,7 +347,17 @@ def mutate_pattern_response(obj):
                 obj[f] = mutate_url(obj[f], m_url)
                 changed.append(f'{f}={m_url}')
     if m_bck:
-        if m_bck == 'stale':
+        if m_bck == 'harvested':
+            # the bCK from the last official pattern response in THIS session:
+            # the client appears to check that the response echoes its own
+            # session token, so reusing the captured value should pass.
+            p = os.path.join(DATA, 'last_upstream_c2s_get_pattern_file.full.json')
+            try:
+                obj['bundleCryptKey'] = json.load(open(p))['bundleCryptKey']
+                log(f'  bck=harvested ({obj["bundleCryptKey"][:12]}…)')
+            except Exception as e:
+                log(f'  bck=harvested: could not read {p}: {e}')
+        elif m_bck == 'stale':
             try:
                 obj['bundleCryptKey'] = str(PATTERN_REPLAY[list(PATTERN_REPLAY)[0]]['bundleCryptKey'])
             except Exception:

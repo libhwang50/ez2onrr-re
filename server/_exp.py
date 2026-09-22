@@ -9,11 +9,13 @@ endpoints forwarded upstream, which is also read per request.
     python server/_exp.py hybrid on             # forward login+pattern upstream
     python server/_exp.py hybrid pattern        # forward only the pattern
     python server/_exp.py hybrid off            # pure private server
+    python server/_exp.py urls now              # Expires = now+150s (offline mint)
     python server/_exp.py urls skew             # Expires +1s (breaks signature only)
     python server/_exp.py urls future           # Expires +10y (breaks signature)
     python server/_exp.py urls expire           # Expires in the past
     python server/_exp.py urls noparams         # strip the query
     python server/_exp.py urls host             # swap the CDN host
+    python server/_exp.py bck harvested         # the bCK from the last official response
     python server/_exp.py bck garbage           # 48 random bytes
     python server/_exp.py bck stale             # the older captured real key
     python server/_exp.py bck empty
@@ -34,8 +36,8 @@ KNOBS = {
     'urls': 'mutate_urls.txt',
     'bck': 'mutate_bck.txt',
 }
-URL_MODES = ('skew', 'future', 'expire', 'noparams', 'host')
-BCK_MODES = ('stale', 'garbage', 'empty')
+URL_MODES = ('now', 'skew', 'future', 'expire', 'noparams', 'host')
+BCK_MODES = ('harvested', 'stale', 'garbage', 'empty')
 
 
 def path(name):

@@ -43,6 +43,35 @@ def _stop(_sig, _frm):
     _running = False
 
 
+CMDFILE = os.path.join(ROOT, 'server', 'cmd.json')
+CMDRESULT = os.path.join(ROOT, 'server', 'cmd_result.json')
+
+
+def read_cmd():
+    """A tiny command channel: server/_mem.py writes cmd.json, we execute the
+    RPC and write cmd_result.json. This keeps ALL probing inside the single
+    Frida session the harvester owns (a second session crashes the game)."""
+    if not os.path.exists(CMDFILE):
+        return None, None
+    try:
+        cmd = json.load(open(CMDFILE))
+    except Exception:
+        return None, None
+    try:
+        os.remove(CMDFILE)
+    except Exception:
+        pass
+    return cmd, None
+
+
+def write_cmd_result(cmd, result):
+    try:
+        json.dump({'cmd': cmd, 'result': result}, open(CMDRESULT, 'w'))
+        log(f'cmd result -> server/cmd_result.json')
+    except Exception as e:
+        log(f'cmd result write failed: {e}')
+
+
 def log(msg):
     print(f'[{time.strftime("%H:%M:%S")}] {msg}', flush=True)
 
@@ -128,6 +157,21 @@ def main():
                 session, script = attach()
                 log('attached; polling zf.aes_key/aes_iv at 1 Hz')
                 misses = 0
+            cmd, res = read_cmd()
+            if cmd is not None:
+                log(f'cmd: {cmd.get("op")} {str(cmd.get("hex",""))[:40]}')
+                try:
+                    if cmd.get('op') == 'findhex':
+                        res = script.exports_sync.findhex(cmd.get('hex', ''),
+                                                          str(cmd.get('budgetMB', 2048)))
+                    elif cmd.get('op') == 'readbytes':
+                        res = script.exports_sync.readbytes(cmd.get('addr', ''),
+                                                            str(cmd.get('len', 64)))
+                    else:
+                        res = json.dumps({'err': f'unknown op {cmd.get("op")}'})
+                except Exception as e:
+                    res = json.dumps({'err': repr(e)})
+                write_cmd_result(cmd, res)
             d = json.loads(script.exports_sync.readkey())
             key = (d.get('aes_key') or '').strip('"')
             iv = (d.get('aes_iv') or '').strip('"')
