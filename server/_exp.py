@@ -17,6 +17,8 @@ endpoints forwarded upstream, which is also read per request.
     python server/_exp.py urls host             # swap the CDN host
     python server/_exp.py bck harvested         # the bCK from the last official response
     python server/_exp.py bck garbage           # 48 random bytes
+    python server/_exp.py bck mint              # minted: AES(session, random 32B)
+    python server/_exp.py bck mint:zero         # minted with a fixed payload
     python server/_exp.py bck stale             # the older captured real key
     python server/_exp.py bck empty
     python server/_exp.py off                   # clear the url/bck mutations
@@ -37,7 +39,7 @@ KNOBS = {
     'bck': 'mutate_bck.txt',
 }
 URL_MODES = ('now', 'skew', 'future', 'expire', 'noparams', 'host')
-BCK_MODES = ('harvested', 'stale', 'garbage', 'empty')
+BCK_MODES = ('harvested', 'stale', 'garbage', 'empty', 'mint')
 
 
 def path(name):
@@ -104,8 +106,9 @@ def main():
             return 2
         set_('urls', '' if val in ('off', 'none') else val)
     elif what == 'bck':
-        if val not in BCK_MODES + ('off', 'none') and not val.startswith('literal:'):
-            print(f'bck must be one of {BCK_MODES}, literal:<b64>, or off')
+        if (val not in BCK_MODES + ('off', 'none')
+                and not val.startswith(('literal:', 'mint:'))):
+            print(f'bck must be one of {BCK_MODES}, mint:<payload>, literal:<b64>, or off')
             return 2
         set_('bck', '' if val in ('off', 'none') else val)
     else:

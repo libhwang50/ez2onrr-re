@@ -24,6 +24,64 @@ rpc.exports.readkey = function () {
   });
 };
 
+// zfstatics: every static field of a class (default zf) with its live value.
+// The API session key is generated client-side per launch; if the bCK payload
+// is not derived from aes_key/aes_iv then the material it *is* derived from is
+// most likely another static in here (a second key/iv pair for the raw
+// channels, a nonce, a hash). Read-only, one RPC, no object retention.
+rpc.exports.zfstatics = function (clsName) {
+  return Il2Cpp.perform(() => {
+    const want = (typeof clsName === 'string' && clsName) ? clsName : 'zf';
+    const out = { class: want, fields: [] };
+    let klass;
+    try {
+      klass = Il2Cpp.domain.assembly("Assembly-CSharp").image.class(want);
+    } catch (e) {
+      out.error = 'class lookup: ' + e;
+      return JSON.stringify(out);
+    }
+    let fields = [];
+    try { fields = klass.fields; } catch (e) { out.error = 'fields: ' + e; }
+    for (const f of fields) {
+      const rec = {};
+      try { rec.name = f.name; } catch (e) { rec.name = '?'; }
+      try { rec.type = f.type && f.type.name; } catch (e) {}
+      try { rec.off = f.offset; } catch (e) {}
+      let v = null;
+      try { v = f.value; } catch (e) { rec.err = String(e); }
+      try {
+        if (v === null || v === undefined) { rec.value = null; }
+        else if (typeof v === 'string') { rec.value = v; }
+        else {
+          let c;
+          try { c = v.content; } catch (e) {}
+          if (typeof c === 'string') { rec.value = c; }
+          else {
+            let h = null, n = null;
+            try { h = v.handle; } catch (e) {}
+            try { n = v.length; } catch (e) {}
+            if (h !== null && typeof n === 'number' && n > 0) {
+              const cap = Math.min(n, 128);
+              let bytes = '';
+              try {
+                const raw = new Uint8Array(Memory.readByteArray(h.add(0x20), cap));
+                for (let i = 0; i < raw.length; i++) {
+                  bytes += raw[i].toString(16).padStart(2, '0');
+                }
+                rec.value = 'array[' + n + '] ' + bytes + (n > cap ? '...' : '');
+              } catch (e) {
+                rec.value = 'array[' + n + '] (read failed: ' + e + ')';
+              }
+            } else { rec.value = String(v); }
+          }
+        }
+      } catch (e) { rec.value = 'ERR ' + e; }
+      out.fields.push(rec);
+    }
+    return JSON.stringify(out);
+  });
+};
+
 function utf16hex(s) {
   let h = '';
   for (const ch of s) {

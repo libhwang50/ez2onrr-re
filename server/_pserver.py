@@ -37,6 +37,7 @@ proxies to the official servers and the session becomes a confusing mix of
 real and fake data (this exact bug shipped once).
 """
 import base64
+import hashlib
 import json
 import os
 import re
@@ -184,15 +185,22 @@ def decrypt_request(body: bytes):
         return None, f'decrypt failed (stale session key?): {e}'
 
 
-def encrypt_response(json_obj) -> bytes:
+def session_encrypt(raw: bytes) -> bytes:
+    """AES-256-CBC/PKCS7 under the client's own session key (raw ciphertext).
+
+    Same primitive the API bodies use; `bundleCryptKey` is this over a 32-byte
+    payload (see the `mint` bck mode)."""
     sk = session_key()
     if sk is None:
         raise RuntimeError('no session key')
     key, iv, _age = sk
-    pt = json.dumps(json_obj, separators=(',', ':'), ensure_ascii=False).encode()
     enc = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
-    ct = enc.update(pkcs7_pad(pt)) + enc.finalize()
-    return base64.b64encode(ct)
+    return enc.update(pkcs7_pad(raw)) + enc.finalize()
+
+
+def encrypt_response(json_obj) -> bytes:
+    pt = json.dumps(json_obj, separators=(',', ':'), ensure_ascii=False).encode()
+    return base64.b64encode(session_encrypt(pt))
 
 
 def decrypt_api_body(body: bytes):
@@ -218,7 +226,7 @@ def decrypt_api_body(body: bytes):
 # Knobs are read per response, so an experiment needs no restart of mitmdump:
 #
 #   server/data/mutate_urls.txt   future | expire | noparams | host
-#   server/data/mutate_bck.txt    stale | garbage | empty | literal:<b64>
+#   server/data/mutate_bck.txt    stale | garbage | empty | mint[:payload] | literal:<b64>
 #
 #   future    Expires far in the future (signature no longer matches)
 #   expire    Expires in the past (signature still valid)
@@ -226,6 +234,8 @@ def decrypt_api_body(body: bytes):
 #   host      swap the CDN host (same path/params)
 #   stale     the older captured bundleCryptKey (real, wrong session)
 #   garbage   48 random bytes, valid base64 shape
+#   mint      a token we build ourselves: AES-256-CBC/PKCS7 of a 32-byte payload
+#             under the live session key (mint:zero, mint:<hex>, mint:<text>)
 #
 # Removing both files restores the untouched response.
 
@@ -364,6 +374,34 @@ def mutate_pattern_response(obj):
                 obj['bundleCryptKey'] = 'stale'
         elif m_bck == 'garbage':
             obj['bundleCryptKey'] = base64.b64encode(os.urandom(48)).decode()
+        elif m_bck == 'mint' or m_bck.startswith('mint:'):
+            # bundleCryptKey is AES-256-CBC/PKCS7 over a **32-byte payload** under
+            # the client's own session key/IV (ASCII) — the very same cipher as the
+            # API bodies, verified by byte-exact re-encryption of a captured token.
+            # That is why raw garbage gives 8CN26 (it cannot decrypt at all) and why
+            # a real token from another session fails too (wrong key). So we can
+            # mint our own, with no official server in the loop:
+            #   mint              32 random bytes  (does the client accept any payload?)
+            #   mint:zero/zeros   32 zero bytes
+            #   mint:<64 hex>     an explicit payload
+            #   mint:<text>       sha256(text)
+            spec = m_bck.split(':', 1)[1] if ':' in m_bck else 'random'
+            if spec in ('', 'random'):
+                payload = os.urandom(32)
+            elif spec in ('zero', 'zeros'):
+                payload = bytes(32)
+            elif len(spec) == 64:
+                try:
+                    payload = bytes.fromhex(spec)
+                except ValueError:
+                    payload = hashlib.sha256(spec.encode()).digest()
+            else:
+                payload = hashlib.sha256(spec.encode()).digest()
+            try:
+                obj['bundleCryptKey'] = base64.b64encode(session_encrypt(payload)).decode()
+                log(f'  bck=mint payload={payload.hex()} -> {obj["bundleCryptKey"][:16]}…')
+            except Exception as e:
+                log(f'  bck=mint failed: {e}')
         elif m_bck == 'empty':
             obj['bundleCryptKey'] = ''
         elif m_bck.startswith('literal:'):

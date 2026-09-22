@@ -71,6 +71,16 @@ def show(result, max_hits=20):
             if h.get('ctx'): print(f"    ctx  : {h['ctx']}")
         if len(d['hits']) > max_hits:
             print(f'  … {len(d["hits"]) - max_hits} more')
+    elif 'fields' in d:
+        print(f"class {d.get('class')} — {len(d['fields'])} static fields"
+              + (f"  ({d['error']})" if d.get('error') else ''))
+        for f in d['fields']:
+            line = f"  {str(f.get('name')):22s} {str(f.get('type'))[:26]:26s}"
+            off = f.get('off')
+            if isinstance(off, int):
+                line += f" off={off:<6}"
+            line += f" = {f.get('value')}"
+            print(line[:400])
     elif 'ascii' in d:
         print(f"{d['addr']} ({d['len']}B)")
         print(f'  ascii: {d["ascii"]}')
@@ -118,6 +128,11 @@ def main():
         print('scanning for the base64 string form (UTF-16LE)…')
         show(send({'op': 'findhex', 'hex': ' '.join(
             f'{x:02x}' for x in b.encode('utf-16-le'))}))
+    elif a[0] == 'zfstatics':
+        # all static fields of a class (default zf) with live values — looks for
+        # session-scoped material the bCK payload could be derived from
+        show(send({'op': 'zfstatics', 'cls': a[1] if len(a) > 1 else 'zf'},
+                  timeout=120))
     elif a[0] == 'whowrites':
         show(send({'op': 'whowrites', 'disp': a[1]}, timeout=300), max_hits=60)
     elif a[0] == 'method':
