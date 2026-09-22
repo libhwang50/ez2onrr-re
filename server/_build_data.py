@@ -49,15 +49,22 @@ def norm(s):
 
 
 def main():
-    # ---- API response templates ----
-    login = json.loads(dec_b64_file(os.path.join(ROOT, 'mitm_parsed', 'c2s_login.bin')))
-    myinfo = json.loads(dec_b64_file(os.path.join(ROOT, 'mitm_parsed', 'c2s_get_myinfo.bin')))
-    gameinfo = json.loads(dec_b64_file(os.path.join(ROOT, 'mitm_parsed', 'c2s_get_gameinfo.bin')))
-    json.dump(login, open(os.path.join(OUT, 'login.json'), 'w'), indent=1, ensure_ascii=False)
-    json.dump(myinfo, open(os.path.join(OUT, 'myinfo.json'), 'w'), indent=1, ensure_ascii=False)
-    json.dump(gameinfo, open(os.path.join(OUT, 'gameinfo.json'), 'w'), indent=1, ensure_ascii=False)
-    print('login.json / myinfo.json / gameinfo.json written '
-          f'(musicList={len(gameinfo.get("musicList", []))} entries)')
+    # ---- API response templates (Sep-16 capture; needs ITS session key via
+    #      EZ2_API_SESSION_KEY/_IV - skipped gracefully if the key mismatches
+    #      and the templates already exist) ----
+    try:
+        login = json.loads(dec_b64_file(os.path.join(ROOT, 'mitm_parsed', 'c2s_login.bin')))
+        myinfo = json.loads(dec_b64_file(os.path.join(ROOT, 'mitm_parsed', 'c2s_get_myinfo.bin')))
+        gameinfo = json.loads(dec_b64_file(os.path.join(ROOT, 'mitm_parsed', 'c2s_get_gameinfo.bin')))
+        json.dump(login, open(os.path.join(OUT, 'login.json'), 'w'), indent=1, ensure_ascii=False)
+        json.dump(myinfo, open(os.path.join(OUT, 'myinfo.json'), 'w'), indent=1, ensure_ascii=False)
+        json.dump(gameinfo, open(os.path.join(OUT, 'gameinfo.json'), 'w'), indent=1, ensure_ascii=False)
+        print('login.json / myinfo.json / gameinfo.json written '
+              f'(musicList={len(gameinfo.get("musicList", []))} entries)')
+    except Exception as e:
+        have = [n for n in ('login', 'myinfo', 'gameinfo')
+                if os.path.exists(os.path.join(OUT, n + '.json'))]
+        print(f'template decryption skipped ({e}); existing templates kept: {have}')
 
     # profile overrides — user-tunable; never clobber local edits
     profile = {
@@ -169,8 +176,7 @@ def main():
                         _b64.b64decode(rec['resp_body_text'] + '=' * (-len(rec['resp_body_text']) % 4))), 16))
                     if resp.get('result') != 1:
                         continue
-                    k = (norm(req.get('musicresourcename', '')),
-                         int(req.get('keymode', 0)), int(req.get('levelmode', 0)))
+                    k = f"{norm(req.get('musicresourcename', ''))}|{int(req.get('keymode', 0))}|{int(req.get('levelmode', 0))}"
                     replays[k] = resp
                 except Exception:
                     continue

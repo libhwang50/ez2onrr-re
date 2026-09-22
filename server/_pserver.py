@@ -311,7 +311,7 @@ def pattern_response(req_json):
     # a captured REAL response (real signed URLs + real per-session
     # bundleCryptKey) is the only known-good shape - synthesized responses fail
     # the client's post-parse validation with 8CN26
-    key = (want, km, lm)
+    key = f"{want}|{km}|{lm}"
     if key in PATTERN_REPLAY:
         log(f'pattern: {name!r} km={km} lm={lm} -> REPLAYED official response')
         return dict(PATTERN_REPLAY[key])
