@@ -649,14 +649,22 @@ rpc.exports.findaccessor = function (offsetStr, lenStr) {
       while (lo <= hi) { const mid = (lo + hi) >> 1;
         if (mmap[mid].va.compare(sp) <= 0) { best = mmap[mid]; lo = mid + 1; } else hi = mid - 1; }
       return best; };
-    const targets = {};
+    // numeric target set: converting every call target to a hex string (the
+    // first version) allocated one string per call site in the module and turned
+    // a ~20 s sweep into minutes
+    const targets = new Set();
+    const targetNames = {};
     for (const s of out.sites) {
       const e = attr(ptr(s.site));
       s.accessor = e ? e.name + ' @ ' + e.va.toString(16) : '?';
-      if (e) { out.accessors.push(s.accessor); targets[e.va.toString(16)] = true; }
+      if (e) {
+        out.accessors.push(s.accessor);
+        const n = parseInt(e.va.toString(16), 16);
+        targets.add(n);
+        targetNames[n] = s.accessor;
+      }
     }
     out.accessors = [...new Set(out.accessors)];
-    // one numeric pass over the code for calls to any accessor
     const found = {};
     for (const r of xr) {
       let pos = 0;
@@ -667,16 +675,18 @@ rpc.exports.findaccessor = function (offsetStr, lenStr) {
         for (let i = 0; i + 5 <= buf.length; i++) {
           if (buf[i] !== 0xe8) continue;
           const rel = buf[i+1] | (buf[i+2] << 8) | (buf[i+3] << 16) | (buf[i+4] << 24);
-          const tgt = (rstart + pos + i + 5 + rel).toString(16);
-          if (targets[tgt]) (found[tgt] = found[tgt] || []).push('0x' + (rstart + pos + i).toString(16));
+          const tgt = rstart + pos + i + 5 + rel;
+          if (targets.has(tgt))
+            (found[tgt] = found[tgt] || []).push(rstart + pos + i);
         }
         pos += len3 - 8;
       }
     }
     for (const k of Object.keys(found))
-      for (const site of found[k]) {
-        const e = attr(ptr(site));
-        out.callers.push({ accessor: k, site: site,
+      for (const siteNum of found[k]) {
+        const siteHex = '0x' + siteNum.toString(16);
+        const e = attr(ptr(siteHex));
+        out.callers.push({ accessor: targetNames[k], site: siteHex,
                            inMethod: e ? e.name + ' @ ' + e.va.toString(16) : '?' });
       }
     out.uniqueCallerMethods = [...new Set(out.callers.map(c => c.inMethod))];
