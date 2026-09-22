@@ -334,7 +334,12 @@ response, so experiments need no restart.
   `_exp.py harvest` sets) a CDN cache miss is forwarded to the official CDN and the body is
   filed into `extracted_charts/<song>/<km>/<diff>/` in exactly `dump_song.py`'s layout
   (`cdn_ez_cap.bin`, `cdn_ezi_cap.bin`, an `ident.json` with the URLs and label, and the
-  decrypted `.ez`/`.ezi` when the key pair validates). That makes the archive the single
+  decrypted `.ez`/`.ezi`, plus an `instrumentDic.json` derived from the `.ezi`, when the
+  key pair validates — `decrypt_archive.py` backfills any of that which is missing).
+  **The decrypt step is backend-agnostic on purpose**: `decrypt_chart.py` used to import
+  pycryptodome only, which the *system* python running mitmdump does not have, and a bare
+  `except` in the addon hid the ImportError — so captures filed the ciphertext and silently
+  skipped the plaintext. That makes the archive the single
   source of truth — `_build_data.py` is still the only translator — and turns a whole song
   sweep into coverage with no extra tooling. Without the knob a miss is a 404 and no
   game-host request leaves the machine.
@@ -728,6 +733,7 @@ User-facing (repo root):
 | `decrypt_all.py` | bulk bundle decryption with `true_key_1024.bin` |
 | `harvest_key.py` | derive `true_key_1024.bin` from live memory |
 | `harvest_chart.py` | watch `InGameCore` for chart URLs and fetch them |
+| `decrypt_archive.py` | **complete chart dumps** — walk `extracted_charts/`, decrypt any raw CDN capture that lacks its plaintext, write `ez.ez` / `ezi.ezi` / `instrumentDic.json`; `--check` audits without writing, exit code gates a batch |
 | `decrypt_chart.py` | **decrypt CDN payloads** → `.ez` / `.ezi` plaintext (library + CLI) |
 | `parse_chart.py` | **read decrypted charts** — `.ez` note charts and `.ezi` keysound indexes, as a summary, JSON, or note listing |
 | `chart_labels.py` | **name charts** — decrypt captured API traffic into `chart_labels.json` (song name, key mode, difficulty); `dump_song.py` reads it back |

@@ -23,7 +23,18 @@ import argparse
 import os
 import struct
 
-from Crypto.Cipher import AES
+try:                                    # pycryptodome (the .venv)
+    from Crypto.Cipher import AES
+
+    def _aes_decrypt(key, iv, data):
+        return AES.new(key, AES.MODE_CBC, iv).decrypt(data)
+except ImportError:                     # cryptography (mitmproxy's environment,
+    from cryptography.hazmat.primitives.ciphers import (  # e.g. the server addon)
+        Cipher, algorithms, modes)
+
+    def _aes_decrypt(key, iv, data):
+        d = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+        return d.update(data) + d.finalize()
 
 # Static InGameCore fields. These are compile-time constants baked into the
 # assembly's static-field initializers, so they are identical across runs;
@@ -105,10 +116,10 @@ def decrypt(buf: bytes, keypair: str = None) -> bytes:
     data = unmask(buf)
     if keypair is not None:
         key, iv = KEYPAIRS[keypair]
-        return AES.new(key, AES.MODE_CBC, iv).decrypt(data)
+        return _aes_decrypt(key, iv, data)
     padded = []
     for name, (key, iv) in KEYPAIRS.items():
-        pt = AES.new(key, AES.MODE_CBC, iv).decrypt(data)
+        pt = _aes_decrypt(key, iv, data)
         if valid_pkcs7(pt):
             padded.append(name)
             if plausible(pt):
@@ -121,7 +132,7 @@ def decrypt(buf: bytes, keypair: str = None) -> bytes:
 def decrypt_named(buf: bytes):
     """Like decrypt(), but returns (plaintext, keypair_name)."""
     for name, (key, iv) in KEYPAIRS.items():
-        pt = AES.new(key, AES.MODE_CBC, iv).decrypt(unmask(buf))
+        pt = _aes_decrypt(key, iv, unmask(buf))
         if valid_pkcs7(pt) and plausible(pt):
             return pt, name
     raise ValueError('no static key pair produced a plausible plaintext')

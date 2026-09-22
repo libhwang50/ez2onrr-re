@@ -239,7 +239,12 @@ The loop that adds songs, end to end:
    **`extracted_charts/<song>/<km>/<diff>/`** — `cdn_ez_cap.bin`, `cdn_ezi_cap.bin`
    and an `ident.json` with the URLs and the label — i.e. the same layout
    `dump_song.py` writes, so the archive stays the single source of truth and no
-   side pipeline exists. `capturedBy: "sweep"` marks the ones that came this way.
+   side pipeline exists. It also decrypts them on the spot into `ez.ez` /
+   `ezi.ezi` (naming the key pair in `ident.json`) and derives
+   `instrumentDic.json` from the `.ezi`, so a capture ends up a complete dump.
+   `capturedBy: "sweep"` marks the ones that came this way, and
+   **`python decrypt_archive.py`** fills in any plaintext that is missing
+   (the tool walks the archive and is safe to re-run; `--check` reports only).
 4. **`python server/_build_data.py`** folds the archive into
    `server/data/charts.json` + `cdn_paths.json`, then `_coverage.py` shows the
    result.

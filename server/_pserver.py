@@ -700,24 +700,45 @@ def capture_cdn_response(flow):
                 'levelmode': str(lm), 'gamemode': meta.get('gamemode') or None,
                 'labelSource': 'pattern request'})
     ident['label'] = lbl
-    # decrypt alongside, so the capture is a complete dump (best effort)
+    # Decrypt alongside, so a sweep capture is a complete dump like
+    # dump_song.py's. Each file stands alone (the key pair is chosen by
+    # validation), so there is no ordering requirement; failures are logged,
+    # never swallowed - a silent ImportError here cost us a day.
     try:
         sys.path.insert(0, ROOT)
         import decrypt_chart
-        files = {kind: body}
-        for k, v in list(files.items()):
-            if not os.path.exists(os.path.join(d, f'cdn_{k}_cap.bin')):
+        for kind, out_name in (('ez', 'ez.ez'), ('ezi', 'ezi.ezi')):
+            src = os.path.join(d, f'cdn_{kind}_cap.bin')
+            dst = os.path.join(d, out_name)
+            if not os.path.exists(src) or os.path.exists(dst):
                 continue
-        pair = os.path.join(d, 'cdn_ez_cap.bin'), os.path.join(d, 'cdn_ezi_cap.bin')
-        if all(os.path.exists(x) for x in pair):
-            for src, dst in ((pair[0], 'ez.ez'), (pair[1], 'ezi.ezi')):
-                raw = open(src, 'rb').read()
-                pt, used = decrypt_chart.decrypt_named(raw)
-                if pt:
-                    open(os.path.join(d, dst), 'wb').write(pt)
-                    ident.setdefault('chartKeyPair', used)
+            raw = open(src, 'rb').read()
+            try:
+                pt, pair = decrypt_chart.decrypt_named(raw)
+            except ValueError as e:
+                log(f'  {kind} NOT DECRYPTED ({e}) — {os.path.relpath(d, ROOT)}')
+                continue
+            with open(dst, 'wb') as f:
+                f.write(pt)
+            ident['chartKeyPair'] = pair
+            log(f'  {kind} -> {out_name} ({len(pt)}B, key pair {pair})')
+        # instrumentDic.json is just the .ezi mapping (the game's own dict is
+        # the same index -> basename list, only partial), so derive it
+        ezi_p = os.path.join(d, 'ezi.ezi')
+        dic_p = os.path.join(d, 'instrumentDic.json')
+        if os.path.exists(ezi_p) and not os.path.exists(dic_p):
+            rows = []
+            for line in open(ezi_p, 'rb').read().decode('utf-8', 'replace').splitlines():
+                parts = line.split()
+                if len(parts) >= 3 and parts[0].isdigit():
+                    rows.append([int(parts[0]), os.path.splitext(parts[2])[0]])
+            if rows:
+                with open(dic_p, 'w') as f:
+                    json.dump(rows, f, ensure_ascii=False)
+                log(f'  instrumentDic.json ({len(rows)} entries)')
     except Exception:
-        pass
+        log('decrypt step failed\n' + traceback.format_exc())
+
     try:
         with open(ident_p, 'w') as f:
             json.dump(ident, f, indent=1, ensure_ascii=False)
