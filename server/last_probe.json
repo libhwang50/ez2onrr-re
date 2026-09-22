@@ -1,0 +1,8 @@
+{
+ "cmd": {
+  "op": "findaccessor",
+  "offset": "0x17d97",
+  "len": ""
+ },
+ "result": "{\"offset\":\"0x17d97\",\"length\":null,\"sites\":[{\"site\":\"0x6ffff3026184\",\"off\":97687,\"len\":5,\"idx\":2736,\"callAt\":\"6ffff3026194\",\"helper\":\"6ffff2fd2390\",\"accessor\":\"<PrivateImplementationDetails>{0BEA0F08-2DF1-403D-8030-E3140D0BB586}.a.ebg @ 6ffff3026110\",\"accessorVA\":\"0x6ffff3026110\"}],\"accessors\":[\"<PrivateImplementationDetails>{0BEA0F08-2DF1-403D-8030-E3140D0BB586}.a.ebg @ 6ffff3026110\"],\"callers\":[],\"hint\":\"for the callers: python server/_mem.py hunt3 0x6ffff3026110\",\"elapsedSec\":\"6.4\"}"
+}

@@ -114,6 +114,8 @@ def main():
         print('scanning for the base64 string form (UTF-16LE)…')
         show(send({'op': 'findhex', 'hex': ' '.join(
             f'{x:02x}' for x in b.encode('utf-16-le'))}))
+    elif a[0] == 'callers':
+        show(send({'op': 'callers', 'target': a[1]}, timeout=900), max_hits=40)
     elif a[0] == 'findlitoff':
         # target address, static-fields base (the value `deref <global> 0xb8` prints)
         show(send({'op': 'findlitoff', 'target': a[1],

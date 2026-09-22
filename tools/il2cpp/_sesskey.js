@@ -735,3 +735,39 @@ rpc.exports.findlitoff = function (targetStr, sfStr) {
     return JSON.stringify(out);
   });
 };
+
+// callers(targetVA): raw call-site scan, no method-map build. hunt3 does the same
+// scan but then enumerates ~176k methods through the bridge for attribution, and
+// that enumeration is what makes it take minutes. This returns the site
+// addresses (fast) so the surrounding code can be read and disassembled directly.
+rpc.exports.callers = function (targetStr) {
+  return Il2Cpp.perform(() => {
+    const t0 = Date.now();
+    const mod = Process.getModuleByName('GameAssembly.dll');
+    const tvaNum = parseInt(String(targetStr).replace(/^0x/, ''), 16);
+    const xr = Process.enumerateRanges('x')
+      .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
+    const sites = [];
+    let bytesScanned = 0;
+    for (const r of xr) {
+      const rstart = parseInt(r.base.toString(16), 16);
+      let pos = 0;
+      while (pos < r.size) {
+        const len = Math.min(0x800000, r.size - pos);
+        let buf; try { buf = new Uint8Array(r.base.add(pos).readByteArray(len)); } catch (e) { break; }
+        bytesScanned += buf.length;
+        for (let i = 0; i + 5 <= buf.length; i++) {
+          if (buf[i] !== 0xe8) continue;
+          const rel = buf[i+1] | (buf[i+2] << 8) | (buf[i+3] << 16) | (buf[i+4] << 24);
+          if (rstart + pos + i + 5 + rel === tvaNum)
+            sites.push('0x' + (rstart + pos + i).toString(16));
+        }
+        pos += len - 8;
+      }
+    }
+    return JSON.stringify({ target: '0x' + tvaNum.toString(16),
+                            ranges: xr.length, scannedMB: Math.round(bytesScanned / 1048576),
+                            sites: sites, count: sites.length,
+                            elapsedSec: ((Date.now() - t0) / 1000).toFixed(1) });
+  });
+};

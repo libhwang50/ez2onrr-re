@@ -167,7 +167,9 @@ def main():
                 # duration so Ctrl-C raises inside the wait and we detach.
                 signal.signal(signal.SIGINT, signal.default_int_handler)
                 try:
-                    if cmd.get('op') == 'findlitoff':
+                    if cmd.get('op') == 'callers':
+                        res = script.exports_sync.callers(cmd.get('target', ''))
+                    elif cmd.get('op') == 'findlitoff':
                         res = script.exports_sync.findlitoff(cmd.get('target', ''),
                                                              cmd.get('sf', ''))
                     elif cmd.get('op') == 'findaccessor':
