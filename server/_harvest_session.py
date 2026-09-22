@@ -161,7 +161,9 @@ def main():
             if cmd is not None:
                 log(f'cmd: {cmd.get("op")} {str(cmd.get("hex",""))[:40]}')
                 try:
-                    if cmd.get('op') == 'hunt1':
+                    if cmd.get('op') == 'findthunk':
+                        res = script.exports_sync.findthunk(cmd.get('target', ''))
+                    elif cmd.get('op') == 'hunt1':
                         res = script.exports_sync.hunt1(cmd.get('needle', '8CN26'))
                     elif cmd.get('op') == 'hunt2':
                         res = script.exports_sync.hunt2(str(cmd.get('off', 0)))

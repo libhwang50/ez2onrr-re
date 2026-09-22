@@ -320,3 +320,101 @@ rpc.exports.readbytes = function (addrStr, lenStr) {
     return JSON.stringify({ addr: addrStr, len: n, hex: hex, ascii: asc });
   });
 };
+
+// findthunk(targetAddr): the robust replacement for hunt1/hunt2. Instead of
+// anchoring the literal-data base via a hardcoded thunk RVA (which goes stale),
+// locate the mapped range that CONTAINS the literal, derive the image base from
+// its file offset, compute the literal's offset, and search the executable
+// ranges for `mov edx,<off>` + a call right after - the literal thunk. Then
+// attribute the callers of that thunk to methods, all in one go.
+rpc.exports.findthunk = function (targetStr) {
+  return Il2Cpp.perform(() => {
+    const target = ptr(targetStr);
+    const out = { target: targetStr, offsets: [], found: [] };
+    let rangeBase = null, imgBase = null, rsize = 0;
+    for (const r of Process.enumerateRanges('r--')) {
+      if (r.base.compare(target) <= 0 && r.base.add(r.size).compare(target) > 0) {
+        rangeBase = r.base; rsize = r.size;
+        out.range = r.base.toString(16) + '+0x' + r.size.toString(16)
+                  + ' file=' + JSON.stringify(r.file || null);
+        if (r.file && typeof r.file.offset === 'number') imgBase = r.base.sub(r.file.offset);
+        break;
+      }
+    }
+    if (!rangeBase) return JSON.stringify({ ...out, err: 'no containing r-- range' });
+    const cands = [];
+    if (imgBase) cands.push({ name: 'imageBase', base: imgBase });
+    cands.push({ name: 'rangeBase', base: rangeBase });
+    const mod = Process.getModuleByName('GameAssembly.dll');
+    const xr = Process.enumerateRanges('x')
+      .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
+    for (const c of cands) {
+      const off = target.sub(c.base).toInt32() >>> 0;
+      out.offsets.push({ name: c.name, base: c.base.toString(16), off: off });
+      const ob = [off & 0xff, (off >> 8) & 0xff, (off >> 16) & 0xff, (off >>> 24) & 0xff];
+      const pat = 'ba ' + ob.map(b => b.toString(16).padStart(2, '0')).join(' ');
+      const CH = 0x400000, OV = 8;
+      for (const r of xr) {
+        let pos = r.base;
+        while (pos.compare(r.base.add(r.size)) < 0) {
+          const len = Math.min(CH, r.base.add(r.size).sub(pos).toInt32());
+          let buf; try { buf = new Uint8Array(pos.readByteArray(len)); } catch (e) { break; }
+          for (let i = 0; i + 6 <= buf.length; i++) {
+            if (buf[i] !== 0xba) continue;
+            if (buf[i+1] !== ob[0] || buf[i+2] !== ob[1] || buf[i+3] !== ob[2] || buf[i+4] !== ob[3]) continue;
+            for (let j = i + 5; j < Math.min(i + 30, buf.length - 5); j++) {
+              if (buf[j] !== 0xe8) continue;
+              let fs = null;
+              for (let b = j; b >= Math.max(0, j - 0x120); b--) if (buf[b] === 0xcc) { fs = b + 1; break; }
+              out.found.push({ via: c.name, off: off, callSite: pos.add(j).toString(16),
+                               funcStart: fs === null ? null : pos.add(fs).toString(16) });
+              break;
+            }
+          }
+          pos = pos.add(len - OV);
+        }
+      }
+    }
+    // attribute callers of each resolved function start
+    const mmap = [];
+    for (const asm of Il2Cpp.domain.assemblies) {
+      let img; try { img = asm.image; } catch (e) { continue; }
+      let classes; try { classes = img.classes; } catch (e) { continue; }
+      for (const cls of classes) {
+        let ms; try { ms = cls.methods; } catch (e) { continue; }
+        for (const m of ms) { let va; try { va = m.virtualAddress; } catch (e) { continue; }
+          if (!va.isNull()) mmap.push({ va: va, name: cls.name + '.' + m.name }); }
+      }
+    }
+    mmap.sort((a, b) => a.va.compare(b.va));
+    const attr = (sp) => { let lo = 0, hi = mmap.length - 1, best = null;
+      while (lo <= hi) { const mid = (lo + hi) >> 1;
+        if (mmap[mid].va.compare(sp) <= 0) { best = mmap[mid]; lo = mid + 1; } else hi = mid - 1; }
+      return best; };
+    out.funcs = [];
+    const seen = {};
+    for (const f of out.found) {
+      if (!f.funcStart || seen[f.funcStart]) continue;
+      seen[f.funcStart] = 1;
+      const tva = ptr(f.funcStart);
+      const callers = [];
+      for (const r of xr) {
+        let pos = r.base;
+        while (pos.compare(r.base.add(r.size)) < 0) {
+          const len = Math.min(0x400000, r.base.add(r.size).sub(pos).toInt32());
+          let buf; try { buf = new Uint8Array(pos.readByteArray(len)); } catch (e) { break; }
+          for (let i = 0; i + 5 <= buf.length; i++) {
+            if (buf[i] !== 0xe8) continue;
+            const rel = buf[i+1] | (buf[i+2] << 8) | (buf[i+3] << 16) | (buf[i+4] << 24);
+            if (pos.add(i + 5 + rel).equals(tva)) callers.push(pos.add(i).toString(16));
+          }
+          pos = pos.add(len - 8);
+        }
+      }
+      out.funcs.push({ funcStart: f.funcStart, callers: callers.map(cs => {
+        const e = attr(ptr(cs));
+        return { site: cs, enc: e ? e.name + ' @ ' + e.va.toString(16) : '?' }; }) });
+    }
+    return JSON.stringify(out);
+  });
+};

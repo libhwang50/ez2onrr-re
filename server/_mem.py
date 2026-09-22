@@ -96,6 +96,8 @@ def main():
         print('scanning for the base64 string form (UTF-16LE)…')
         show(send({'op': 'findhex', 'hex': ' '.join(
             f'{x:02x}' for x in b.encode('utf-16-le'))}))
+    elif a[0] == 'findthunk':
+        show(send({'op': 'findthunk', 'target': a[1]}, timeout=900), max_hits=40)
     elif a[0] == 'hunt1':
         # the literal-data base + the neighbourhood of the anchored literal.
         # Default needle is the 8CN26 error-code text: the game's message table
