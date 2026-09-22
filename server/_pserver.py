@@ -541,9 +541,29 @@ def userinfo_response(req_json):
     return {'memberinfo': entries, 'result': 1}
 
 
+_warned_no_key = False
+
+
 def respond_api(flow, obj):
+    global _warned_no_key
+    try:
+        body = encrypt_response(obj)
+    except RuntimeError as e:
+        # almost always: the Frida harvester is not running, so the client's
+        # per-session key is unknown and NOTHING can be encrypted for it.
+        if not _warned_no_key:
+            _warned_no_key = True
+            log('NO SESSION KEY — cannot encrypt any API response. Start the '
+                'bridge: .venv/bin/python server/_harvest_session.py (or forward '
+                'this endpoint too, e.g. passthrough_endpoints.txt = '
+                'login,gameinfo,myinfo,pattern).')
+        flow.response = http.Response.make(
+            502,
+            b'private server: no session key - run server/_harvest_session.py',
+            {'Content-Type': 'text/plain'})
+        return
     flow.response = http.Response.make(
-        200, encrypt_response(obj), upstream_like_headers())
+        200, body, upstream_like_headers())
 
 
 def handle_rank(flow: http.HTTPFlow):

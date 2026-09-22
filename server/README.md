@@ -132,6 +132,15 @@ python server/_exp.py bck garbage        # 48 random bytes
 python server/_exp.py off                # everything back to private
 ```
 
+⚠ **The Frida harvester must be running** (`.venv/bin/python
+server/_harvest_session.py`) even in hybrid mode: forwarding the login upstream
+gets the *upstream* session working, but this addon still has to encrypt its own
+stub responses (`c2s_get_gameinfo`, `c2s_get_myinfo`) with the client's
+per-session key. Without it the addon answers `502 no session key` and the game
+shows `RESULT : TD3 HTTP/1.1 502 Bad Gateway`. The alternative, if no bridge is
+wanted, is to forward those endpoints too:
+`passthrough_endpoints.txt = login,gameinfo,myinfo,pattern`.
+
 | knob | value | effect |
 |---|---|---|
 | `urls` | `future` | `Expires` +10 years — signature no longer matches |
