@@ -6,6 +6,8 @@ apply live — no mitmdump restart. Only `hybrid on/off` changes the set of
 endpoints forwarded upstream, which is also read per request.
 
     python server/_exp.py                       # show current state
+    python server/_exp.py offline               # THE fully offline mode (no upstream)
+    python server/_exp.py harvest               # control: forward login+pattern once
     python server/_exp.py hybrid on             # forward login+pattern upstream
     python server/_exp.py hybrid pattern        # forward only the pattern
     python server/_exp.py hybrid off            # pure private server
@@ -17,7 +19,7 @@ endpoints forwarded upstream, which is also read per request.
     python server/_exp.py urls host             # swap the CDN host
     python server/_exp.py bck harvested         # the bCK from the last official response
     python server/_exp.py bck garbage           # 48 random bytes
-    python server/_exp.py bck mint              # minted: AES(session, random 32B)
+    python server/_exp.py bck mint              # minted: AES(live key, client constant)
     python server/_exp.py bck mint:zero         # minted with a fixed payload
     python server/_exp.py bck stale             # the older captured real key
     python server/_exp.py bck empty
@@ -74,6 +76,26 @@ def show():
 def main():
     a = sys.argv[1:]
     if not a:
+        show()
+        return 0
+    if a[0] == 'offline':
+        # Fully offline: no endpoint is forwarded, we mint the URLs, and the
+        # token is produced here from the client's payload constant + the live
+        # session key (byte-identical to what the official server would send).
+        set_('endpoints', '')
+        set_('urls', 'now')
+        set_('bck', 'mint')
+        legacy = os.path.join(DATA, 'passthrough_pattern')
+        if os.path.exists(legacy):
+            os.remove(legacy)
+        show()
+        return 0
+    if a[0] == 'harvest':
+        # The control / capture mode: one official pattern response comes back
+        # through, so last_upstream_c2s_get_pattern_file.full.json refreshes.
+        set_('endpoints', 'login,pattern')
+        set_('urls', 'now')
+        set_('bck', 'harvested')
         show()
         return 0
     if a[0] in ('off', 'reset'):
