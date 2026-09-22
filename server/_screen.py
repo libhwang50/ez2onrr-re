@@ -353,6 +353,8 @@ def main():
     ap.add_argument('--json', action='store_true', help='print the raw feature vector')
     ap.add_argument('--collect', metavar='STATE', help='save the current frame as an anchor')
     ap.add_argument('--list', action='store_true', help='list collected anchors')
+    ap.add_argument('--check', action='store_true',
+                    help='classify every anchor, and with its own state\'s anchors removed')
     ap.add_argument('--watch', action='store_true', help='classify continuously')
     ap.add_argument('--interval', type=float, default=1.0, help='watch poll interval')
     ap.add_argument('--out', default=os.path.join(SHOTS, 'annotated.png'))
@@ -365,6 +367,31 @@ def main():
         for state, items in anchors.items():
             print(f'  {state:16s} {len(items)} frame(s)')
         return 0
+
+    if args.check:
+        anchors = load_anchor_patches()
+        if not anchors:
+            print(f'no anchors under {os.path.relpath(ANCHORS, ROOT)}')
+            return 1
+        print('anchors:', {k: len(v) for k, v in anchors.items()})
+        print('  `full` should name the state; `without-own-state` should be UNKNOWN '
+              '(or a rule hit) — never a different state')
+        bad = 0
+        for state, d in anchor_dirs():
+            for fn in sorted(os.listdir(d)):
+                if not fn.endswith('.png'):
+                    continue
+                rgb = np.asarray(Image.open(os.path.join(d, fn)).convert('RGB'))
+                full = classify(rgb, anchors=anchors)
+                loo = classify(rgb, anchors={k: v for k, v in anchors.items()
+                                             if k != state})
+                miss = full[0] != state
+                bad += miss
+                print(f'  {state:12s} {fn:20s} full={full[0]:12s} ({full[1]:.2f})  '
+                      f'without-own-state={loo[0]:12s} ({loo[1]:.2f})  '
+                      f'{"MISS" if miss else "OK"}')
+        print(f'\n{len(anchors)} state(s), {bad} miss(es)')
+        return 1 if bad else 0
 
     if args.watch:
         global _patch_cache
