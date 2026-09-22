@@ -117,14 +117,32 @@ rpc.exports.hunt = function (korean) {
     const needle8 = utf8(korean);
     const pat = Array.from(needle8).map(b => b.toString(16).padStart(2, '0')).join(' ');
     const hits = [];
+    // the UTF-8 literal region observed at ~0x716... - intersect ranges with
+    // that window and keep a byte budget so we never wander the whole heap
+    const W0 = ptr('0x7000000000'), W1 = ptr('0x8000000000');
+    let budget = 400000000;
     for (const r of Process.enumerateRanges({ protection: 'r--', coalesce: true })
         .concat(Process.enumerateRanges({ protection: 'rw-', coalesce: true }))) {
-      try { for (const m of Memory.scanSync(r.base, r.size, pat)) {
+      if (budget <= 0) break;
+      const s = r.base.compare(W0) > 0 ? r.base : W0;
+      const eEnd = r.base.add(r.size);
+      const e = eEnd.compare(W1) > 0 ? W1 : eEnd;
+      if (s.compare(e) >= 0) continue;
+      const n = e.sub(s).toInt32();
+      budget -= n;
+      try { for (const m of Memory.scanSync(s, n, pat)) {
         hits.push(m.address); if (hits.length >= 8) break;
       } } catch (e) {}
       if (hits.length >= 8) break;
     }
     out.koreanHits = hits.map(a => a.toString(16));
+    // the ErrCode/8CN26 ASCII table seen earlier - dump it for the taxonomy
+    try {
+      const tb = new Uint8Array(ptr('0x71616c00').readByteArray(0x1600));
+      let txt = '';
+      for (let i = 0; i < tb.length; i++) txt += (tb[i] >= 32 && tb[i] < 127) ? String.fromCharCode(tb[i]) : ((tb[i] === 0) ? '\n' : '.');
+      out.errCodeTable = txt;
+    } catch (e) { out.errCodeTable = 'ERR ' + e; }
     if (!hits.length) return JSON.stringify({ ...out, err: 'korean utf8 literal not found' });
 
     const printable = (addr, len) => {

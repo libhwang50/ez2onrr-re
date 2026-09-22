@@ -138,12 +138,21 @@ def main():
                 # scan INSIDE this session - never open a second Frida session
                 if os.environ.get('EZ2_HUNT') and not hunt_done:
                     hunt_done = True
-                    log('EZ2_HUNT: hunting the error site (this blocks key '
-                        'polling for a couple of minutes)…')
+                    log('EZ2_HUNT: hunting the error site (blocks several '
+                        'minutes; Ctrl-C once = cancel+exit cleanly)…')
+                    # restore the default SIGINT behaviour for the duration:
+                    # the hunt blocks in a C-level lock wait, and our custom
+                    # handler swallows Ctrl-C (which looked like a hang).
+                    # The default handler raises KeyboardInterrupt inside the
+                    # blocked wait, and the except path below detaches safely.
+                    signal.signal(signal.SIGINT, signal.default_int_handler)
                     try:
-                        res = script.exports_sync.hunt('게임 파일이 손상되었습니다')
+                        res = script.exports_sync.hunt('스팀에서 게임 파일 무결성')
                         open(os.path.join(ROOT, 'server', 'hunt_result.json'), 'w').write(res)
                         log('hunt result -> server/hunt_result.json')
+                    except KeyboardInterrupt:
+                        log('hunt cancelled by Ctrl-C (detached safely)')
+                        raise SystemExit(0)
                     except Exception as e:
                         log(f'hunt failed: {e}')
             misses = 0
