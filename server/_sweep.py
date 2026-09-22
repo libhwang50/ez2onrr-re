@@ -7,8 +7,9 @@ It presses keys, waits for a request it has not seen before, and moves on.
 
     python server/_sweep.py --watch            # just tail the log (no input)
     python server/_sweep.py --dry-run          # show bindings + plan, send nothing
-    python server/_sweep.py --calibrate        # DEDUCE the keys from the request JSON
+    python server/_sweep.py --calibrate --write # DEDUCE the keys from the request JSON
     python server/_sweep.py --limit 50         # capture 50 song entries
+    python server/_sweep.py --mode STANDARD    # walk the menu to the STANDARD card first
     python server/_sweep.py --variants         # also cycle difficulty/keymode
     python server/_sweep.py --shot             # save a screenshot before each entry
 
@@ -40,21 +41,32 @@ SHOTS = os.path.join(ROOT, 'server', 'shots')
 SHOTDIR = os.path.expanduser('~/Pictures/Screenshots')
 
 DEFAULTS = {
-    '_comment': ('Song-select key names for xdotool. Namazu wiki: 0-9 jump to a '
-                 'list section, PageUp/Down move 8 rows, a-z jump by initial, '
-                 'F6 random. Keypad 4/5/6/8 change the on-screen values '
-                 '(difficulty/keymode) - verify with --calibrate.'),
+    '_comment': ('Song-select key names for xdotool, taken from the game\'s own '
+                 'hint bar: TAB = mode(kind of key) change, arrows = song / '
+                 'difficulty, SHIFT = decide, ESC = leave. The hint bar shows '
+                 '"<arrows> song select" and "<up/down> difficulty select"; if '
+                 'your copy behaves the other way round, run --calibrate, which '
+                 'derives all of it from the request JSON and can write it back '
+                 'with --write.'),
     'game_app_id': 'steam_app_1477590',
     'keys': {
-        'next_song': 'Down', 'prev_song': 'Up',
+        # song select
+        'next_song': 'Right', 'prev_song': 'Left',
+        'next_diff': 'Down', 'prev_diff': 'Up',
+        'keymode_next': 'Tab', 'keymode_prev': 'Tab',
+        'enter_song': 'shift', 'back': 'Escape',
+        # list paging / jumps (NamuWiki): 0-9 sections, PageUp/Down 8 rows, a-z initial
         'page_down': 'Next', 'page_up': 'Prior',
-        'enter_song': 'Return', 'back': 'Escape',
-        'diff_next': 'KP_8', 'diff_prev': 'KP_2',
-        'keymode_next': 'KP_6', 'keymode_prev': 'KP_4',
     },
     'resync': ['Escape', 'Escape', 'Escape'],
+    # main menu: a horizontal card row (BASIC, STANDARD, MULTIPLAYER, COURSE, then
+    # LOUNGE/OPTION). 'home' spams Left to reach the leftmost card, then offset
+    # Rights and SHIFT. Used only with --mode.
+    'menu': {'home': 'Left', 'home_count': 8, 'confirm': 'shift',
+             'cards': {'BASIC': 0, 'STANDARD': 1, 'MULTIPLAYER': 2,
+                       'COURSE': 3, 'LOUNGE': 4, 'OPTION': 5}},
     'timing': {'after_key': 0.35, 'settle': 1.0, 'wait_for_request': 25.0,
-               'after_back': 1.5, 'poll': 0.25},
+               'after_back': 1.5, 'poll': 0.25, 'after_confirm': 3.0},
 }
 
 REQ = re.compile(r'c2s_get_pattern_file request: (\{.*\})')
@@ -212,16 +224,19 @@ def watch():
         print(f'\nstopped after {n} new requests')
 
 
-def calibrate(limit=8):
-    """Deduce which keys change difficulty vs keymode, straight from the request.
+def calibrate(write=False):
+    """Deduce the song-select bindings straight from the request JSON.
 
-    Enters a song, reads keymode/levelmode out of the request the game makes,
-    backs out, presses one candidate key, and enters again. Whatever changed is
-    what that key does. Works because the request is self-describing.
+    Enters a song (SHIFT), reads song/keymode/levelmode out of the request the
+    game makes, backs out, presses one candidate key, and enters again. Whatever
+    changed is what that key does — the request is self-describing, so this needs
+    no screenshot and no guessing. `--write` stores the result in sweep_keys.json.
     """
     tail = Tail(LOG)
-    candidates = ['KP_1', 'KP_2', 'KP_3', 'KP_4', 'KP_5', 'KP_6', 'KP_7',
-                  'KP_8', 'KP_9', 'Next', 'Prior']
+    # per the hint bar the arrows do one thing and TAB the keymode; the NamuWiki
+    # keypad claim is tested too, in case this build maps them differently
+    candidates = ['Left', 'Right', 'Up', 'Down', 'Tab',
+                  'KP_4', 'KP_5', 'KP_6', 'KP_8', 'Next', 'Prior']
     print('calibration: this presses keys in the game — keep it focused.\n'
           'First, verify enter/back with one entry:')
     base = enter_and_read(tail, 'baseline')
@@ -232,31 +247,62 @@ def calibrate(limit=8):
         return 2
     print(f'  baseline: {base[0]} km={base[1]} lm={base[2]} gm={base[3]}')
     findings = {}
-    for cand in candidates[:limit]:
-        send(cand, f'pressing candidate')
+    for cand in candidates:
+        send(cand, 'pressing candidate')
         got = enter_and_read(tail, cand, quiet=True)
         if got is None:
-            print(f'    {cand:6s} -> no request (ignored?)')
+            print(f'    {cand:7s} -> no request (key ignored, or the song failed)')
             continue
         what = []
+        if got[0] != base[0]:
+            what.append(f'song {base[0]}->{got[0]}')
         if got[1] != base[1]:
             what.append(f'keymode {base[1]}->{got[1]}')
         if got[2] != base[2]:
             what.append(f'levelmode {base[2]}->{got[2]}')
         findings[cand] = what
-        print(f'    {cand:6s} -> {", ".join(what) if what else "nothing changed"}')
-        if what:
-            base = got          # follow the change so the next key is isolated
+        print(f'    {cand:7s} -> {", ".join(what) if what else "nothing changed"}')
+        base = got              # follow the change so the next key is isolated
     print('\nwhat each candidate key does:')
     for cand, what in findings.items():
-        if not what:
-            continue
-        print(f'  {cand:6s} -> {", ".join(what)}')
-    print(f'  (nothing else changed anything — press them again in the game and\n'
-          f'   check the on-screen effect if a binding is still unknown)')
-    print(f'\nwrite the two that matter into {os.path.relpath(KEYS, ROOT)}:')
-    print('  "diff_next" / "diff_prev"  (difficulty)')
-    print('  "keymode_next" / "keymode_prev"  (key mode)')
+        if what:
+            print(f'  {cand:7s} -> {", ".join(what)}')
+    # map the findings onto the bindings the sweep uses
+    discovered = {}
+    for cand, what in findings.items():
+        for w in what:
+            if w.startswith('song '):
+                discovered.setdefault('song', []).append(cand)
+            if w.startswith('levelmode '):
+                discovered.setdefault('levelmode', []).append(cand)
+            if w.startswith('keymode '):
+                discovered.setdefault('keymode', []).append(cand)
+    print('\ninterpretation:')
+    for kind, keys in discovered.items():
+        print(f'  {kind:10s}: {", ".join(keys)}')
+    if not discovered:
+        print('  nothing changed — the game may not have been focused, or the'
+              ' candidate keys are all wrong for this build')
+        return 1
+    if 'song' in discovered and len(discovered['song']) >= 2:
+        K['next_song'], K['prev_song'] = discovered['song'][-1], discovered['song'][0]
+    if 'levelmode' in discovered and len(discovered['levelmode']) >= 2:
+        K['next_diff'], K['prev_diff'] = discovered['levelmode'][-1], discovered['levelmode'][0]
+    if 'keymode' in discovered:
+        K['keymode_next'] = discovered['keymode'][-1]
+        K['keymode_prev'] = discovered['keymode'][0]
+    print('\nwould set: ' + json.dumps(
+        {k: K[k] for k in ('next_song', 'prev_song', 'next_diff', 'prev_diff',
+                           'keymode_next', 'keymode_prev')}, ensure_ascii=False))
+    if write:
+        cfg = json.load(open(KEYS))
+        cfg['keys'] = {**cfg.get('keys', {}), **{k: K[k] for k in (
+            'next_song', 'prev_song', 'next_diff', 'prev_diff',
+            'keymode_next', 'keymode_prev')}}
+        json.dump(cfg, open(KEYS, 'w'), indent=1, ensure_ascii=False)
+        print(f'wrote {os.path.relpath(KEYS, ROOT)}')
+    else:
+        print(f'add --write to store it in {os.path.relpath(KEYS, ROOT)}')
     return 0
 
 
@@ -273,6 +319,33 @@ def enter_and_read(tail, tag, quiet=False):
             int(req.get('levelmode') or 0), req.get('gamemode'))
 
 
+GAMEMODE = {'BASIC': '1', 'STANDARD': '2'}
+
+
+def goto_mode(name):
+    """Blindly walk the main menu's horizontal card row to a mode card.
+
+    The row is BASIC, STANDARD, MULTIPLAYER, COURSE, LOUNGE, OPTION; `home`
+    (Left, repeated) reaches the leftmost card, then we step right by the card's
+    index and confirm. Nothing here is verified by the game, so the caller
+    checks the first request's gamemode afterwards.
+    """
+    menu = CFG['menu']
+    idx = menu.get('cards', {}).get(name.upper())
+    if idx is None:
+        print(f'  unknown mode {name!r} (known: {", ".join(menu.get("cards", {}))})')
+        return False
+    print(f'  switching to {name.upper()}: {menu["home"]}x{menu["home_count"]} then '
+          f'{idx}x Right then {menu["confirm"]!r}')
+    for _ in range(int(menu['home_count'])):
+        send(menu['home'])
+    for _ in range(idx):
+        send('Right')
+    send(menu['confirm'])
+    time.sleep(T['after_confirm'])
+    return True
+
+
 def resync():
     if not game_focused(verbose=True):
         return
@@ -282,7 +355,7 @@ def resync():
     print('  resync sent')
 
 
-def sweep(limit, variants, shot, dry):
+def sweep(limit, variants, shot, dry, mode=None):
     tail = Tail(LOG)
     print(f'{"DRY RUN — " if dry else ""}sweep: up to {limit} entries, '
           f'{len(tail.seen)} requests already in the log')
@@ -294,7 +367,11 @@ def sweep(limit, variants, shot, dry):
         return 0
     if not game_focused(verbose=True):
         return 2
+    if mode:
+        if not goto_mode(mode):
+            return 2
     captured = skipped = failed = 0
+    expect_gm = GAMEMODE.get(mode.upper()) if mode else None
     try:
         for i in range(limit):
             if shot:
@@ -308,6 +385,10 @@ def sweep(limit, variants, shot, dry):
                 send(K['next_song'])
                 continue
             k = tail.key(req)
+            if expect_gm and k[3] != expect_gm and captured == 0:
+                print(f'    WARNING: asked for {mode.upper()} (gamemode {expect_gm}) '
+                      f'but the first request says gamemode {k[3]} — the menu '
+                      f'navigation guessed wrong; check sweep_keys.json menu')
             if k in tail.seen:
                 skipped += 1
                 print(f'    already known: {k[0]} km={k[1]} lm={k[2]} gm={k[3]}')
@@ -321,8 +402,8 @@ def sweep(limit, variants, shot, dry):
             send(K['back'], 'back')
             time.sleep(T['after_back'])
             if variants:
-                for which, key in (('diff', K['diff_next']), ('diff', K['diff_next']),
-                                   ('diff', K['diff_next']), ('mode', K['keymode_next'])):
+                for which, key in (('diff', K['next_diff']), ('diff', K['next_diff']),
+                                   ('diff', K['next_diff']), ('mode', K['keymode_next'])):
                     send(key, f'  cycle {which}')
                     enter_and_read(tail, which, quiet=True)
             send(K['next_song'], 'next song')
@@ -340,16 +421,19 @@ def main():
     if '--watch' in a:
         return watch()
     if '--calibrate' in a:
-        return calibrate()
+        return calibrate(write='--write' in a)
+    mode = arg(a, '--mode', None)
     if '--dry-run' in a:
-        return sweep(int(arg(a, '--limit', 10)), '--variants' in a, '--shot' in a, True)
+        return sweep(int(arg(a, '--limit', 10)), '--variants' in a, '--shot' in a,
+                     True, mode)
     if not a:
         print(__doc__)
         print(f'sweep keys: {json.dumps(K, ensure_ascii=False)}')
         print(f'focused window right now: {focused_app()!r} '
               f'(game is {CFG["game_app_id"]!r})')
         return 0
-    return sweep(int(arg(a, '--limit', 50)), '--variants' in a, '--shot' in a, False)
+    return sweep(int(arg(a, '--limit', 50)), '--variants' in a, '--shot' in a,
+                 False, mode)
 
 
 def arg(a, name, default):
