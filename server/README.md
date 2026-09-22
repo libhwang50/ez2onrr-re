@@ -266,6 +266,18 @@ python server/_sweep.py --variants       # also cycle difficulty/keymode
 python server/_sweep.py --dry-run        # print the plan, send nothing
 ```
 
+**Escape is only pressed when it is provably safe.** In the main menu `ESC` means
+나가기 (leave), so a blind `Esc`-based resync can walk the game out of song select.
+The sweep therefore only sends the pause-menu exit when the entry actually started a
+song (a pattern request *and* a CDN body arrived, so the next state is loading or
+gameplay — never a menu), or when it knows the previous entry started a song and never
+came back (so we are inside its gameplay). When it does not know where it is, the
+recovery is `Up` + `Enter`, which is harmless in every state and productive in the
+two that matter: in song select it starts a song, in the main menu it re-enters the
+focused card. Timings in `server/data/sweep_keys.json`: `wait_for_request` 8 s (a
+request arrives 1–2 s after a real Enter, so a stumble fails fast) and `after_start`
+8 s (time from the request to gameplay before `Esc`).
+
 A chart only counts as captured once the CDN body actually arrived: the sweep
 watches for the addon's `CDN OK`/`CDN HIT` line and otherwise reports *asked but
 no chart* and leaves the song on the to-do list (so a failed download can never

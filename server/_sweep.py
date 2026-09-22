@@ -67,8 +67,9 @@ DEFAULTS = {
     # play modes), and --mode steps the short way round from --from.
     'menu': {'cards': ['BASIC', 'STANDARD', 'MULTIPLAYER', 'COURSE', 'LOUNGE', 'OPTION'],
              'confirm': 'Return'},
-    'timing': {'after_key': 0.35, 'settle': 1.0, 'wait_for_request': 25.0,
-               'after_exit': 2.5, 'after_start': 6.0, 'wait_for_cdn': 10.0,
+    'timing': {'after_key': 0.35, 'settle': 1.0, 'wait_for_request': 8.0,
+               'after_exit': 2.5, 'after_start': 8.0, 'wait_for_cdn': 10.0,
+               'after_failed_load': 3.0,
                'poll': 0.25,
                'after_confirm': 3.0},
 }
@@ -463,6 +464,10 @@ def sweep(limit, variants, shot, dry, mode=None):
             return 2
     captured = skipped = failed = 0
     nochart = 0
+    # Was a song started and never confirmed-left? Then we are still in it (its
+    # gameplay), and only *then* is Escape provably safe: in the main menu ESC is
+    # 나가기 (leave), so an unprovoked Escape can walk the game out of song select.
+    last_confirmed = False
     try:
         for i in range(limit):
             if shot:
@@ -472,9 +477,21 @@ def sweep(limit, variants, shot, dry, mode=None):
             req = tail.wait(T['wait_for_request'])
             if req is None:
                 failed += 1
-                print('    no request — resyncing')
-                resync()
-                send(K['next_song'])
+                if shot:
+                    screenshot(f'{i:04d}_nostart')
+                if last_confirmed:
+                    print('    no request — still in the previous song, so the '
+                          'pause menu is safe to use')
+                    resync()
+                else:
+                    # We do NOT know where we are (menu? song select?), and ESC
+                    # would mean "leave" in the main menu. Up+Enter is harmless
+                    # everywhere and re-enters a focused card / starts a song.
+                    print('    no request — safe recovery (Up, Enter; no ESC)')
+                    send(K['prev_song'])
+                    send(K['enter_song'])
+                last_confirmed = False
+                time.sleep(T['settle'])
                 continue
             events = cdn.wait_new(T['wait_for_cdn'])
             ok = [e for e in events if e[0] in ('OK', 'HIT')]
@@ -489,17 +506,28 @@ def sweep(limit, variants, shot, dry, mode=None):
                       f'gm={k[3]}  (CDN {[e[0] for e in events] or "silent"})')
             elif k in tail.seen:
                 skipped += 1
+                last_confirmed = True
                 print(f'    already known: {k[0]} km={k[1]} lm={k[2]} gm={k[3]}'
                       f'   (CDN {ok[0][0]})')
             else:
                 captured += 1
+                last_confirmed = True
                 tail.seen.add(k)
                 progress({'t': int(time.time()), 'song': k[0], 'keymode': k[1],
                           'levelmode': k[2], 'gamemode': k[3], 'cdn': ok[0][0]})
                 print(f'    CAPTURED  {k[0]:24s} km={k[1]} lm={k[2]} gm={k[3]}'
                       f'   ({captured} new, CDN {ok[0][0]})')
-            time.sleep(T['after_start'])     # let the load reach gameplay
-            exit_song()
+            if ok:
+                # A confirmed start: the game is loading into gameplay, so the
+                # pause menu is the right way out.
+                time.sleep(T['after_start'])
+                exit_song()
+                last_confirmed = False
+            else:
+                # The load failed; the client backs out to the song select by
+                # itself (after its 5 retries). Do not press ESC here.
+                time.sleep(T['after_failed_load'])
+                last_confirmed = False
             if variants:
                 for which, key in (('diff', K['next_diff']), ('diff', K['next_diff']),
                                    ('diff', K['next_diff']), ('mode', K['keymode_next'])):
