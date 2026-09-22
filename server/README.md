@@ -264,7 +264,9 @@ python server/_sweep.py --watch          # just tail the log (no input)
 python server/_sweep.py --state          # classify the current screen and exit
 python server/_sweep.py --calibrate      # learn the difficulty/keymode keys
 python server/_sweep.py --limit 600      # walk the list, one entry per song
-python server/_sweep.py --variants       # also cycle difficulty/keymode
+python server/_sweep.py --variant 5K:HD   # capture every song at one variant
+python server/_sweep.py --keymodes 4K,5K --difficulties EZ,HD   # a cross product
+python server/_sweep.py --variants       # every key mode x every difficulty
 python server/_sweep.py --dry-run        # print the plan, send nothing
 python server/_sweep.py --no-screen      # disable the screen classifier entirely
 python server/_sweep.py --no-verify      # do not confirm the song select before advancing
@@ -332,6 +334,41 @@ the *raw* per-frame classification (so it still shows `GAMEPLAY` on a mid-fade f
 debounce applies where it matters, in `_sweep.screen_state()`. `LOADING_SCREEN` is likewise
 waited on, not acted on.
 
+Anchors are git-ignored (they contain BGA art); collect your own with `--collect`, and
+`--list` flags any `.json` that has no matching `.png` (inert — probes read the PNGs).
+Currently `GAMEPLAY`, `GAME_OVER`, `LOADING_SCREEN`, `MAIN_MENU`, `PAUSE_MENU` and
+`SONG_SELECT` are anchored; anything else falls through to the safe `UNKNOWN` recovery.
+
+### Variants
+
+By default the sweep captures whatever variant is selected and never touches the
+difficulty or key mode. `--variant`, `--keymodes`/`--difficulties` or `--variants`
+build a **plan** that is captured for each song *before* it advances:
+
+| axis | keys | order |
+|---|---|---|
+| difficulty | `Left`/`Right` | EZ, NM, HD, SHD — `Left` **does not wrap** (it clamps at EZ) |
+| key mode | `Tab` | 4K, 5K, 6K, 8K — `Tab` **wraps** back to 4K |
+
+Selection is tracked, not guessed: both axes are seeded from the newest request in the
+log and re-read from every captured request (the request JSON names `keymode`/
+`levelmode`), so a wrap is stepped the short way and a mismatch prints a warning and
+recalibrates. Difficulty is stepped directly from the tracked value, or clamped with
+three `Left` presses when the start is unknown. Because `Tab` wraps and cannot be targeted
+without a known start, an unknown key mode presses nothing and lets the next request seed
+it.
+
+```bash
+python server/_sweep.py --variant 5K:HD                       # one variant, every song
+python server/_sweep.py --keymodes 4K,5K --difficulties EZ,HD  # 4 variants per song
+python server/_sweep.py --variants                             # all 16 per song
+```
+
+`--variants` is 16 entries per song (≈16x slower), and a song's `.ezi` is per-song or
+per key-mode group, so the full cross product is only worth it when you actually want the
+exact per-variant charts. `--variant` / the axis flags are the cheap way to fill a
+gap (e.g. capture the whole list at 5K HD, then again at 4K EZ).
+
 ### How the loop uses the state
 
 * **A slow load is not a miss.** On a missed request the loop classifies; if the screen is
@@ -345,10 +382,6 @@ waited on, not acted on.
 * **Stop when the list ends.** The list wraps (or `Down` clamps), so the loop stops when it
   comes back to the run's first entry, or when the same entry repeats three times in a row
   (`next_song` not advancing). `--no-stop-on-wrap` skips both checks.
-Anchors are git-ignored (they contain BGA art); collect your own with `--collect`, and
-`--list` flags any `.json` that has no matching `.png` (inert — probes read the PNGs).
-Currently `GAMEPLAY`, `GAME_OVER`, `LOADING_SCREEN`, `MAIN_MENU`, `PAUSE_MENU` and
-`SONG_SELECT` are anchored; anything else falls through to the safe `UNKNOWN` recovery.
 
 A chart only counts as captured once the CDN body actually arrived: the sweep
 watches for the addon's `CDN OK`/`CDN HIT` line and otherwise reports *asked but

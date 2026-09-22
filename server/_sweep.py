@@ -10,7 +10,9 @@ It presses keys, waits for a request it has not seen before, and moves on.
     python server/_sweep.py --calibrate --write # DEDUCE the keys from the request JSON
     python server/_sweep.py --limit 50         # capture 50 song entries
     python server/_sweep.py --mode STANDARD [--from BASIC]   # step to that card first
-    python server/_sweep.py --variants         # also cycle difficulty/keymode
+    python server/_sweep.py --variant 5K:HD    # capture every song at 5K HD
+    python server/_sweep.py --keymodes 4K,5K --difficulties EZ,HD   # the cross product
+    python server/_sweep.py --variants         # every key mode x every difficulty
     python server/_sweep.py --shot             # save a screenshot before each entry
     python server/_sweep.py --state            # classify the current screen and exit
     python server/_sweep.py --no-screen        # disable the screen classifier
@@ -87,7 +89,8 @@ DEFAULTS = {
                'after_confirm': 3.0,
                # screen classifier: wait out fades and require a state to persist for
                # `screen_stable` seconds before acting (the fade effect is ~1.5 s)
-               'screen_debounce': 0.4, 'screen_stable': 2.0, 'screen_timeout': 6.0},
+               'screen_debounce': 0.4, 'screen_stable': 2.0, 'screen_timeout': 6.0,
+               'variant_settle': 0.5},
 }
 
 REQ = re.compile(r'c2s_get_pattern_file request: (\{.*\})')
@@ -477,6 +480,86 @@ def enter_and_read(tail, tag, quiet=False):
 
 GAMEMODE = {'BASIC': '1', 'STANDARD': '2'}
 
+# Variant axes, in selection order.
+KEYMODES = ['4K', '5K', '6K', '8K']   # Tab order (wraps: 4K -> 5K -> 6K -> 8K -> 4K)
+DIFFS = ['EZ', 'NM', 'HD', 'SHD']     # Left/Right order (Left clamps, does not wrap)
+# API labels -> index (AGENTS.md 3.5: keymode 1/2/3 = 4K/5K/6K, 4 assumed 8K;
+# levelmode 1=EZ, 2=NM, 3=HD, 4=SHD).
+API_KEYMODE = {'1': 0, '2': 1, '3': 2, '4': 3}
+API_DIFF = {'1': 0, '2': 1, '3': 2, '4': 3}
+
+
+def _split_list(s):
+    return [x.strip().upper() for x in (s or '').replace(':', ',').split(',') if x.strip()]
+
+
+def build_plan(a):
+    """The variant plan: a list of (keymode|None, difficulty|None) pairs.
+
+    None means "leave that axis alone". Built from, in order of precedence:
+      --variant 5K:HD        one variant
+      --keymodes 4K,5K       --difficulties EZ,HD        the cross product
+      --variants             every key mode x every difficulty
+    No flags -> None (one entry per song, variant untouched).
+    """
+    single = arg(a, '--variant', None)
+    kms = _split_list(arg(a, '--keymodes', ''))
+    diffs = _split_list(arg(a, '--difficulties', ''))
+    if single:
+        km, _sep, df = single.partition(':')
+        if km.strip():
+            kms = [km.strip().upper()]
+        if df.strip():
+            diffs = [df.strip().upper()]
+    if '--variants' in a:
+        kms = kms or KEYMODES[:]
+        diffs = diffs or DIFFS[:]
+    if not kms and not diffs:
+        return None
+    for km in kms:
+        if km not in KEYMODES:
+            sys.exit(f'[!] unknown key mode {km!r} (known: {", ".join(KEYMODES)})')
+    for df in diffs:
+        if df not in DIFFS:
+            sys.exit(f'[!] unknown difficulty {df!r} (known: {", ".join(DIFFS)})')
+    return [(km, df) for km in (kms or [None]) for df in (diffs or [None])]
+
+
+def set_variant(km, diff, cur_km, cur_diff):
+    """Select key mode / difficulty at the song select; returns the new (km, diff).
+
+    Difficulty `Left` does not wrap, so it is stepped directly from the tracked state
+    (and clamped via three `Left` presses when the state is unknown). Key mode `Tab`
+    wraps, so it is stepped the short way from the tracked mode; with no tracked mode
+    nothing is pressed and the next request reports the truth.
+    """
+    if diff is not None:
+        idx = DIFFS.index(diff)
+        if cur_diff is None:
+            for _ in range(3):
+                send(K['prev_diff'])
+            for _ in range(idx):
+                send(K['next_diff'])
+            cur_diff = idx
+        elif idx > cur_diff:
+            for _ in range(idx - cur_diff):
+                send(K['next_diff'])
+            cur_diff = idx
+        elif idx < cur_diff:
+            for _ in range(cur_diff - idx):
+                send(K['prev_diff'])
+            cur_diff = idx
+    if km is not None:
+        idx = KEYMODES.index(km)
+        if cur_km is not None:
+            for _ in range((idx - cur_km) % len(KEYMODES)):
+                send(K['keymode_next'])
+            cur_km = idx
+        # cur_km is None: we cannot target a wrapping axis without a known start; the
+        # next captured request reports the live mode, which seeds it for the next set.
+    time.sleep(T.get('variant_settle', 0.5))
+    return cur_km, cur_diff
+
 
 def last_gamemode():
     """gamemode of the most recent pattern request in the log (mode tracking)."""
@@ -582,6 +665,10 @@ def sweep(limit, variants, shot, dry, mode=None):
           f'exit={CFG.get("exit_song")} next={K["next_song"]!r} '
           f'song/diff axes: {K["next_song"]}/{K["next_diff"]} '
           f'keymode={K["keymode_next"]!r}')
+    plan = build_plan(sys.argv[1:])
+    if plan:
+        print('  variant plan: ' + ', '.join(
+            f'{km or "keep"}:{df or "keep"}' for km, df in plan))
     if dry:
         verify = 'on' if VERIFY else 'off'
         stop = '' if '--no-stop-on-wrap' in sys.argv[1:] else ' (stop on wrap/end)'
@@ -598,6 +685,13 @@ def sweep(limit, variants, shot, dry, mode=None):
             return 2
     captured = skipped = failed = 0
     nochart = 0
+    pi = 0
+    cur_km = cur_diff = None
+    if plan:
+        reqs = tail.read_all()
+        if reqs:
+            cur_km = API_KEYMODE.get(str(reqs[-1].get('keymode')))
+            cur_diff = API_DIFF.get(str(reqs[-1].get('levelmode')))
     # Was a song started and never confirmed-left? Then we are still in it (its
     # gameplay), and only *then* is Escape provably safe: in the main menu ESC is
     # 나가기 (leave), so an unprovoked Escape can walk the game out of song select.
@@ -606,12 +700,23 @@ def sweep(limit, variants, shot, dry, mode=None):
     # run's first entry, or when `next_song` stops advancing at all.
     stop_on_wrap = '--no-stop-on-wrap' not in sys.argv[1:]
     run_songs = []
-    last_key = None
+    last_song = None
     repeats = 0
+    # Variant selection presses Left/Right, which move the card ring on the main menu —
+    # so make sure we start on the song select before the plan touches anything.
+    if plan and VERIFY:
+        if not ensure_song_select():
+            print('  WARNING: could not confirm the song select; the variant plan may '
+                  'press arrows in the wrong screen')
     try:
         for i in range(limit):
             if shot:
                 screenshot(f'{i:04d}_before')
+            if plan:
+                km, df = plan[pi]
+                if km or df:
+                    print(f'    variant -> {km or "keep"} {df or "keep"}')
+                    cur_km, cur_diff = set_variant(km, df, cur_km, cur_diff)
             cdn.baseline()
             send(K['enter_song'], f'[{i+1}/{limit}] enter')
             req = None
@@ -639,6 +744,16 @@ def sweep(limit, variants, shot, dry, mode=None):
             events = cdn.wait_new(T['wait_for_cdn'])
             ok = [e for e in events if e[0] in ('OK', 'HIT')]
             k = tail.key(req)
+            if plan:
+                km, df = plan[pi]
+                if km and str(k[1]) != str(KEYMODES.index(km) + 1):
+                    print(f'    WARNING: asked for {km} but the game requested keymode '
+                          f'{k[1]} — recalibrating')
+                if df and str(k[2]) != str(DIFFS.index(df) + 1):
+                    print(f'    WARNING: asked for {df} but the game requested '
+                          f'levelmode {k[2]} — recalibrating')
+                cur_km = API_KEYMODE.get(str(k[1]))
+                cur_diff = API_DIFF.get(str(k[2]))
             if mode and captured == 0 and prev_gm and k[3] == prev_gm:
                 print(f'    WARNING: gamemode is still {k[3]} after switching to '
                       f'{mode.upper()} — the menu step probably missed '
@@ -675,25 +790,30 @@ def sweep(limit, variants, shot, dry, mode=None):
                 last_confirmed = False
                 if VERIFY and not ensure_song_select():
                     print('    WARNING: could not confirm the song select; continuing')
-            if variants:
-                for which, key in (('diff', K['next_diff']), ('diff', K['next_diff']),
-                                   ('diff', K['next_diff']), ('mode', K['keymode_next'])):
-                    send(key, f'  cycle {which}')
-                    enter_and_read(tail, which, quiet=True)
-            if stop_on_wrap:
-                if last_key is not None and k == last_key:
-                    repeats += 1
+            # With a plan, stay on this song until every variant has been captured.
+            advance = True
+            if plan and len(plan) > 1:
+                pi += 1
+                if pi >= len(plan):
+                    pi = 0
                 else:
-                    repeats = 0
-                last_key = k
-                if len(run_songs) >= 5 and k == run_songs[0]:
-                    print('    the list wrapped back to the first entry — stopping')
-                    break
-                if repeats >= 3:
-                    print('    the song is not advancing (next_song ignored?) — stopping')
-                    break
-                run_songs.append(k)
-            send(K['next_song'], 'next song')
+                    advance = False
+            if advance:
+                if stop_on_wrap:
+                    song = k[0]
+                    if last_song is not None and song == last_song:
+                        repeats += 1
+                    else:
+                        repeats = 0
+                    last_song = song
+                    if len(run_songs) >= 5 and song == run_songs[0]:
+                        print('    the list wrapped back to the first entry — stopping')
+                        break
+                    if repeats >= 3:
+                        print('    the song is not advancing (next_song ignored?) — stopping')
+                        break
+                    run_songs.append(song)
+                send(K['next_song'], 'next song')
             time.sleep(T['settle'])
     except KeyboardInterrupt:
         print('\ninterrupted')
