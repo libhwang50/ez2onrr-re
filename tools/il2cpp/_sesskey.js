@@ -266,15 +266,21 @@ rpc.exports.findhex = function (hexstr, budgetMB) {
   return Il2Cpp.perform(() => {
     const pat = (hexstr || '').trim();
     if (!pat) return JSON.stringify({ err: 'no pattern' });
-    const budget = (budgetMB ? parseInt(budgetMB, 10) : 2048) * 1024 * 1024;
+    // NOTE: the budget used to default to 2 GB and the scan tried rw- first, so
+    // on a process with more memory than that it was exhausted on the heap and
+    // the code ranges were never searched at all - which silently produced
+    // "0 hits" for instruction/pointer searches. Default is now large, and the
+    // result reports whether the budget ran out.
+    const budget = (budgetMB ? parseInt(budgetMB, 10) : 16384) * 1024 * 1024;
     const t0 = Date.now();
     let scanned = 0;
     const hits = [];
     // r-x matters too: searching for an instruction pattern (e.g. `mov r8d,<len>`)
     // needs the code ranges, which the earlier version never scanned
-    const ranges = Process.enumerateRanges({ protection: 'rw-', coalesce: true })
+    // executable first: a code search must not be starved by the heap
+    const ranges = Process.enumerateRanges({ protection: 'r-x', coalesce: true })
       .concat(Process.enumerateRanges({ protection: 'r--', coalesce: true }))
-      .concat(Process.enumerateRanges({ protection: 'r-x', coalesce: true }));
+      .concat(Process.enumerateRanges({ protection: 'rw-', coalesce: true }));
     const CHUNK = 64 * 1024 * 1024;          // big ranges are scanned in chunks:
     const plen = Math.floor(pat.split(' ').length);   // skipping them entirely
     for (const r of ranges) {                        // (as an earlier version did)
@@ -311,6 +317,8 @@ rpc.exports.findhex = function (hexstr, budgetMB) {
       }
     }
     return JSON.stringify({ pattern: pat, scannedMB: Math.round(scanned / 1048576),
+                            budgetMB: Math.round(budget / 1048576),
+                            budgetExhausted: scanned >= budget,
                             seconds: ((Date.now() - t0) / 1000).toFixed(1), hits: hits });
   });
 };

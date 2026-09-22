@@ -43,6 +43,13 @@ def show(result, max_hits=20):
     if 'err' in d:
         print('error:', d['err'])
         return
+    # findlea / findthunk / findlit report their own shape
+    if 'uniqueMethods' in d or 'offsets' in d or 'basesTried' in d:
+        print(json.dumps({k: v for k, v in d.items() if k != 'sites'},
+                         indent=1, ensure_ascii=False)[:3000])
+        for s2 in (d.get('sites') or d.get('hits') or [])[:max_hits]:
+            print('  ' + json.dumps(s2, ensure_ascii=False)[:300])
+        return
     if 'hits' in d:
         print(f"pattern={d.get('pattern')} scanned={d.get('scannedMB')}MB "
               f"in {d.get('seconds')}s  hits={len(d['hits'])}")
@@ -85,9 +92,11 @@ def main():
         raw = base64.b64decode(b + '=' * (-len(b) % 4))
         print(f'session bCK (b64): {b}')
         print(f'             hex : {raw.hex()}')
-        print('scanning for the raw bytes…')
+        budget = int(a[1]) if len(a) > 1 else 16384
+        print(f'scanning for the raw bytes (budget {budget} MB)…')
         show(send({'op': 'findhex',
-                   'hex': ' '.join(f'{x:02x}' for x in raw)}))
+                   'hex': ' '.join(f'{x:02x}' for x in raw),
+                   'budgetMB': budget}))
         print('\nscanning for the base64 string form (UTF-8)…')
         show(send({'op': 'findhex', 'hex': ' '.join(
             f'{x:02x}' for x in b.encode())}))
