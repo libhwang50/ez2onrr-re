@@ -88,6 +88,8 @@ def log(*a):
     LOG.write(time.strftime('[%H:%M:%S] ') + ' '.join(str(x) for x in a) + '\n')
 
 
+PASSTHROUGH_PATTERN = False
+
 def load_data():
     global BATTLE_SERVER
     p = os.path.join(DATA, 'battle_server.txt')
@@ -112,7 +114,10 @@ def load_data():
     if os.path.exists(p):
         RANK_CSV_SAMPLE = open(p).read().strip()
     get_profile()
-    log(f'data loaded: templates={sorted(TEMPLATES)} cdn={len(CDN_PATHS)} charts={len(CHARTS)}')
+    global PASSTHROUGH_PATTERN
+    PASSTHROUGH_PATTERN = os.path.exists(os.path.join(DATA, 'passthrough_pattern'))
+    log(f'data loaded: templates={sorted(TEMPLATES)} cdn={len(CDN_PATHS)} charts={len(CHARTS)} '
+        f'passthrough_pattern={PASSTHROUGH_PATTERN}')
 
 
 # ---------------- crypto ----------------
@@ -261,6 +266,12 @@ def handle_api(flow: http.HTTPFlow):
         return respond_api(flow, userinfo_response(req_json))
 
     if endpoint == 'c2s_get_pattern_file':
+        if PASSTHROUGH_PATTERN:
+            # forward to the upstream official server: the response carries
+            # FRESH signed URLs + a fresh bundleCryptKey (requires an official
+            # login so the upstream session exists)
+            log('pattern: PASSTHROUGH to upstream (fresh-response experiment)')
+            return  # no response set -> mitmproxy forwards upstream
         return respond_api(flow, pattern_response(req_json))
 
     if endpoint == 'c2s_set_game_clear':
