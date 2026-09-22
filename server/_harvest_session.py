@@ -160,6 +160,12 @@ def main():
             cmd, res = read_cmd()
             if cmd is not None:
                 log(f'cmd: {cmd.get("op")} {str(cmd.get("hex",""))[:40]}')
+                # RPCs block in a C-level wait, and the custom SIGINT handler
+                # below swallows Ctrl-C (it only flips a flag the loop cannot
+                # reach while blocked) - which made a slow scan look like a
+                # hang with no way out. Restore the default handler for the
+                # duration so Ctrl-C raises inside the wait and we detach.
+                signal.signal(signal.SIGINT, signal.default_int_handler)
                 try:
                     if cmd.get('op') == 'findthunk':
                         res = script.exports_sync.findthunk(cmd.get('target', ''))
@@ -177,8 +183,13 @@ def main():
                                                             str(cmd.get('len', 64)))
                     else:
                         res = json.dumps({'err': f'unknown op {cmd.get("op")}'})
+                except KeyboardInterrupt:
+                    log('command interrupted by Ctrl-C - detaching cleanly')
+                    raise SystemExit(0)
                 except Exception as e:
                     res = json.dumps({'err': repr(e)})
+                finally:
+                    signal.signal(signal.SIGINT, _stop)
                 write_cmd_result(cmd, res)
             d = json.loads(script.exports_sync.readkey())
             key = (d.get('aes_key') or '').strip('"')
