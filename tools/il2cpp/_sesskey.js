@@ -560,3 +560,32 @@ rpc.exports.findlea = function (targetStr) {
     return JSON.stringify(out);
   });
 };
+
+// deref(addr, offsetsCsv): follow a pointer chain - read the 8-byte pointer at
+// `addr`, then at each successive +offset - and report every step. Used for the
+// literal accessor helpers, whose sequence is
+//     mov rcx,[rip+GLOBAL]      ; the System.String Il2CppClass*
+//     mov rcx,[rcx+0xb8]        ; klass->static_fields
+//     mov rdx,[rcx+STATIC_OFF]  ; the assembly's literal blob base
+// so `deref <GLOBAL> 0xb8,0x8320` yields the base in one call.
+rpc.exports.deref = function (addrStr, offsCsv) {
+  return Il2Cpp.perform(() => {
+    const steps = [];
+    let cur = ptr(String(addrStr).startsWith('0x') ? addrStr : '0x' + addrStr);
+    const offs = String(offsCsv || '').split(',').map(x => x.trim()).filter(Boolean);
+    try {
+      let v = cur.readPointer();
+      steps.push({ at: cur.toString(16), read: v.toString(16) });
+      cur = v;
+    } catch (e) { return JSON.stringify({ err: 'readPointer failed: ' + e, steps: steps }); }
+    for (const o of offs) {
+      const off = parseInt(o, 16);
+      try {
+        const v = cur.add(off).readPointer();
+        steps.push({ at: cur.add(off).toString(16), off: o, read: v.toString(16) });
+        cur = v;
+      } catch (e) { return JSON.stringify({ err: 'chain failed at +' + o + ': ' + e, steps: steps }); }
+    }
+    return JSON.stringify({ steps: steps, final: '0x' + cur.toString(16) });
+  });
+};

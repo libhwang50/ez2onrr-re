@@ -167,7 +167,10 @@ def main():
                 # duration so Ctrl-C raises inside the wait and we detach.
                 signal.signal(signal.SIGINT, signal.default_int_handler)
                 try:
-                    if cmd.get('op') == 'findlea':
+                    if cmd.get('op') == 'deref':
+                        res = script.exports_sync.deref(cmd.get('addr', ''),
+                                                        cmd.get('offs', ''))
+                    elif cmd.get('op') == 'findlea':
                         res = script.exports_sync.findlea(cmd.get('target', ''))
                     elif cmd.get('op') == 'findthunk':
                         res = script.exports_sync.findthunk(cmd.get('target', ''),
