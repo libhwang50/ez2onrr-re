@@ -239,6 +239,67 @@ def mutation_requested():
     return bool(_knob('mutate_urls.txt') or _knob('mutate_bck.txt'))
 
 
+def passthrough_set():
+    """Endpoints to forward to the upstream official server, from
+    `passthrough_endpoints.txt` (comma-separated, e.g. `login,pattern`) or the
+    legacy `passthrough_pattern` marker. Everything not listed stays stubbed,
+    so scores/records remain private.
+
+    Forwarding `login` makes the upstream mint a real session, which is what
+    makes a forwarded `pattern` response valid (fresh URLs + fresh
+    bundleCryptKey). Read per request, so it can be changed without a restart.
+    """
+    s = _knob('passthrough_endpoints.txt')
+    eps = {p.strip() for p in s.replace(';', ',').split(',') if p.strip()}
+    if os.path.exists(os.path.join(DATA, 'passthrough_pattern')):
+        eps.add('pattern')
+    return eps
+
+
+def upstream_like_headers():
+    """The headers the real nginx API returns; the client has only ever seen
+    these, so mimic them (mp-14: our own responses had almost none)."""
+    return {
+        'Content-Type': 'application/json',
+        'Server': 'nginx',
+        'Connection': 'keep-alive',
+        'X-Frame-Options': 'SAMEORIGIN',
+        'X-Content-Type-Options': 'nosniff',
+        'X-XSS-Protection': '1; mode=block',
+    }
+
+
+def _redact(v):
+    if isinstance(v, str) and len(v) > 28:
+        return v[:14] + f'…({len(v)})'
+    return v
+
+
+def summarize_obj(obj, secret=()):
+    if not isinstance(obj, dict):
+        return repr(obj)[:200]
+    out = []
+    for k, v in obj.items():
+        if k in secret:
+            out.append(f'{k}=<{len(v) if isinstance(v, str) else "?"}>')
+        elif isinstance(v, str) and len(v) > 28:
+            out.append(f'{k}={_redact(v)}')
+        else:
+            out.append(f'{k}={v}')
+    return '{' + ', '.join(out) + '}'
+
+
+def save_upstream(ep, obj):
+    """Persist a decrypted upstream response (secrets shortened) so the exact
+    field set of a known-good response can be diffed against our replay."""
+    try:
+        red = {k: _redact(v) for k, v in obj.items()} if isinstance(obj, dict) else obj
+        p = os.path.join(DATA, 'last_upstream_' + ep + '.json')
+        json.dump(red, open(p, 'w'), indent=1, ensure_ascii=False)
+    except Exception:
+        pass
+
+
 def mutate_url(u, mode):
     if mode == 'noparams':
         return u.split('?')[0]
@@ -313,6 +374,16 @@ def handle_api(flow: http.HTTPFlow):
     else:
         log(f'{endpoint} request: {req_json[:300]}')
 
+    ep_short = endpoint  # c2s_xxx
+    for e in passthrough_set():
+        if e in ep_short:
+            # forward this endpoint upstream verbatim (the client's request is
+            # already encrypted with its own session key, which the real server
+            # shares — this is a genuine session for those endpoints only).
+            # The response hook logs it before the client sees it.
+            log(f'{endpoint}: PASSTHROUGH to upstream (live session)')
+            return
+
     if endpoint == 'c2s_login':
         # wait briefly for the harvester — the client generates the key just
         # before this request lands, and the harvester may still be re-
@@ -356,14 +427,6 @@ def handle_api(flow: http.HTTPFlow):
         return respond_api(flow, userinfo_response(req_json))
 
     if endpoint == 'c2s_get_pattern_file':
-        if PASSTHROUGH_PATTERN:
-            # forward to the upstream official server: the response carries
-            # FRESH signed URLs + a fresh bundleCryptKey (requires an official
-            # login so the upstream session exists). The response hook applies
-            # the mutate_* knobs to it before it reaches the client.
-            log('pattern: PASSTHROUGH to upstream (fresh-response experiment)'
-                + (' +mutation' if mutation_requested() else ''))
-            return  # no response set -> mitmproxy forwards upstream
         return respond_api(flow, pattern_response(req_json))
 
     if endpoint == 'c2s_set_game_clear':
@@ -480,8 +543,7 @@ def userinfo_response(req_json):
 
 def respond_api(flow, obj):
     flow.response = http.Response.make(
-        200, encrypt_response(obj),
-        {'Content-Type': 'application/json'})
+        200, encrypt_response(obj), upstream_like_headers())
 
 
 def handle_rank(flow: http.HTTPFlow):
@@ -550,25 +612,39 @@ class PrivateServer:
                     {'Content-Type': 'text/plain'})
 
     def response(self, flow: http.HTTPFlow):
-        """Apply mutate_* knobs to a PASSTHROUGH pattern response before it
-        reaches the client (fresh upstream URLs + bundleCryptKey)."""
+        """For a PASSTHROUGH endpoint: log the decrypted upstream response (so
+        its exact field set is visible), apply the mutate_* knobs to a pattern
+        response, and let it through untouched otherwise."""
         host = (flow.request.host or '').lower()
-        if host != API_HOST or 'c2s_get_pattern_file' not in flow.request.path:
+        if host != API_HOST or flow.response is None:
             return
-        if not mutation_requested() or flow.response is None:
+        ep = flow.request.path.rsplit('/', 1)[-1]
+        eps = passthrough_set()
+        if not any(e in ep for e in eps):
             return
         try:
             obj = decrypt_api_body(flow.response.content)
             if obj is None:
-                log('MUTATE: upstream pattern response did not decrypt (stale '
-                    'session key?) - left untouched')
+                log(f'{ep}: upstream response did not decrypt (stale session '
+                    'key? — was the login forwarded too?)')
                 return
-            ch = mutate_pattern_response(obj)
-            if ch:
-                flow.response.content = encrypt_response(obj)
-                log(f'MUTATE applied (upstream): {ch}')
+            save_upstream(ep, obj)
+            ch = None
+            if ep == 'c2s_get_pattern_file' and mutation_requested():
+                ch = mutate_pattern_response(obj)
+                if ch:
+                    flow.response.content = encrypt_response(obj)
+            log(f'UPSTREAM {ep}: {summarize_obj(obj, secret=("bundleCryptKey",))}'
+                + (f'  MUTATED {ch}' if ch else ''))
+            if ep == 'c2s_get_pattern_file' and isinstance(obj, dict):
+                for f in ('final_url_ez', 'final_url_ezi'):
+                    u = obj.get(f)
+                    if isinstance(u, str):
+                        q = urllib.parse.parse_qs(urllib.parse.urlsplit(u).query)
+                        log(f'    {f}: path={urllib.parse.urlsplit(u).path[:70]} '
+                            f'Expires={q.get("Expires")} siglen={len(q.get("Signature",[""])[0])}')
         except Exception:
-            log('MUTATE ERROR\n' + traceback.format_exc())
+            log('PASSTHROUGH response handling error\n' + traceback.format_exc())
 
     def error(self, flow: http.HTTPFlow):
         if (flow.request.host or '').lower() in (API_HOST, RANK_HOST, CDN_HOST):

@@ -121,48 +121,63 @@ and parsed, then rejects the session. A fresh upstream pattern response loads;
 a replayed (stale) or synthesized one does not. To find out *which part* of the
 response is validated, mutate a known-good response in flight.
 
-Knobs are ordinary files in `server/data/`, re-read on **every** response, so an
-experiment needs no mitmdump restart (only turning `passthrough_pattern` on/off
-does):
+Use `server/_exp.py` (knobs are re-read on **every** response, so nothing needs
+a restart):
 
-| file | value | effect |
+```bash
+python server/_exp.py                    # show the current state
+python server/_exp.py hybrid on          # forward login+pattern upstream
+python server/_exp.py urls future        # Expires +10y (breaks the signature)
+python server/_exp.py bck garbage        # 48 random bytes
+python server/_exp.py off                # everything back to private
+```
+
+| knob | value | effect |
 |---|---|---|
-| `mutate_urls.txt` | `future` | `Expires` +10 years — signature no longer matches |
+| `urls` | `future` | `Expires` +10 years — signature no longer matches |
 | | `expire` | `Expires` in the past — signature still valid |
 | | `noparams` | strip the whole query string |
 | | `host` | swap the CDN host, keep path/params |
-| `mutate_bck.txt` | `stale` | the older captured real `bundleCryptKey` |
+| `bck` | `stale` | the older captured real `bundleCryptKey` |
 | | `garbage` | 48 random bytes, valid base64 shape |
 | | `empty` | the field emptied |
 | | `literal:<b64>` | any exact value |
 
 Both mutations apply to a **passthrough** (fresh upstream) response *and* to a
-**replayed** one, so the decisive test can be run without an official login:
+**replayed** one, so a decisive test can be run without an official login.
 
-```bash
-# experiment 1 — replayed (stale) response, only the expiry made "fresh"
-rm -f server/data/passthrough_pattern
-echo future > server/data/mutate_urls.txt
-mitmdump -q -s server/_pserver.py        # enter the song
-```
+### Two experiments already done
 
-`pserver.log` shows `MUTATED (replayed): ['final_url_ez=future', …]`. Delete the
-knob file to return to the untouched response.
+* **replay + `urls future` → 8CN26.** Both CDN files were downloaded successfully
+  (served from our cache) and the load still failed, so the check is neither a
+  pre-download URL rejection nor a download failure — it happens after parse.
+* **`hybrid` off + knobs set → `{"result":0}` from upstream** (24 B) → the client
+  retries the download 5× and shows `ErrCode: GPF 5 TIMES FAILED`. A forwarded
+  pattern request is meaningless unless the **login** was forwarded too — the
+  real server has no session to mint URLs for. Hence `hybrid on` = `login,pattern`.
 
-How to read the results:
+### The discriminating tests (one hybrid session, four song entries)
 
-* **replay + `future` loads** → the client does not verify the CloudFront
-  signature, and the stale `bundleCryptKey` is not the blocker either. Then a
-  fully offline server just needs plausible far-future URLs.
-* **replay + `future` fails, passthrough + `future` loads** → the signature is
-  not verified but something else about a *replayed* response is wrong —
-  `bundleCryptKey`, or the upstream-minted URL's path/params.
-* **passthrough + `future` fails** → the client *does* verify the CloudFront
-  signature; a fully offline server then needs the embedded public key
-  (a hunt) or a client patch.
-* **passthrough + `garbage` loads** → `bundleCryptKey` is not validated at all.
-* **passthrough + `expire` loads** → the knob is not reaching the response (or
-  expiry genuinely is not checked) — investigate before trusting any result.
+With `hybrid on` and an official login in the same instance:
+
+| run | knob | loads | fails 8CN26 | conclusion |
+|---|---|---|---|---|
+| A | none | ✓ | | control — hybrid works |
+| B | `bck garbage` | | | `bundleCryptKey` is **not** validated |
+| C | `urls future` | | | no CloudFront signature check → mint far-future URLs |
+| D | `urls expire` | | | signature **is** checked → need the embedded public key |
+
+`pserver.log` logs every upstream response it decrypted
+(`UPSTREAM c2s_get_pattern_file: {result=1, final_url_ez=…, …}` plus each URL's
+path/`Expires`/signature length), and saves it to
+`data/last_upstream_c2s_get_pattern_file.json` — so the exact field set of a
+known-good response can finally be diffed against the replay.
+
+Only `expire` failing while `future` loads would mean the signature is
+irrelevant and only `Expires` matters; both failing means the client verifies the
+CloudFront signature, and the next step is to locate the embedded public key
+(the hunt) and replace it with one we hold, after which the private server can
+mint its own genuinely-valid URLs.
 
 ## Known simplifications / next steps
 

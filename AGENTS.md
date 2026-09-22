@@ -447,6 +447,16 @@ channel (TCP 4649) is **just a websocket-sharp Notice channel**
 (`GET /Notice?id=<steamid>&name=<nick>&version=…`) carrying pings and announcement
 banners — no session audit, no audio, no battle traffic during a full play session.
 
+**Where the 8CN26 check sits (refined).** Mutating a *replayed* response's URLs
+to a far-future `Expires` still fails, and the client **downloads both CDN files
+successfully from the local cache first** (32160 + 32992 B, 200) — so the check
+is neither a pre-download URL rejection nor a download failure. It is post-parse,
+against the response content. The two surviving candidates are the CloudFront URL
+signature and `bundleCryptKey`; isolating them needs a *passing* baseline, i.e. a
+forwarded pattern response, which in turn requires a forwarded **login** (a
+private login cannot make the upstream mint URLs — it answers `{"result":0}`,
+24 B, and the client retries until `GPF 5 TIMES FAILED`).
+
 **Operating modes.** Hybrid (works today): official login mints fresh pattern
 responses (addon passthrough), CDN files come from the local cache, scores/records
 stay on the private server. Fully offline: blocked only by the client's
