@@ -114,6 +114,8 @@ def main():
         print('scanning for the base64 string form (UTF-16LE)…')
         show(send({'op': 'findhex', 'hex': ' '.join(
             f'{x:02x}' for x in b.encode('utf-16-le'))}))
+    elif a[0] == 'method':
+        show(send({'op': 'method', 'addrs': a[1]}, timeout=300))
     elif a[0] == 'callers':
         # chunked: one bounded scan per RPC, so nothing long-running can hang and
         # Ctrl-C between chunks is safe

@@ -862,3 +862,41 @@ rpc.exports.scanCallersChunk = function (targetStr, idxStr, chunkMBStr) {
     return JSON.stringify(scanChunkFor(target, parseInt(idxStr, 10) || 0, CH));
   });
 };
+
+// method(addrCsv): nearest preceding method for each address, with its name. The
+// method-map build is the only cost (~6 s) and needs no code scan, so this is a
+// cheap way to name a call target or a containing function once an address is
+// known from disassembly.
+rpc.exports.method = function (addrCsv) {
+  return Il2Cpp.perform(() => {
+    const t0 = Date.now();
+    const addrs = String(addrCsv || '').split(',').map(x => x.trim()).filter(Boolean);
+    const mmap = [];
+    for (const asm of Il2Cpp.domain.assemblies) {
+      let img, classes;
+      try { img = asm.image; } catch (e) { continue; }
+      try { classes = img.classes; } catch (e) { continue; }
+      for (const cls of classes) {
+        let ms; try { ms = cls.methods; } catch (e) { ms = []; }
+        for (const m of ms) { let va; try { va = m.virtualAddress; } catch (e) { continue; }
+          if (!va.isNull()) mmap.push({ va: va, name: (cls.namespace ? cls.namespace + '.' : '') + cls.name + '.' + m.name }); }
+      }
+    }
+    mmap.sort((a, b) => a.va.compare(b.va));
+    const attr = (sp) => { let lo = 0, hi = mmap.length - 1, best = null;
+      while (lo <= hi) { const mid = (lo + hi) >> 1;
+        if (mmap[mid].va.compare(sp) <= 0) { best = mmap[mid]; lo = mid + 1; } else hi = mid - 1; }
+      return best; };
+    const out = { methods: mmap.length, lookups: [] };
+    for (const a of addrs) {
+      const p = ptr(a.startsWith('0x') ? a : '0x' + a);
+      const e = attr(p);
+      out.lookups.push({ addr: a,
+        name: e ? e.name : '?',
+        va: e ? '0x' + e.va.toString(16) : null,
+        delta: e ? (parseInt(p.toString(16), 16) - parseInt(e.va.toString(16), 16)) : null });
+    }
+    out.elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+    return JSON.stringify(out);
+  });
+};
