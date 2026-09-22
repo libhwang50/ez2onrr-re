@@ -62,9 +62,13 @@ def show(result, max_hits=20):
         print(f"pattern={d.get('pattern')} scanned={d.get('scannedMB')}MB "
               f"in {d.get('seconds')}s  hits={len(d['hits'])}")
         for h in d['hits'][:max_hits]:
-            print(f"  {h['addr']}")
-            print(f"    ascii: {h['ascii']}")
-            print(f"    hex  : {h['hex']}")
+            # findhex hits carry addr/ascii/hex; whowrites hits carry
+            # site/ctx/inMethod - never assume one shape
+            a = h.get('addr') or h.get('site')
+            print(f"  {a}" + (f"   {h.get('inMethod','')}" if h.get('inMethod') else ''))
+            if h.get('ascii'): print(f"    ascii: {h['ascii']}")
+            if h.get('hex'): print(f"    hex  : {h['hex']}")
+            if h.get('ctx'): print(f"    ctx  : {h['ctx']}")
         if len(d['hits']) > max_hits:
             print(f'  … {len(d["hits"]) - max_hits} more')
     elif 'ascii' in d:
