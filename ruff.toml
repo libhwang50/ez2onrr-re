@@ -1,0 +1,14 @@
+# Lint gate for the repo: pyflakes + syntax errors only.
+#
+#   ruff check .
+#   ruff check --fix .
+#
+# Line length is deliberately not enforced — the tools favour long descriptive
+# strings and comments. The investigation scripts under tools/ are not held to
+# this bar (they are one-shot analysis code, kept for reproducibility).
+line-length = 100
+
+exclude = ["tools", "reference", ".venv"]
+
+[lint]
+select = ["F", "E9"]

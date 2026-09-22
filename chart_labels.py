@@ -10,9 +10,9 @@ is how a capture gets a readable name instead of `song_<hash>`.
 
 Usage
 -----
-    python3 label_charts.py                       # writes chart_labels.json
-    python3 label_charts.py --mitm mitm_parsed -o chart_labels.json
-    python3 label_charts.py --key <EZ2_API_SESSION_KEY> --iv <EZ2_API_SESSION_IV>
+    python3 chart_labels.py                       # writes chart_labels.json
+    python3 chart_labels.py --mitm mitm_parsed -o chart_labels.json
+    python3 chart_labels.py --key <EZ2_API_SESSION_KEY> --iv <EZ2_API_SESSION_IV>
 
 Note the session key/IV: they are static fields on `zf`, overwritten at login, so captures
 from a different session need that session's values. Harvest them live with

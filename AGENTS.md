@@ -62,7 +62,7 @@ The full list of crash-causing scripts lives in `tools/README.md`.
   `RAM_decrypted_header[0:1024] XOR disk_header[0:1024]`, harvested zero-hook with
   `harvest_key.py`.
 * With that key every bundle decrypts to a valid `UnityFS` container
-  (`decrypt_all.py`, `find_bundle.py`).
+  (`find_bundle.py`, `extract_assets.py`).
 * **Audio / BGA extraction** (`extract_assets.py`) parses raw C++ object bytes directly —
   AssetRipper's UTF-8 path corrupts binary `.bytes`. `TextAsset` → FLAC/OGG keysounds;
   `VideoClip.m_ExternalResources` → 720p H.264 `.mp4`.
@@ -196,9 +196,9 @@ mask(ebx) = XOR over i in 0..63 of ( S[i] ^ r_i ^ (ebx & 0xff) )
 
 | pair | observed on |
 |---|---|
-| `svk`/`svl` | Engine 4K SHD, Finite 5K HD |
-| `svm`/`svn` | Change My World 4K SHD, Hyper Magic 4K SHD |
-| `svo`/`svp` | Conflict 4K SHD, Rebind 4K SHD |
+| `svk`/`svl` | Engine 4K SHD, Finite 5K HD (62 of the archived songs) |
+| `svm`/`svn` | Change My World 4K SHD, Hyper Magic 4K SHD (52) |
+| `svo`/`svp` | Conflict 4K SHD, Rebind 4K SHD (57) |
 
 **The pair is selected per payload by validation, not recorded anywhere.** The game does
 not store a key index; `bundleCryptKey` is identical across songs that use different pairs,
@@ -241,9 +241,11 @@ are **not** guarding a different payload type (as §3.3 previously speculated) �
 alternative chart keys. Its corollary is that a decryptor which hardcodes one pair will
 silently produce garbage for a chart that uses another, so always validate.
 
-**Still open:** which songs map to which pair is not understood — the choice looks like a
-build-time/authoring decision rather than anything in the payload. `svm`/`svn` has not
-been observed at all yet.
+**Still open:** what selects the pair is not understood. All three are in wide use — across
+the archive, 62 songs carry a `svk`/`svl` chart, 52 a `svm`/`svn` and 57 a `svo`/`svp` — and
+**8 songs use more than one pair across their variants** (kamui uses all three), so it is
+not even a per-song property. It looks like an authoring/build-time choice rather than
+anything in the payload, the CDN path or `bundleCryptKey`.
 
 ### 3.4 MITM oracle — `tools/mitm/_cdn_rewrite.py`
 
@@ -344,7 +346,7 @@ selected).
   filed into `extracted_charts/<song>/<km>/<diff>/` in exactly `dump_song.py`'s layout
   (`cdn_ez_cap.bin`, `cdn_ezi_cap.bin`, an `ident.json` with the URLs and label, and the
   decrypted `.ez`/`.ezi`, plus an `instrumentDic.json` derived from the `.ezi`, when the
-  key pair validates — `decrypt_archive.py` backfills any of that which is missing).
+  key pair validates — `decrypt_chart.py --archive` backfills any of that which is missing).
   **The decrypt step is backend-agnostic on purpose**: `decrypt_chart.py` used to import
   pycryptodome only, which the *system* python running mitmdump does not have, and a bare
   `except` in the addon hid the ImportError — so captures filed the ciphertext and silently
@@ -738,12 +740,9 @@ User-facing (repo root):
 | Tool | Purpose |
 |---|---|
 | `extract_assets.py` | extract keysounds (FLAC/OGG) and `--bga` videos |
-| `find_bundle.py` | map bundles → songs (`--index`, `--decrypt`) |
-| `decrypt_all.py` | bulk bundle decryption with `true_key_1024.bin` |
-| `harvest_key.py` | derive `true_key_1024.bin` from live memory |
-| `harvest_chart.py` | watch `InGameCore` for chart URLs and fetch them |
-| `decrypt_archive.py` | **complete chart dumps** — walk `extracted_charts/`, decrypt any raw CDN capture that lacks its plaintext, write `ez.ez` / `ezi.ezi` / `instrumentDic.json`; `--check` audits without writing, exit code gates a batch |
-| `decrypt_chart.py` | **decrypt CDN payloads** → `.ez` / `.ezi` plaintext (library + CLI) |
+| `find_bundle.py` | map bundles → songs (`--index`, `--decrypt`, `--decrypt-all`) |
+| `harvest_key.py` | derive `true_key_1024.bin` from live memory (validated against the bundles on disk) |
+| `decrypt_chart.py` | **decrypt CDN payloads** → `.ez` / `.ezi` plaintext (library + CLI); `--archive` completes a whole capture tree, `--check` audits it without writing |
 | `parse_chart.py` | **read decrypted charts** — `.ez` note charts and `.ezi` keysound indexes, as a summary, JSON, or note listing |
 | `chart_labels.py` | **name charts** — decrypt captured API traffic into `chart_labels.json` (song name, key mode, difficulty); `dump_song.py` reads it back |
 | `check_charts.py` | **audit the captures** — chart identity vs the `<keymode>/<difficulty>/` it is filed under, missing artifacts, and `ident.json` disagreeing with the chart on disk. Catches the mislabelling bug that filed a 4K chart under `5k/shd`; exits non-zero, so it can gate a batch |
@@ -752,7 +751,6 @@ User-facing (repo root):
 | `harvest_metadata.py` | dump the game's song metadata table (title, composer) → `music_names.json` |
 | `song_meta.py` | resolve a song's title/composer, with folding and prefix fallbacks |
 | `dump_song.py` | **per-song snapshot** — byte-exact CDN archive, decrypted plaintext, `da.rus` buffers, plus the song/mode/difficulty label read from the running game. `instrumentDic.json` only with `--read-instrument-dic`; a capture is redirected to `<name>_mismatch/` when the chart disagrees with the runtime label; stops the watch when the read path dies |
-| `run_dumper.sh` | Il2CppDumper (blocked by the missing metadata magic) |
 
 Private server (see **`server/README.md`** for the full guide):
 
@@ -818,7 +816,8 @@ server's. In-game validation of the server itself is in progress.
 3. Determine whether the API's `keymode` ever disagrees with the header-name / lane-count
    key mode (7K unobserved; 8K seen as `8-ez` but no API label yet).
 4. Find what selects the key pair (`svk`/`svm`/`svo`) — not the payload, the CDN path, or
-   `bundleCryptKey`; it looks like an authoring/build-time choice.
+   `bundleCryptKey`; all three are in wide use and some songs mix them across variants, so
+   it looks like an authoring/build-time choice.
 5. Capture a bridge-keyed session **of the real servers** (plain `mitmdump -w` **plus**
    `server/_harvest_session.py` running — the auto-reattach harvester makes the ordering
    irrelevant) to decrypt the real `c2s_set_game_clear` response (48/64 B, length varies)
@@ -827,7 +826,8 @@ server's. In-game validation of the server itself is in progress.
    pins the constant `plf` fields (§3.7).
 6. Make the server Frida-free: patch `zf.gnf` to a fixed session key, or RE the raw-TCP
    control/battle channel (`zf` RSA+AES) the real server presumably uses to learn the key.
-7. Broaden chart coverage in `server/data/`. Measured: **16 of 601 songs** (the
+7. Broaden chart coverage in `server/data/`. Measured: **158 of 601 songs** at the time
+   of writing (the
    music list's 1,201 entries are two `GAME_MODE`s of the same songs, and gamemode is
    not a chart selector). Coverage is per *song*, because the server returns the CDN
    path — `chart any` serves a song's captured chart for any of its keymodes/

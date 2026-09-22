@@ -18,7 +18,6 @@ zf-layer AES-CBC (zf.aes_key/aes_iv, ASCII bytes) is decrypted when the
 ciphertext length fits. Nothing is answered by default — the request itself is
 what we need first.
 """
-import base64
 import json
 import os
 import socket
@@ -169,7 +168,6 @@ def handle(conn, addr):
                     log(f'  {peer}: sent {len(REPLY)//2}B reply')
                 except Exception as e:
                     log(f'  {peer}: reply failed {e!r}')
-                REPLY_USED = True
     except Exception as e:
         log(f'  {peer}: error {e!r}')
     finally:

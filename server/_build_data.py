@@ -148,8 +148,6 @@ def main():
                 tail = p.strip('/').replace('/', '_')[-60:]
                 cand = os.path.join(ROOT, 'mitm_parsed', f'cdn_{tail}.bin')
                 if not os.path.exists(cand):
-                    pref = p.split('/')[2][:2]  # fb_2/<xx>/<hash>
-                    glob_name = f'cdn_*_{pref.split("/")[0]}_{p.split("/")[2][:2]}_{p.split("/")[3][:8]}'
                     hits = [f for f in os.listdir(os.path.join(ROOT, 'mitm_parsed'))
                             if f.startswith('cdn_') and p.split('/')[3][:8] in f]
                     cand = os.path.join(ROOT, 'mitm_parsed', hits[0]) if hits else None

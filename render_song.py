@@ -18,7 +18,8 @@ difficulty so variants do not collide. An unidentified capture keeps its `song_<
 Without `-o`, a render is written to `rendered_songs/<name>.flac`.
 
 `song_dir` must hold a decrypted `ez.ez` and `ezi.ezi` (what `dump_song.py` writes, or
-`decrypt_chart.py --out` produces). `--assets auto` finds the matching
+`decrypt_chart.py --out` produces); a parent directory is accepted when it contains
+exactly one chart. `--assets auto` finds the matching
 `extracted_assets/<song_id>` by comparing keysound filenames, which is necessary because
 `dump_song.py` names its directories `song_<hash>` and never records the song id.
 
@@ -35,7 +36,6 @@ Known imprecision: `velocity` is 127 for essentially every note, so it is applie
 but never exercised.
 """
 import argparse
-import json
 import os
 import re
 import sys
@@ -46,16 +46,9 @@ import soundfile as sf
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_chart import parse_ez, parse_ezi, load  # noqa: E402
 import song_meta  # noqa: E402
+from ez2lib import chart_label  # noqa: E402
 
 AUDIO_EXT = ('.flac', '.ogg', '.wav', '.mp3')
-
-
-def chart_label(song_dir):
-    """The label dict `dump_song.py` wrote next to a capture, if present."""
-    try:
-        return (json.load(open(os.path.join(song_dir, 'ident.json'))) or {}).get('label') or {}
-    except (OSError, ValueError):
-        return {}
 
 
 def tag_file(path, song, label=None):
@@ -345,8 +338,16 @@ def main():
 
     if not args.song_dir:
         ap.error('give a song directory, or --all')
-    out = args.out or os.path.join('rendered_songs', chart_name(args.song_dir) + '.flac')
-    print(render_one(args.song_dir, args.assets, out, **kw))
+    song_dir = args.song_dir
+    if not os.path.exists(os.path.join(song_dir, 'ez.ez')):
+        found = discover_charts(song_dir)
+        if len(found) == 1:
+            song_dir = found[0][0]
+        elif len(found) > 1:
+            ap.error('%s holds %d charts; name one of them or use --all'
+                     % (song_dir, len(found)))
+    out = args.out or os.path.join('rendered_songs', chart_name(song_dir) + '.flac')
+    print(render_one(song_dir, args.assets, out, **kw))
 
 
 if __name__ == '__main__':

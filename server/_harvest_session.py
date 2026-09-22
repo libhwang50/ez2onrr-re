@@ -22,7 +22,6 @@ import json
 import os
 import signal
 import socket
-import sys
 import time
 
 import frida
@@ -67,7 +66,7 @@ def read_cmd():
 def write_cmd_result(cmd, result):
     try:
         json.dump({'cmd': cmd, 'result': result}, open(CMDRESULT, 'w'))
-        log(f'cmd result -> server/cmd_result.json')
+        log('cmd result -> server/cmd_result.json')
     except Exception as e:
         log(f'cmd result write failed: {e}')
 

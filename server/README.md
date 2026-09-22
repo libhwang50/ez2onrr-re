@@ -243,7 +243,7 @@ The loop that adds songs, end to end:
    `ezi.ezi` (naming the key pair in `ident.json`) and derives
    `instrumentDic.json` from the `.ezi`, so a capture ends up a complete dump.
    `capturedBy: "sweep"` marks the ones that came this way, and
-   **`python decrypt_archive.py`** fills in any plaintext that is missing
+   **`python decrypt_chart.py --archive`** fills in any plaintext that is missing
    (the tool walks the archive and is safe to re-run; `--check` reports only).
 4. **`python server/_build_data.py`** folds the archive into
    `server/data/charts.json` + `cdn_paths.json`, then `_coverage.py` shows the

@@ -24,16 +24,18 @@ Verified vs. inferred
 ---------------------
 Verified against the game's own parsed state and the file itself: the header fields, the
 track walk, the 13-byte stride, the type-1 keysound index (every one lands inside the
-`.ezi` index set), and two things confirmed against `normalLanes` over 3 songs x 4 lanes:
+`.ezi` index set), and the following, confirmed against `normalLanes` over several songs:
 
-  * **tracks 3-6 are the 4K lanes, in order** (lane 0-3); and
-  * **a type-1 note is a long note iff `flags not in (0, 6)`** — normal + long per lane
-    reproduced `normalLanes` exactly on all 12 lanes.
+  * **the playable lanes are `tracks 3 .. 3 + lane_count - 1`** (tracks 3-6 are 4K, in
+    order); every other track, from the track-22 `MR` layer upward, is auto-played;
+  * **a type-1 note is a long note iff `flags not in (0, 6)`**, and `flags` **is the hold
+    length in ticks** — every hold then ends at or before the next note in its lane;
+  * **key mode follows the lane count**: 4 -> 4K, 5 -> 5K, 6 -> 6K, 8 -> 8K, agreeing with
+    the header's `<keys>-<difficulty>` name tag when it is set.
 
 The `velocity`/`pan` byte positions follow the EZ2AC spec, but `velocity` is 127 for
-essentially every note here, so its meaning is untested. The unit of the `flags` value
-on a long note is unknown (it is *not* a tick count). Tracks other than 3-6 are not
-understood at all.
+essentially every note here, so its meaning is untested. Note types 5/6/9 are
+undocumented and are exposed raw.
 """
 import argparse
 import json

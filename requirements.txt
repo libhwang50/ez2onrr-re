@@ -1,0 +1,32 @@
+# EZ2ON REBOOT: R ripper — Python dependencies.
+#
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# ...or with uv (what this repo's .venv was built with):
+#   uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
+#
+# The sections are ordered by how far through the toolset you need them; nothing
+# here is required just to read a chart or a bundle except UnityPy/pycryptodome.
+
+# Asset bundles: extract_assets.py, find_bundle.py
+UnityPy
+
+# Chart + API ciphers: decrypt_chart.py, chart_labels.py
+pycryptodome
+
+# Live-game reads over the Frida Gadget: harvest_key.py, dump_song.py
+frida
+
+# Rendering and visualising a song: render_song.py, visualize_song.py
+numpy
+soundfile
+Pillow
+mutagen          # optional: FLAC tags on a render; render_song.py skips them without it
+
+# Private server (server/) and the mitmproxy-based capture tools
+mitmproxy
+cryptography     # server/_pserver.py imports it directly for the API cipher
+
+# Investigation tooling (tools/)
+capstone

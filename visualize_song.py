@@ -47,7 +47,6 @@ Requires Pillow and ffmpeg.
 
 import argparse
 import bisect
-import json
 import os
 import re
 import shlex
@@ -58,6 +57,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_chart import parse_ez, parse_ezi, load  # noqa: E402
+from ez2lib import chart_label  # noqa: E402
 
 MONO_CANDIDATES = (
     "/usr/share/fonts/noto/NotoSansMono-Bold.ttf",
@@ -128,15 +128,6 @@ def probe_video(path):
         return int(w), int(h), num / float(den), "%d/%d" % (num, den)
     except Exception:
         return None
-
-
-def chart_label(song_dir):
-    try:
-        return (json.load(open(os.path.join(song_dir, "ident.json"))) or {}).get(
-            "label"
-        ) or {}
-    except (OSError, ValueError):
-        return {}
 
 
 def build_events(song_dir, assets_root="extracted_assets"):
@@ -264,7 +255,6 @@ def txt(dr, xy, s, fnt, fill, st, anchor=None):
 
 
 def draw_frame(img, dr, st):
-    W, H = st["W"], st["H"]
     pad = st["pad"]
     t = st["t"]
 

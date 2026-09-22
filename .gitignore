@@ -39,6 +39,11 @@ rendered_songs/
 # chart_labels.py
 chart_labels.json
 
+# harvest_key.py output/backup
+EZ2ON REBOOT R/decrypted_header_ram.bin
+decrypted_header_ram.bin
+true_key_1024.bin.bak
+
 # game metadata cache (regenerate with harvest_metadata.py)
 music_names.json
 

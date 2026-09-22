@@ -2,7 +2,7 @@
 
 Everything here is investigation tooling, kept separate from the user-facing
 ripper scripts at the repository root (`extract_assets.py`, `find_bundle.py`,
-`decrypt_all.py`, `harvest_chart.py`, `harvest_key.py`).
+`dump_song.py`, `harvest_key.py`).
 
 ## Layout
 
@@ -12,7 +12,7 @@ ripper scripts at the repository root (`extract_assets.py`, `find_bundle.py`,
 | `probes/` | Passive runtime probes (safe) and the hook experiments. |
 | `mitm/` | mitmproxy addons (`_cdn_rewrite.py` rewrite oracle, `_capture_all.py` full-corpus capture), flow parsing (`_replay_extract.py` — native `-w` dump → per-flow JSONL + bodies), API decryption. |
 | `crypto/` | Cipher analysis. `_chart_cipher.py` is the **reference implementation of the (now-solved) CDN chart cipher** — mask + AES-256-CBC; the production CLI lives at the repo root as `decrypt_chart.py`. Also a verified parameterised Rijndael (`_rijndael256.py`, `_rijsearch.py`), key sweeps, brute-forcers. |
-| `legacy/` | Superseded first-generation tooling (in-process WinHTTP download, early camera/field dumpers). |
+| `legacy/` | Superseded first-generation tooling (in-process WinHTTP download, early camera/field dumpers, `harvest_chart.py` — replaced by `dump_song.py`, `run_dumper.sh` — Il2CppDumper, blocked by the metadata's missing magic). |
 | `../data/` | Derived analysis artefacts (JSON: symbol maps, key-candidate tables, scan results). |
 | `build/` | **Generated** runnable drivers (git-ignored) — one flat directory, so the source dirs stay clean. |
 | `../data/` | Derived analysis artefacts (JSON: symbol maps, key-candidate tables, scan results). |
@@ -120,7 +120,7 @@ Two further hazards, learned later, that are **not** about hooking:
 
 * **Killing a watcher without detaching.** SIGTERM does not run Python `finally`
   blocks, so `timeout 30 python3 dump_song.py` leaves the Frida agent resident and
-  wedges the gadget's message loop. `dump_song.py` and `harvest_chart.py` install
+  wedges the gadget's message loop. `dump_song.py` installs
   SIGTERM/SIGINT/SIGHUP handlers that detach before exiting — keep that guard when
   writing new watchers, and prefer a clean Ctrl-C over `kill`.
 * **Invoking list methods while the game is still building the list.** `normalLanes`

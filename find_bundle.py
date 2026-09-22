@@ -1,41 +1,39 @@
 #!/usr/bin/env python3
-"""
-EZ2ON REBOOT: R - Song Bundle Finder & Indexer
-Maps encrypted AssetBundle file hashes to song IDs/codenames (e.g. rebind, ae_illusion, devote).
-Distinguishes between Audio (keysounds) and Video (BGA) bundles.
-Supports searching, indexing, and on-demand decryption.
-"""
+"""EZ2ON REBOOT: R - Song Bundle Finder, Indexer & Decryptor
 
-import os
-import sys
-import io
-import re
-import json
+Maps encrypted AssetBundle file hashes to song IDs/codenames (e.g. rebind,
+ae_illusion, devote), and distinguishes Audio (keysounds) from Video (BGA)
+bundles. Supports searching, indexing, bulk decryption and on-demand decryption.
+
+Usage
+-----
+    python3 find_bundle.py rebind                 # find a song's bundles
+    python3 find_bundle.py --index                # rebuild song_index.json
+    python3 find_bundle.py rebind --decrypt       # decrypt the matches
+    python3 find_bundle.py --decrypt-all          # decrypt the first 5 bundles
+    python3 find_bundle.py --decrypt-all --limit 0  # decrypt every bundle
+
+Decryption is a no-op on a bundle that is already plaintext, so re-running is safe.
+"""
 import argparse
+import io
+import json
+import os
+import re
 
-KEY_PATH = "EZ2ON REBOOT R/true_key_1024.bin"
-PACKS_DIRS = [
-    "EZ2ON REBOOT R/EZ2ON_Data/StreamingAssets/Packs/01",
-    "EZ2ON REBOOT R/EZ2ON_Data/StreamingAssets/Packs/02"
-]
-OUTPUT_DIR = "EZ2ON REBOOT R/decrypted_bundles"
+import ez2lib
+
 INDEX_CACHE = "song_index.json"
 
-def load_key():
-    if not os.path.exists(KEY_PATH):
-        print(f"[!] Master XOR key missing at {KEY_PATH}!")
-        sys.exit(1)
-    with open(KEY_PATH, "rb") as f:
-        return f.read(1024)
 
 def identify_song_id(fpath, key):
     import UnityPy
+
     with open(fpath, "rb") as f:
         head = f.read(1024)
         rest = f.read()
 
-    dec_head = head if head.startswith(b"UnityFS") else bytes(a ^ b for a, b in zip(head, key))
-    buf = io.BytesIO(dec_head + rest)
+    buf = io.BytesIO(ez2lib.decrypt_bundle_head(head, key) + rest)
 
     try:
         env = UnityPy.load(buf)
@@ -66,6 +64,7 @@ def identify_song_id(fpath, key):
     except Exception as e:
         return f"error_{e}", "unknown", 0, []
 
+
 def build_index(key, force=False):
     if not force and os.path.exists(INDEX_CACHE):
         with open(INDEX_CACHE, "r") as f:
@@ -76,7 +75,7 @@ def build_index(key, force=False):
     index = {}
 
     total = 0
-    for pdir in PACKS_DIRS:
+    for pdir in ez2lib.PACKS_DIRS:
         if not os.path.exists(pdir):
             continue
         pack_name = os.path.basename(pdir)
@@ -95,7 +94,7 @@ def build_index(key, force=False):
                 "path": fpath,
                 "size_bytes": os.path.getsize(fpath),
                 "asset_count": asset_count,
-                "sample_assets": sample_paths
+                "sample_assets": sample_paths,
             }
             if total % 100 == 0:
                 print(f"    Indexed {total} bundles...")
@@ -106,7 +105,9 @@ def build_index(key, force=False):
     print(f"\n[+] Successfully indexed {len(index)} bundles -> saved to '{INDEX_CACHE}'.")
     return index
 
+
 def decrypt_bundle(src_path, key, out_dir):
+    """Decrypt one bundle's 1,024-byte header, writing <name>.unity3d. True on success."""
     fname = os.path.basename(src_path)
     out_path = os.path.join(out_dir, f"{fname}.unity3d")
     os.makedirs(out_dir, exist_ok=True)
@@ -115,23 +116,53 @@ def decrypt_bundle(src_path, key, out_dir):
         head = f.read(1024)
         rest = f.read()
 
-    dec_head = head if head.startswith(b"UnityFS") else bytes(a ^ b for a, b in zip(head, key))
+    dec_head = ez2lib.decrypt_bundle_head(head, key)
+    ok = dec_head.startswith(b"UnityFS")
+    if not ok:
+        print(f"[!] Warning: {fname} did not produce a valid UnityFS header!")
 
     with open(out_path, "wb") as f_out:
         f_out.write(dec_head)
         f_out.write(rest)
 
-    print(f"[+] Decrypted bundle saved to: {out_path} ({os.path.getsize(out_path)} bytes)")
-    return out_path
+    print(f"[+] Decrypted: {fname} -> {out_path} ({os.path.getsize(out_path)} bytes)")
+    return ok
+
+
+def decrypt_all(key, limit):
+    """Bulk-decrypt the pack directories. `limit` <= 0 means every bundle."""
+    count = 0
+    for pdir in ez2lib.PACKS_DIRS:
+        if not os.path.exists(pdir):
+            continue
+        for fname in sorted(os.listdir(pdir)):
+            if decrypt_bundle(os.path.join(pdir, fname), key, ez2lib.BUNDLE_OUT):
+                count += 1
+            if limit > 0 and count >= limit:
+                print(f"\n[+] Reached limit of {limit} files. Stopping.")
+                return count
+    print(f"\n[+] Complete! Decrypted {count} bundle(s) to '{ez2lib.BUNDLE_OUT}/'.")
+    return count
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Find & Index EZ2ON REBOOT: R Song Bundles")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("query", nargs="?", help="Song ID or keyword to search (e.g. rebind, ae_illusion, devote)")
     parser.add_argument("--index", "-i", action="store_true", help="Force rebuild of song_index.json")
-    parser.add_argument("--decrypt", "-d", action="store_true", help="Decrypt matching song bundle(s) to decrypted_bundles/")
+    parser.add_argument("--decrypt", "-d", action="store_true", help="Decrypt matching song bundle(s)")
+    parser.add_argument("--decrypt-all", "-a", action="store_true",
+                        help="Decrypt bundles from the pack directories (see --limit)")
+    parser.add_argument("--limit", "-l", type=int, default=5,
+                        help="With --decrypt-all: how many to decrypt (default 5, 0 = all)")
     args = parser.parse_args()
 
-    key = load_key()
+    key = ez2lib.load_bundle_key()
+
+    if args.decrypt_all:
+        decrypt_all(key, args.limit)
+        if not args.query and not args.index:
+            return
 
     if args.index:
         index = build_index(key, force=True)
@@ -151,11 +182,11 @@ def main():
         return
 
     q = args.query.lower()
-    matches = []
-
-    for fname, data in index.items():
-        if q == data["song_id"] or q in data["song_id"] or q in fname:
-            matches.append((fname, data))
+    matches = [
+        (fname, data)
+        for fname, data in index.items()
+        if q == data["song_id"] or q in data["song_id"] or q in fname
+    ]
 
     if not matches:
         print(f"[!] No bundles found matching '{args.query}'.")
@@ -167,14 +198,15 @@ def main():
         print(f"  Asset Type  : {data['asset_type'].upper()}")
         print(f"  Bundle Hash : {fname}")
         print(f"  Pack        : {data['pack']}")
-        print(f"  Size        : {data['size_bytes'] / (1024*1024):.2f} MB")
+        print(f"  Size        : {data['size_bytes'] / (1024 * 1024):.2f} MB")
         print(f"  Asset Count : {data['asset_count']}")
-        if data['sample_assets']:
+        if data["sample_assets"]:
             print(f"  Sample Asset: {data['sample_assets'][0]}")
         print("-" * 60)
 
         if args.decrypt:
-            decrypt_bundle(data['path'], key, OUTPUT_DIR)
+            decrypt_bundle(data["path"], key, ez2lib.BUNDLE_OUT)
+
 
 if __name__ == "__main__":
     main()

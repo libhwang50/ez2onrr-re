@@ -6,23 +6,15 @@ Prevents UTF-8 corruption on TextAsset audio buffers and extracts VideoClip stre
 """
 
 import os
-import sys
 import io
 import struct
 import json
 import argparse
 
-KEY_PATH = "EZ2ON REBOOT R/true_key_1024.bin"
+import ez2lib
+
 INDEX_CACHE = "song_index.json"
 OUTPUT_DIR = "extracted_assets"
-DECRYPTED_DIR = "EZ2ON REBOOT R/decrypted_bundles"
-
-def load_key():
-    if not os.path.exists(KEY_PATH):
-        print(f"[!] Master XOR key missing at {KEY_PATH}!")
-        sys.exit(1)
-    with open(KEY_PATH, "rb") as f:
-        return f.read(1024)
 
 def extract_bundle_contents(fpath, key, out_folder, extract_bga=False):
     import UnityPy
@@ -31,8 +23,7 @@ def extract_bundle_contents(fpath, key, out_folder, extract_bga=False):
         head = f.read(1024)
         rest = f.read()
 
-    dec_head = head if head.startswith(b"UnityFS") else bytes(a ^ b for a, b in zip(head, key))
-    buf = io.BytesIO(dec_head + rest)
+    buf = io.BytesIO(ez2lib.decrypt_bundle_head(head, key) + rest)
 
     try:
         env = UnityPy.load(buf)
@@ -121,7 +112,7 @@ def main():
     parser.add_argument("--output", "-o", default=OUTPUT_DIR, help="Output folder for extracted files")
     args = parser.parse_args()
 
-    key = load_key()
+    key = ez2lib.load_bundle_key()
 
     targets = []
     song_id = None

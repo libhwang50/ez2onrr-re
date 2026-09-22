@@ -13,10 +13,8 @@ an attach during early startup also kills the game (see tools/README.md).
 Run alongside the game:
     .venv/bin/python server/_errwatch.py
 """
-import json
 import os
 import signal
-import sys
 import time
 
 import frida

@@ -18,10 +18,8 @@ client accepts a certificate minted by the user's mitmproxy CA).
 
     sudo python3 server/_stub443.py [port]        # 443 by default
 """
-import base64
 import json
 import os
-import re
 import socket
 import ssl
 import subprocess

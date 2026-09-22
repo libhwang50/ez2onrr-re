@@ -871,7 +871,7 @@ def respond_api(flow, obj):
     global _warned_no_key
     try:
         body = encrypt_response(obj)
-    except RuntimeError as e:
+    except RuntimeError:
         # almost always: the Frida harvester is not running, so the client's
         # per-session key is unknown and NOTHING can be encrypted for it.
         if not _warned_no_key:

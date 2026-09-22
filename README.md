@@ -35,10 +35,10 @@ Frida bridge reads it from the running game:
 mitmdump -s server/_pserver.py
 ```
 
-Then start the game as usual; `server/pserver.log` shows every request. Songs with a
-captured chart are playable (47 variants across 15 songs so far); regenerate the data
-from your own captures with `server/_build_data.py`. Full details and caveats:
-**`server/README.md`**.
+Then start the game as usual; `server/pserver.log` shows every request. Songs whose chart is
+in the local archive are playable; `server/_coverage.py` reports the current coverage and
+`server/_build_data.py` regenerates the data from your own captures. Full details and
+caveats: **`server/README.md`**.
 
 ### Offline play
 
@@ -71,11 +71,19 @@ running and the server re-reads the key per request.
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install UnityPy frida frida-tools pefile capstone
+pip install -r requirements.txt
+# or with uv (what this repo's .venv was built with):
+uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
+`requirements.txt` lists everything the tools, the private server and the investigation
+scripts need, grouped by which part of the toolset uses it. The only hard requirements for
+the offline ripper are **UnityPy** (bundles) and **pycryptodome** (the ciphers); `mutagen`
+is optional (FLAC tags) and `frida` is only needed for the live-game reads.
+
 The game runs under Proton/Wine with **Frida Gadget on `127.0.0.1:27042`**.
-`true_key_1024.bin` must sit in the repo root; derive it once with the game running:
+`true_key_1024.bin` must sit in the repo root; derive it once with the game running and a
+song loaded:
 
 ```bash
 python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 1024 B
@@ -87,12 +95,11 @@ python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 10
 |---|---|
 | `extract_assets.py <song> [--bga]` | keysounds (FLAC/OGG), optionally BGA `.mp4` → `extracted_assets/<song_id>/` |
 | `find_bundle.py <keyword> [--decrypt\|--index]` | map bundle hashes → song codenames; build/refresh `song_index.json` |
-| `decrypt_all.py [--limit N]` | bulk-decrypt `.unity3d` bundles → `EZ2ON REBOOT R/decrypted_bundles/` |
-| `harvest_chart.py` | watch `InGameCore` for signed CDN URLs and fetch the chart + index |
+| `find_bundle.py --decrypt-all [--limit N]` | bulk-decrypt `.unity3d` bundles → `EZ2ON REBOOT R/decrypted_bundles/` |
 | `dump_song.py [--out DIR] [--interval S]` | **recommended** — per-song byte-exact CDN archive + in-memory snapshot |
-| `harvest_key.py` | derive `true_key_1024.bin` from live memory |
-| `decrypt_chart.py <cdn_*.bin>` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
-| `decrypt_archive.py` | **complete chart dumps** — walk `extracted_charts/`, decrypt any raw CDN capture missing its plaintext, write `ez.ez` / `ezi.ezi` / `instrumentDic.json`; `--check` audits without writing |
+| `harvest_key.py [--out FILE]` | **derive `true_key_1024.bin`** from live memory, validated against the bundles on disk |
+| `decrypt_chart.py <cdn_*.bin> [--keypair …]` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
+| `decrypt_chart.py --archive [DIR …]` | **complete chart dumps** — decrypt every raw CDN capture in a tree (default `extracted_charts/`), writing `ez.ez` / `ezi.ezi` / `instrumentDic.json`; `--check` audits without writing |
 | `parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
 | `chart_labels.py` | decrypt captured API traffic → `chart_labels.json` (song name, key mode, difficulty) |
 | `check_charts.py` | **audit the captures** — flags a chart filed under the wrong key mode or difficulty, a missing artifact, or a record that disagrees with the chart on disk; exits non-zero |
@@ -100,6 +107,9 @@ python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 10
 | `visualize_song.py <song_dir>` | **visualise the render** — an mp4 with the keysounds, lanes and progress overlaid on the BGA (or a plain background). Pass a song directory or `--all` to render every variant, `--skip-existing` to leave finished ones |
 | `song_meta.py` | look up a song's title/composer from the harvested metadata table |
 | `harvest_metadata.py` | dump the game's song metadata table → `music_names.json` |
+
+`ez2lib.py` is the shared internal helper (key loading, bundle-header decryption, capture
+labels) — it is imported by the tools above, not run directly.
 
 Then just **play songs**: `dump_song.py` captures each one on entry and writes
 
@@ -330,11 +340,17 @@ The safe pattern is read-only memory reads, managed calls on the game's main thr
 ```
 AGENTS.md            full technical report
 README.md
-true_key_1024.bin    master bundle XOR key
+requirements.txt     Python dependencies (see Setup)
+ruff.toml            lint gate for the tools
+true_key_1024.bin    master bundle XOR key (derive with harvest_key.py)
 song_index.json      bundle-hash → song index
-extract_assets.py  find_bundle.py  decrypt_all.py
-harvest_key.py  harvest_chart.py  dump_song.py  decrypt_chart.py  parse_chart.py  run_dumper.sh
-render_song.py
+ez2lib.py            shared helpers — imported by the tools, not run directly
+
+extract_assets.py  find_bundle.py                  bundles → assets / index
+dump_song.py  harvest_key.py                       live-game reads over the Frida Gadget
+decrypt_chart.py  parse_chart.py  check_charts.py  chart ciphers, readers and audits
+chart_labels.py  harvest_metadata.py  song_meta.py naming and metadata
+render_song.py  visualize_song.py                  render and visualise a song
 server/              basic private server (mitmproxy addon + Frida key bridge) — see server/README.md
 tools/               investigation tooling — see tools/README.md
   il2cpp/  probes/  mitm/  crypto/  legacy/

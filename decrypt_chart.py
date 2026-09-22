@@ -5,7 +5,10 @@ The CDN payload cipher, recovered from `InGameCore.dcf` -> `InGameCore.dcg`:
 
   1. a data-independent 64-round XOR mask, one pass per byte, built from the
      static tables `InGameCore.svq` (64 B) and `InGameCore.svr` (16 B);
-  2. AES-256-CBC / PKCS7, key = `InGameCore.svo` (32 B), IV = `InGameCore.svp` (16 B).
+  2. AES-256-CBC / PKCS7. There are **three** static key/IV pairs in `InGameCore`
+     (`svk`/`svl`, `svm`/`svn`, `svo`/`svp`); the game records no indication of
+     which one a payload used, and exactly one yields a plausible plaintext, so the
+     pair is selected by validation (`--keypair` forces one).
 
 Both stages operate in place on the whole buffer, so decryption is
 `AES_CBC_decrypt(unmask(ciphertext))`.
@@ -14,14 +17,22 @@ Usage:
     python3 decrypt_chart.py <file> [more files...]      # -> <file>.dec
     python3 decrypt_chart.py --out DIR <file> ...
     python3 decrypt_chart.py --inspect <file>            # header summary only
+    python3 decrypt_chart.py --archive [DIR ...]         # a whole capture archive
+
+`--archive` walks a tree of `dump_song.py` / sweep captures and fills in the plaintext
+(`ez.ez`, `ezi.ezi`, `instrumentDic.json`) for every raw CDN capture that is missing it,
+so a sweep capture becomes indistinguishable from a full dump. `--check` audits without
+writing and `--force` redoes existing plaintext; the exit code gates a batch.
 
 Payloads that are already plaintext are passed through untouched: the short XML error
 body the CDN serves when a signed URL has expired, an already-decrypted `.ez` (`EZFF`),
 or an already-decrypted `.ezi` (printable `<index> <velocity> <filename>` lines).
 """
 import argparse
+import json
 import os
 import struct
+import sys
 
 try:                                    # pycryptodome (the .venv)
     from Crypto.Cipher import AES
@@ -47,8 +58,9 @@ SVR = bytes.fromhex('d0d9223422c56c6ce10496cc0a44777d')
 
 # Three static (key, IV) pairs. The game records no indication of which one a payload
 # uses; exactly one of them yields valid PKCS7 for any given chart, so we select by
-# validation. Observed: svk/svl -> Engine, svo/svp -> Conflict and Rebind.
-# svm/svn is unobserved so far.
+# validation. All three are in wide use — across the archive, 62 songs use svk/svl,
+# 52 use svm/svn and 57 use svo/svp, and 8 songs mix pairs across their variants
+# (kamui uses all three), so the choice is not even per-song.
 KEYPAIRS = {
     'svk/svl': (bytes.fromhex('b6267ea195763df32ec91ed39d7f6603'
                               '5ca002de4dee12fff9cf93ed92163e0d'),
@@ -172,14 +184,125 @@ def summarize(pt: bytes) -> str:
     return describe(pt)
 
 
+# --- archive mode: fill in the plaintext for a tree of raw CDN captures -----------------
+
+CIPHERS = {'ez': ('cdn_ez_', 'mem_rjl.bin'), 'ezi': ('cdn_ezi_', 'mem_rjm.bin')}
+
+
+def find_cipher(d, kind):
+    """The raw ciphertext for `kind` ('ez'/'ezi') in a capture directory, if any."""
+    pref, alt = CIPHERS[kind]
+    for n in sorted(os.listdir(d)):
+        if n.startswith(pref):
+            return os.path.join(d, n)
+    alt_p = os.path.join(d, alt)
+    return alt_p if os.path.exists(alt_p) else None
+
+
+def ezi_mapping(pt: bytes):
+    """[[index, basename], ...] from a decrypted `.ezi`, the shape dump_song.py writes."""
+    rows = []
+    for line in pt.decode('utf-8', 'replace').splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0].isdigit():
+            rows.append([int(parts[0]), os.path.splitext(parts[2])[0]])
+    return rows
+
+
+def process_dir(d, force=False, check=False):
+    done, skipped, failed = [], [], []
+    ident_p = os.path.join(d, 'ident.json')
+    ident = {}
+    if os.path.exists(ident_p):
+        try:
+            ident = json.load(open(ident_p))
+        except Exception:
+            ident = {}
+    changed_ident = False
+    for kind, out_name in (('ez', 'ez.ez'), ('ezi', 'ezi.ezi')):
+        out_p = os.path.join(d, out_name)
+        if os.path.exists(out_p) and not force:
+            skipped.append(out_name)
+            continue
+        src = find_cipher(d, kind)
+        if src is None:
+            failed.append(f'{out_name}: no ciphertext')
+            continue
+        try:
+            pt, pair = decrypt_named(open(src, 'rb').read())
+        except ValueError as e:
+            failed.append(f'{out_name}: {e}')
+            continue
+        if not check:
+            with open(out_p, 'wb') as f:
+                f.write(pt)
+            if ident.get('chartKeyPair') != pair:
+                ident['chartKeyPair'] = pair
+                changed_ident = True
+        done.append(f'{out_name} ({len(pt)}B, {pair})')
+        if kind == 'ezi':
+            dic_p = os.path.join(d, 'instrumentDic.json')
+            rows = ezi_mapping(pt)
+            if rows and (force or not os.path.exists(dic_p)) and not check:
+                json.dump(rows, open(dic_p, 'w'), ensure_ascii=False)
+                done.append(f'instrumentDic.json ({len(rows)} entries)')
+    if changed_ident and not check:
+        json.dump(ident, open(ident_p, 'w'), indent=1, ensure_ascii=False)
+    return done, skipped, failed
+
+
+def archive_targets(dirs):
+    """Capture directories under whatever was named (so a song dir works too)."""
+    bases = dirs or [os.path.join(os.path.dirname(os.path.abspath(__file__)), 'extracted_charts')]
+    out = set()
+    for base in bases:
+        if not os.path.isdir(base):
+            print(f'skip {base}: not a directory')
+            continue
+        for dirpath, _dirs, files in os.walk(base):
+            if (any(f.startswith('cdn_') for f in files)
+                    or 'mem_rjl.bin' in files or 'ezi.ezi' in files):
+                out.add(dirpath)
+    return sorted(out)
+
+
+def run_archive(dirs, force=False, check=False):
+    n_done = n_failed = 0
+    for d in archive_targets(dirs):
+        done, _skipped, failed = process_dir(d, force, check)
+        if not (done or failed):
+            continue
+        print(f'{d}:')
+        for x in done:
+            print(f'  + {x}')
+            n_done += 1
+        for x in failed:
+            print(f'  ! {x}')
+            n_failed += 1
+    print(f'\n{n_done} file(s) written, {n_failed} failure(s)'
+          + (' (check only)' if check else ''))
+    return 1 if n_failed else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('files', nargs='+')
+    ap.add_argument('files', nargs='*', help='payload files (with --archive: capture directories)')
     ap.add_argument('--out', metavar='DIR', help='write results here instead of <file>.dec')
     ap.add_argument('--inspect', action='store_true', help='report only, write nothing')
     ap.add_argument('--keypair', choices=sorted(KEYPAIRS), help='force a static key pair')
+    ap.add_argument('--archive', nargs='*', metavar='DIR',
+                    help='decrypt every raw CDN capture under these trees '
+                         '(default: all of extracted_charts/)')
+    ap.add_argument('--force', action='store_true', help='with --archive: redo existing plaintext')
+    ap.add_argument('--check', action='store_true', help='with --archive: report only, write nothing')
     args = ap.parse_args()
+
+    if args.archive is not None:
+        return run_archive(args.archive, force=args.force, check=args.check)
+
+    if not args.files:
+        ap.error('give one or more payload files, or --archive')
 
     for path in args.files:
         raw = open(path, 'rb').read()
@@ -219,4 +342,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
