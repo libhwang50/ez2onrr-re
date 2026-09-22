@@ -53,6 +53,70 @@ def log(*a):
         sys.stdout.flush()
 
 
+def parse_clienthello(data):
+    """Best-effort extraction of SNI and the offered ALPN list from a
+    ClientHello record. Used to see what the game's custom TLS client asks for
+    (a mismatch here makes the client abort right after the handshake)."""
+    out = {'sni': None, 'alpn': [], 'version': None, 'ciphers': 0}
+    try:
+        if len(data) < 6 or data[0] != 0x16:
+            return out, 'not a TLS handshake record'
+        # record: type(1) ver(2) len(2) ; handshake: type(1) len(3)
+        hl = data[5:]
+        if hl[0] != 0x01:
+            return out, f'handshake type {hl[0]:#x} (not ClientHello)'
+        p = 4
+        out['version'] = hl[p:p + 2].hex()      # legacy_version
+        p += 2 + 32                             # random
+        sid_len = hl[p]; p += 1 + sid_len
+        cs_len = int.from_bytes(hl[p:p + 2], 'big'); p += 2
+        out['ciphers'] = cs_len // 2
+        p += cs_len
+        comp_len = hl[p]; p += 1 + comp_len
+        ext_total = int.from_bytes(hl[p:p + 2], 'big'); p += 2
+        end = min(len(hl), p + ext_total)
+        while p + 4 <= end:
+            et = int.from_bytes(hl[p:p + 2], 'big')
+            el = int.from_bytes(hl[p + 2:p + 4], 'big')
+            body = hl[p + 4:p + 4 + el]
+            if et == 0 and len(body) >= 5:                     # server_name
+                nl = int.from_bytes(body[3:5], 'big')
+                out['sni'] = body[5:5 + nl].decode('latin1', 'replace')
+            elif et == 16 and len(body) >= 2:                  # ALPN
+                q = 2
+                while q < len(body):
+                    n = body[q]; q += 1
+                    out['alpn'].append(body[q:q + n].decode('latin1', 'replace'))
+                    q += n
+            elif et == 43:                                     # supported_versions
+                out['supported_versions'] = [body[i + 1:i + 3].hex()
+                                             for i in range(1, len(body) - 2, 2)]
+            p += 4 + el
+    except Exception as e:
+        return out, f'parse error {e!r}'
+    return out, None
+
+
+def peek_clienthello(conn, timeout=4.0):
+    """MSG_PEEK so the bytes stay in the buffer for ssl.wrap_socket."""
+    conn.settimeout(timeout)
+    waited = 0.0
+    while waited < timeout:
+        try:
+            data = conn.recv(65536, socket.MSG_PEEK)
+        except (socket.timeout, ssl.SSLError):
+            break
+        except Exception:
+            break
+        if len(data) >= 5:
+            need = 5 + int.from_bytes(data[3:5], 'big')
+            if len(data) >= need:
+                return data[:need]
+        time.sleep(0.05)
+        waited += 0.05
+    return data if 'data' in dir() else b''
+
+
 def ensure_cert():
     """A leaf certificate for HOST, signed by the user's mitmproxy CA (already
     trusted by the game for the proxied hosts, so the same trust store should
@@ -135,56 +199,71 @@ def handle_request(raw, peer):
 
 def serve_client(conn, addr, ctx):
     peer = f'{addr[0]}:{addr[1]}'
+    hello = peek_clienthello(conn)
+    if hello:
+        info, err = parse_clienthello(hello)
+        log(f'ClientHello from {peer}: sni={info.get("sni")!r} '
+            f'alpn={info.get("alpn")} ciphers={info.get("ciphers")} '
+            f'legacy_ver={info.get("version")} '
+            f'supported={info.get("supported_versions")}' + (f'  [{err}]' if err else ''))
+    else:
+        log(f'{peer}: no ClientHello seen before the handshake')
     try:
         tls = ctx.wrap_socket(conn, server_side=True)
-    except ssl.SSLError as e:
-        log(f'TLS FAILED from {peer}: {e}  '
-            f'(client rejected the cert / pins its own CA bundle?)')
-        try:
-            conn.close()
-        except Exception:
-            pass
-        return
     except Exception as e:
-        log(f'TLS error from {peer}: {e!r}')
+        log(f'TLS FAILED from {peer}: {e!r}  (client rejected the certificate, '
+            f'or ALPN mismatch)')
         try:
             conn.close()
         except Exception:
             pass
         return
-    sn = None
+    log(f'TLS OK from {peer} alpn={tls.selected_alpn_protocol()!r} '
+        f'cipher={tls.cipher()[0] if tls.cipher() else "?"} '
+        f'version={tls.version()}')
     try:
-        sn = tls.server_hostname
-    except Exception:
-        pass
-    log(f'TLS OK from {peer} sni={sn} cipher={tls.cipher()[0] if tls.cipher() else "?"}')
-    try:
-        tls.settimeout(20)
+        tls.settimeout(15)
+        total = b''
         while True:
-            data = b''
-            while b'\r\n\r\n' not in data:
-                chunk = tls.recv(65536)
-                if not chunk:
-                    break
-                data += chunk
-                if data.startswith(b'PRI * HTTP/2.0'):
-                    log('    HTTP/2 preface! this client speaks h2 — the stub '
-                        'must be upgraded or forced to http/1.1')
-                    return
-            if not data:
-                break
-            resp, _ = handle_request(data, peer)
-            if resp is None:
-                break
             try:
-                tls.sendall(resp)
+                chunk = tls.recv(65536)
+            except socket.timeout:
+                log(f'{peer}: read timeout after {len(total)}B total')
+                if total:
+                    log(f'    partial: {total[:300]!r}')
+                break
             except Exception as e:
-                log(f'send failed to {peer}: {e!r}')
+                log(f'{peer}: recv raised {e!r} after {len(total)}B total; '
+                    f'got so far: {total[:300]!r}')
                 break
-            if b'Connection: close' in resp:
+            if not chunk:
+                log(f'{peer}: peer closed after {len(total)}B total'
+                    + (f'; data was {total[:300]!r}' if total else
+                       ' (closed WITHOUT sending a request - likely an ALPN '
+                       'mismatch or a pre-open/probe connection)'))
                 break
-    except Exception as e:
-        log(f'client {peer} error: {e!r}')
+            total += chunk
+            log(f'{peer}: {len(chunk)}B chunk (hex {chunk[:24].hex()}...): '
+                f'{chunk[:200]!r}')
+            if chunk.startswith(b'PRI * HTTP/2.0'):
+                log('    HTTP/2 prior-knowledge preface!')
+                break
+            if b'\r\n\r\n' in total or b'\n\n' in total:
+                head, _, body = total.replace(b'\n\n', b'\r\n\r\n', 1).partition(b'\r\n\r\n')
+                cl = 0
+                for ln in head.splitlines():
+                    if ln.lower().startswith(b'content-length:'):
+                        cl = int(ln.split(b':', 1)[1].strip())
+                if len(body) < cl:
+                    continue
+                resp, _ = handle_request(total, peer)
+                if resp:
+                    try:
+                        tls.sendall(resp)
+                        log(f'{peer}: answered {len(resp)}B')
+                    except Exception as e:
+                        log(f'{peer}: send failed {e!r}')
+                break
     finally:
         try:
             tls.close()
