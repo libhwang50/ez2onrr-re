@@ -589,3 +589,98 @@ rpc.exports.deref = function (addrStr, offsCsv) {
     return JSON.stringify({ steps: steps, final: '0x' + cur.toString(16) });
   });
 };
+
+// findaccessor(offsetHex[, lenHex]): the payload accessor for one literal.
+// An accessor looks like
+//     mov edx,<offset>       BA imm32   <- the literal's offset in the blob
+//     mov r8d,<length>       41 B8 imm32
+//     mov ecx,<index>        B9 imm32
+//     call <per-assembly helper>
+// so scanning for the offset finds the single accessor for that literal (the
+// <PrivateImplementationDetails>{...}.a.XX method), and a caller sweep on that
+// accessor yields the game methods that use the literal.
+rpc.exports.findaccessor = function (offsetStr, lenStr) {
+  return Il2Cpp.perform(() => {
+    const t0 = Date.now();
+    const off = parseInt(String(offsetStr).replace(/^0x/, ''), 16) >>> 0;
+    const ob = [off & 0xff, (off >> 8) & 0xff, (off >> 16) & 0xff, (off >>> 24) & 0xff];
+    const pat = 'ba ' + ob.map(b => b.toString(16).padStart(2, '0')).join(' ');
+    const mod = Process.getModuleByName('GameAssembly.dll');
+    const xr = Process.enumerateRanges('x')
+      .filter(r => r.base.compare(mod.base) >= 0 && r.base.compare(mod.base.add(mod.size)) < 0);
+    const out = { offset: '0x' + off.toString(16), length: lenStr || null,
+                  sites: [], accessors: [], callers: [] };
+    for (const r of xr) {
+      let hits; try { hits = Memory.scanSync(r.base, r.size, pat); } catch (e) { continue; }
+      for (const h of hits) {
+        if (out.sites.length >= 16) break;
+        let buf;
+        try { buf = new Uint8Array(h.address.readByteArray(48)); } catch (e) { continue; }
+        let len2 = null, idx = null, callRel = null, callAt = -1;
+        for (let j = 5; j + 5 <= 40; j++) {
+          if (buf[j] === 0x41 && buf[j+1] === 0xb8)
+            len2 = (buf[j+2] | (buf[j+3] << 8) | (buf[j+4] << 16) | ((buf[j+5] << 24) >>> 0)) >>> 0;
+          if (buf[j] === 0xb9 && idx === null)
+            idx = (buf[j+1] | (buf[j+2] << 8) | (buf[j+3] << 16) | ((buf[j+4] << 24) >>> 0)) >>> 0;
+          if (buf[j] === 0xe8) { callRel = buf[j+1] | (buf[j+2] << 8) | (buf[j+3] << 16) | (buf[j+4] << 24);
+                                 callAt = j; break; }
+        }
+        if (callAt < 0) continue;
+        if (lenStr && len2 !== (parseInt(lenStr, 10) >>> 0)) continue;
+        out.sites.push({ site: '0x' + h.address.toString(16), off: off, len: len2, idx: idx,
+                         callAt: h.address.add(callAt).toString(16),
+                         helper: h.address.add(callAt + 5 + callRel).toString(16) });
+      }
+    }
+    // attribute the sites (the accessor methods) and build the method map
+    const mmap = [];
+    for (const asm of Il2Cpp.domain.assemblies) {
+      let img, classes;
+      try { img = asm.image; } catch (e) { continue; }
+      try { classes = img.classes; } catch (e) { continue; }
+      for (const cls of classes) {
+        let ms; try { ms = cls.methods; } catch (e) { ms = []; }
+        for (const m of ms) { let va; try { va = m.virtualAddress; } catch (e) { continue; }
+          if (!va.isNull()) mmap.push({ va: va, name: (cls.namespace ? cls.namespace + '.' : '') + cls.name + '.' + m.name }); }
+      }
+    }
+    mmap.sort((a, b) => a.va.compare(b.va));
+    const attr = (sp) => { let lo = 0, hi = mmap.length - 1, best = null;
+      while (lo <= hi) { const mid = (lo + hi) >> 1;
+        if (mmap[mid].va.compare(sp) <= 0) { best = mmap[mid]; lo = mid + 1; } else hi = mid - 1; }
+      return best; };
+    const targets = {};
+    for (const s of out.sites) {
+      const e = attr(ptr(s.site));
+      s.accessor = e ? e.name + ' @ ' + e.va.toString(16) : '?';
+      if (e) { out.accessors.push(s.accessor); targets[e.va.toString(16)] = true; }
+    }
+    out.accessors = [...new Set(out.accessors)];
+    // one numeric pass over the code for calls to any accessor
+    const found = {};
+    for (const r of xr) {
+      let pos = 0;
+      const rstart = parseInt(r.base.toString(16), 16);
+      while (pos < r.size) {
+        const len3 = Math.min(0x800000, r.size - pos);
+        let buf; try { buf = new Uint8Array(r.base.add(pos).readByteArray(len3)); } catch (e) { break; }
+        for (let i = 0; i + 5 <= buf.length; i++) {
+          if (buf[i] !== 0xe8) continue;
+          const rel = buf[i+1] | (buf[i+2] << 8) | (buf[i+3] << 16) | (buf[i+4] << 24);
+          const tgt = (rstart + pos + i + 5 + rel).toString(16);
+          if (targets[tgt]) (found[tgt] = found[tgt] || []).push('0x' + (rstart + pos + i).toString(16));
+        }
+        pos += len3 - 8;
+      }
+    }
+    for (const k of Object.keys(found))
+      for (const site of found[k]) {
+        const e = attr(ptr(site));
+        out.callers.push({ accessor: k, site: site,
+                           inMethod: e ? e.name + ' @ ' + e.va.toString(16) : '?' });
+      }
+    out.uniqueCallerMethods = [...new Set(out.callers.map(c => c.inMethod))];
+    out.elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+    return JSON.stringify(out);
+  });
+};

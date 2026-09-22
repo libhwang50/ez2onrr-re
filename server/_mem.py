@@ -105,6 +105,9 @@ def main():
         print('scanning for the base64 string form (UTF-16LE)…')
         show(send({'op': 'findhex', 'hex': ' '.join(
             f'{x:02x}' for x in b.encode('utf-16-le'))}))
+    elif a[0] == 'findaccessor':
+        show(send({'op': 'findaccessor', 'offset': a[1],
+                   'len': a[2] if len(a) > 2 else ''}, timeout=900), max_hits=30)
     elif a[0] == 'deref':
         show(send({'op': 'deref', 'addr': a[1],
                    'offs': a[2] if len(a) > 2 else ''}, timeout=120))
