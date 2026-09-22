@@ -78,7 +78,9 @@ DEFAULTS = {
                'after_exit': 2.5, 'after_start': 8.0, 'wait_for_cdn': 10.0,
                'after_failed_load': 3.0,
                'poll': 0.25,
-               'after_confirm': 3.0},
+               'after_confirm': 3.0,
+               # screen classifier: wait out fades and require a state twice in a row
+               'screen_debounce': 0.4, 'screen_timeout': 3.0},
 }
 
 REQ = re.compile(r'c2s_get_pattern_file request: (\{.*\})')
@@ -160,18 +162,41 @@ SCREEN = os.environ.get('EZ2_NO_SCREEN') not in ('1', 'true')
 
 
 def screen_state():
-    """(state, confidence, why) for the game window, or None if unavailable."""
+    """(state, confidence, why) for the game window, or None if unavailable.
+
+    Debounced, because the sweep classifies right after triggering a transition: a
+    fade to black is reported as TRANSITION and waited out, and every other state must
+    be seen twice in a row, so a mid-fade dark frame (read as GAMEPLAY by the
+    darkness rule) does not decide the recovery.
+    """
     if not SCREEN:
         return None
     try:
         import _screen
-        return _screen.classify(_screen.grab())
     except Exception as e:
         print(f'    (screen classifier unavailable: {e})')
         return None
+    deadline = time.time() + T.get('screen_timeout', 3.0)
+    gap = T.get('screen_debounce', 0.4)
+    prev = None
+    while True:
+        try:
+            st = _screen.classify(_screen.grab())
+        except Exception as e:
+            print(f'    (screen classifier unavailable: {e})')
+            return None
+        if st[0] == 'TRANSITION':
+            prev = None
+        elif st[0] == prev:
+            return st
+        else:
+            prev = st[0]
+        if time.time() >= deadline:
+            return st
+        time.sleep(gap)
 
 
-def recover(still_in_song, shot_tag=None):
+def recover(still_in_song, shot_tag=None, _depth=0):
     """Get back to the song select after a missed request, using the screen state
     when it is available and the safe blind fallback otherwise.
 
@@ -185,6 +210,10 @@ def recover(still_in_song, shot_tag=None):
         print(f'    screen state: {state} (conf={st[1]:.2f}, {st[2]})')
         if shot_tag:
             screenshot(shot_tag)
+    if state == 'LOADING_SCREEN' and _depth < 2:
+        print('    still loading — waiting for it to resolve')
+        time.sleep(T['after_start'])
+        return recover(still_in_song, shot_tag, _depth + 1)
     if state in ('GAMEPLAY', 'PAUSE', 'RESULT') or (state is None and still_in_song):
         print('    still in the previous song — the pause menu is safe to use')
         resync()
@@ -193,8 +222,8 @@ def recover(still_in_song, shot_tag=None):
         send(CFG['menu']['confirm'])
         time.sleep(T['after_confirm'])
     else:
-        # SONG_SELECT or unknown: no ESC. Up+Enter is harmless everywhere and
-        # re-enters a focused card / starts a song.
+        # SONG_SELECT, LOADING (unresolved), TRANSITION or unknown: no ESC. Up+Enter
+        # is harmless everywhere and re-enters a focused card / starts a song.
         print('    safe recovery (Up, Enter; no ESC)')
         send(K['prev_song'])
         send(K['enter_song'])

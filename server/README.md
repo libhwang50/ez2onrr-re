@@ -308,17 +308,26 @@ python server/_screen.py --list                  # collected anchors
 ```
 
 `classify()` applies a few measured scalar rules first (yellow play disk -> song select;
-very dark -> gameplay; red banner -> game over), then falls back to the nearest match
-over **localized edge probes** of the collected `server/anchors/<STATE>/` frames. The
-probes are only screen-unique regions (`center` and `upperleft`): the shared chrome
-(nav, hint bar) correlates ~0.99 between every screen and would drown out differences,
-which is exactly why a whole-frame signature collided. Measured max cross-state
-correlation is 0.10 (`center`) / 0.19 (`upperleft`), so a match below 0.5, or without a
-0.15 lead, is reported as `UNKNOWN` and the sweep takes the safe recovery. Leaving a
-state's own anchors out never produces a false positive in testing.
-Anchors are git-ignored (they contain BGA art); collect your own with `--collect`.
-Currently `GAMEPLAY`, `GAME_OVER`, `MAIN_MENU`, `PAUSE_MENU` and `SONG_SELECT` are
-anchored; anything else falls through to the safe `UNKNOWN` recovery.
+a near-black *fade* -> `TRANSITION` (a uniform frame has `mean_v` ~0 and
+`edge_all` ~0, whereas real gameplay with the BGA at zero opacity still has the
+playfield/HUD: `mean_v` ~24, `edge_all` ~2.4); then very dark -> gameplay; then the red
+banner -> game over), and finally the nearest match over **localized edge probes** of the
+collected `server/anchors/<STATE>/` frames. The probes are only screen-unique regions
+(`center` and `upperleft`): the shared chrome (nav, hint bar) correlates ~0.99 between
+every screen and would drown out differences, which is exactly why a whole-frame
+signature collided. Measured max cross-state correlation is 0.10 (`center`) / 0.19
+(`upperleft`), so a match below 0.5, or without a 0.15 lead, is reported as `UNKNOWN` and
+the sweep takes the safe recovery. Leaving a state's own anchors out never produces a
+false positive in testing.
+
+Transitions are handled on both sides: a fade is `TRANSITION`, and `_sweep.screen_state()`
+is **debounced** — it waits out `TRANSITION` and requires every other state twice in a row
+(`screen_debounce` 0.4 s, `screen_timeout` 3 s in `sweep_keys.json`), so a mid-fade dark
+frame cannot decide the recovery. `LOADING_SCREEN` is likewise waited on, not acted on.
+Anchors are git-ignored (they contain BGA art); collect your own with `--collect`, and
+`--list` flags any `.json` that has no matching `.png` (inert — probes read the PNGs).
+Currently `GAMEPLAY`, `GAME_OVER`, `LOADING_SCREEN`, `MAIN_MENU`, `PAUSE_MENU` and
+`SONG_SELECT` are anchored; anything else falls through to the safe `UNKNOWN` recovery.
 
 A chart only counts as captured once the CDN body actually arrived: the sweep
 watches for the addon's `CDN OK`/`CDN HIT` line and otherwise reports *asked but

@@ -24,9 +24,11 @@ it, while the *static* preview looks UI-stable). Two things do work:
   screen-unique regions separates them cleanly — measured max cross-state correlation:
   `center` 0.10, `upperleft` 0.19, versus `top`/`nav`/`hint` ~0.99.
 
-`classify()` therefore applies a few scalar rules (accent colour, darkness, redness)
-and then falls back to nearest-match over localized edge probes of the collected
-`server/anchors/<STATE>/` frames.
+`classify()` therefore applies a few scalar rules (accent colour, darkness, redness,
+and a near-black *transition* state) and then falls back to nearest-match over localized
+edge probes of the collected `server/anchors/<STATE>/` frames. A fade to black is
+reported as `TRANSITION`, not gameplay, and the sweep re-samples until the screen is
+stable (see `_sweep.screen_state`) so a mid-fade dark frame is never mistaken for play.
 
 Capture is focus-independent: the game is XWayland, so `ffmpeg -f x11grab -window_id`
 reads its pixels without stealing focus. (niri's `screenshot-window` only captures the
@@ -197,6 +199,7 @@ def analyze(rgb):
         'red_pct': round(float(masks['red'].mean()) * 100, 3),
         'cyan_pct': round(float(masks['cyan'].mean()) * 100, 3),
         'white_pct': round(float(masks['white'].mean()) * 100, 3),
+        'edge_all': round(float(em.mean()), 3),
     }
     for name, roi in ROI.items():
         feats[f'edge_{name}'] = round(float(em[_roi_slice(roi, em.shape)].mean()), 3)
@@ -270,12 +273,19 @@ def _corr(a, b):
 def _rule(f):
     """Strong, measured scalar rules. Each returns (state, conf, why) or None.
 
-    Order matters: a red-heavy BGA during gameplay must hit the darkness check before
-    the redness one, so GAMEPLAY is tested first (a real GAME_OVER is dimmed but not
-    black: measured dark_pct 45 vs 88 for gameplay).
+    Order matters:
+    * the play disk beats everything (song select);
+    * a near-black frame is a scene transition, not gameplay — a real gameplay screen
+      with the BGA at zero opacity still has the playfield and HUD, so it measures
+      mean_v ~24, while a fade reaches ~0;
+    * darkness is tested before redness, so a red-heavy BGA during play cannot read as
+      GAME_OVER (a real GAME_OVER is dimmed but not black: measured dark_pct 45 vs 88).
     """
     if f['play_yellow'] > 1200:
         return 'SONG_SELECT', 1.0, f"play_yellow={f['play_yellow']}"
+    if f['mean_v'] < 6.0 or (f['dark_pct'] > 90.0 and f['edge_all'] < 0.5):
+        return 'TRANSITION', 1.0, (f"fade to black (mean_v={f['mean_v']:.1f}, "
+                                   f"edge_all={f['edge_all']:.2f})")
     if f['dark_pct'] > 60.0:
         return 'GAMEPLAY', 1.0, f"dark_pct={f['dark_pct']:.1f}"
     if f['red_pct'] > 15.0:
@@ -361,11 +371,14 @@ def main():
     args = ap.parse_args(sys.argv[1:])
 
     if args.list:
-        anchors = load_anchors()
-        if not anchors:
+        if not anchor_dirs():
             print(f'no anchors yet under {os.path.relpath(ANCHORS, ROOT)}')
-        for state, items in anchors.items():
-            print(f'  {state:16s} {len(items)} frame(s)')
+        for state, d in anchor_dirs():
+            pngs = [f for f in os.listdir(d) if f.endswith('.png')]
+            jsons = [f for f in os.listdir(d) if f.endswith('.json')]
+            warn = '' if len(pngs) == len(jsons) else \
+                f'   (WARNING: {len(jsons) - len(pngs)} JSON without a PNG — inert)'
+            print(f'  {state:16s} {len(pngs)} frame(s){warn}')
         return 0
 
     if args.check:
@@ -432,7 +445,7 @@ def main():
         print(f'state={state}  conf={conf:.2f}  ({why})')
         for k in ('play_yellow', 'play_yellow_centroid', 'nav_white', 'list_cyan',
                   'mean_v', 'dark_pct', 'bright_pct', 'red_pct', 'cyan_pct', 'white_pct',
-                  'edge_play', 'edge_nav', 'edge_hint', 'edge_left', 'edge_bg'):
+                  'edge_all', 'edge_play', 'edge_nav', 'edge_hint', 'edge_left', 'edge_bg'):
             print(f'  {k:22s} {f[k]}')
         print(f'annotated -> {os.path.relpath(args.out, ROOT)}')
     return 0
