@@ -365,9 +365,46 @@ def apply_profile(d):
     return d
 
 
+_last_key_timeout = 0.0
+
+
+def ensure_key(timeout=20.0):
+    """Wait for the harvester's per-session key before handling anything.
+
+    The client generates its key at startup and can reach the login within ~3 s
+    of the Gadget opening its port, while `_harvest_session.py` deliberately
+    waits EZ2_HARVEST_GRACE (15 s) before attaching (an early attach kills the
+    process). So the first requests always land before the key exists. Holding
+    them here is what makes both a private login and a *forwarded* login work:
+    the client is waiting for a response anyway, and its own timeout is the
+    limit. Without this, a forwarded login lets the client race ahead to
+    `c2s_get_gameinfo`, which we cannot encrypt -> 502 -> 'RESULT : TD3'.
+    """
+    global _last_key_timeout
+    if session_key():
+        return True
+    # after one full timeout, only probe briefly for the next minute so a dead
+    # harvester does not make every request hang for 20 s
+    budget = timeout if (time.time() - _last_key_timeout) > 60 else 2.0
+    t0 = time.time()
+    waited = False
+    while time.time() - t0 < budget:
+        if session_key():
+            log(f'session key arrived after a {time.time() - t0:.1f}s wait')
+            return True
+        waited = True
+        time.sleep(0.25)
+    if waited:
+        _last_key_timeout = time.time()
+        log('still no session key after waiting — is '
+            '.venv/bin/python server/_harvest_session.py running?')
+    return False
+
+
 def handle_api(flow: http.HTTPFlow):
     path = flow.request.path.split('?')[0]
     endpoint = path.rstrip('/').split('/')[-1]
+    ensure_key()
     req_json, err = decrypt_request(flow.request.raw_content or b'')
     if err:
         log(f'WARN {endpoint}: request not decrypted ({err})')
@@ -385,15 +422,6 @@ def handle_api(flow: http.HTTPFlow):
             return
 
     if endpoint == 'c2s_login':
-        # wait briefly for the harvester — the client generates the key just
-        # before this request lands, and the harvester may still be re-
-        # attaching after a game restart. The client's own timeout is the limit.
-        waited = False
-        for _ in range(60):          # up to 15 s
-            if session_key():
-                break
-            waited = True
-            time.sleep(0.25)
         sk = session_key()
         if sk is None:
             log('ERROR: no session key for login — is _harvest_session.py '
@@ -402,8 +430,6 @@ def handle_api(flow: http.HTTPFlow):
                 502, b'private server: no session key',
                 {'Content-Type': 'text/plain'})
             return
-        if waited:
-            log('login: key arrived while waiting')
         log(f"login: serving template under key {sk[0][:8].decode()}... "
             f"(key file {sk[2]:.0f}s old)")
         tpl = TEMPLATES.get('login')
