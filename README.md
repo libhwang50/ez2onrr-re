@@ -16,7 +16,7 @@ from its CDN. The full technical write-up is in **`AGENTS.md`**.
 | ✅ API traffic | `game1-play.ez2game.co.kr` decrypted (AES-CBC, live session key) |
 | ✅ Charts & keysound index | **cracked** — `decrypt_chart.py` decrypts CDN payloads offline |
 | ✅ Basic private server | login → music list → profile → chart download → score upload, all served locally (`server/`) |
-| ✅ **Fully offline songs** | no official server contact at all: the CloudFront URL signature is never verified, and `bundleCryptKey` is minted server-side (it is AES-CBC of a client-side *constant* under the live session key — `AGENTS.md` §3.2). The only input from the running game is its session key, which it never sends |
+| ✅ **Fully offline songs (confirmed in game)** | no official server contact at all: the CloudFront URL signature is never verified, and `bundleCryptKey` is minted server-side (it is AES-CBC of a client-side *constant* under the live session key — `AGENTS.md` §3.2). The only input from the running game is its session key, which it never sends |
 
 ## Private server
 

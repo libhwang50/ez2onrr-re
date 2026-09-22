@@ -142,6 +142,13 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
   *(Supersedes “96-character hex”, “per-song”, “session-scoped”, and the earlier “only
   thing acted on, role unknown”.)* It is **not** the chart key (§3.3).
 
+  Memory evidence for the comparison, in the session whose key was `316A60CA…`: a
+  full scan finds the constant **exactly once**, as a `byte[32]` (IL2CPP array header:
+  `bounds = 0`, `length = 0x20` at `+0x18`) at `0x75e295c0`, with the live
+  `zf.aes_key`/`aes_iv` strings in the same region. The *token* had two copies (both
+  response-derived); the constant has one, because it is the client's own — which is
+  also why scanning for the token never revealed its purpose.
+
   The two failure modes are why this hid for so long: a token that **cannot decrypt**
   (random bytes, or a token from another session's key) gives **8CN26 “Song Load
   timeout”**, which reads like a corruption verdict but is a *wait*; a token that decrypts
@@ -485,9 +492,10 @@ only element acted on. A private login cannot make the upstream mint URLs — it
 returns `{"result":0}` (24 B) and the client retries until `GPF 5 TIMES FAILED` —
 which is why hybrid mode must forward the **login** too, not just the pattern.
 
-**Fully offline chart loads: WORKING, with nothing borrowed.** Private login, our own
-minted `Expires`, CDN files from the local cache, and a token the server **mints itself**
-from the session key it reads live (§3.2) — no official request anywhere in the path.
+**Fully offline chart loads: WORKING, with nothing borrowed — confirmed in game.**
+Private login (`endpoints = ''`, no passthrough), our own minted `Expires`, CDN files from
+the local cache, and a token the server **mints itself** from the session key it reads live
+(§3.2): with `hybrid off` + `urls now` + `bck mint`, Finite 5K HD loads and plays.
 Protocol-level proof: our minted token is byte-identical to the one the official server
 had just served in the same session, so the client has already accepted our own output in
 game. Recipe: `server/README.md`.

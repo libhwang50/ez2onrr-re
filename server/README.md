@@ -206,9 +206,11 @@ python server/_exp.py bck mint                # mint the token from the live key
 ```
 
 Then every captured song entry loads with our login, our music list, our profile,
-our minted URL, our cached CDN files and a token we produced. Verified by
-decrypting the response the client accepted, and by minting a token identical to
-the one the official server had served moments earlier.
+our minted URL, our cached CDN files and a token we produced — **confirmed in game**
+(Finite 5K HD loads and plays with `endpoints = ''`). Verified three ways: by
+decrypting the response the client accepted, by minting a token byte-identical to
+the one the official server had served moments earlier, and by finding the client's
+own single `byte[32]` copy of the constant in memory next to its live session key.
 
 ### Where the blocker lives (from the code)
 
