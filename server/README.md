@@ -132,6 +132,12 @@ python server/_exp.py bck garbage        # 48 random bytes
 python server/_exp.py off                # everything back to private
 ```
 
+⚠ `python server/_exp.py off` clears the **url/bck mutations only** — the hybrid
+setting is untouched. Use `hybrid off` for that, `reset` for everything. (It used
+to clear the endpoints too, which silently turned a mutation test back into a
+replay test — check `pserver.log`: a valid upstream test logs `UPSTREAM
+c2s_get_pattern_file: …`, a replay test logs `REPLAYED official response`.)
+
 ⚠ **The Frida harvester must be running** (`.venv/bin/python
 server/_harvest_session.py`) even in hybrid mode: forwarding the login upstream
 gets the *upstream* session working, but this addon still has to encrypt its own

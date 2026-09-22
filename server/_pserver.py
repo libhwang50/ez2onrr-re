@@ -117,7 +117,8 @@ def load_data():
     global PASSTHROUGH_PATTERN
     PASSTHROUGH_PATTERN = os.path.exists(os.path.join(DATA, 'passthrough_pattern'))
     log(f'data loaded: templates={sorted(TEMPLATES)} cdn={len(CDN_PATHS)} charts={len(CHARTS)} '
-        f'passthrough_pattern={PASSTHROUGH_PATTERN}')
+        f'passthrough_pattern={PASSTHROUGH_PATTERN} endpoints={sorted(passthrough_set()) or "-"} '
+        f'knobs={[n for n in ("mutate_urls.txt", "mutate_bck.txt") if _knob(n)] or "-"}')
 
 
 # ---------------- crypto ----------------

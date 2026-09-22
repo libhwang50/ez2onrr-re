@@ -17,7 +17,9 @@ endpoints forwarded upstream, which is also read per request.
     python server/_exp.py bck garbage           # 48 random bytes
     python server/_exp.py bck stale             # the older captured real key
     python server/_exp.py bck empty
-    python server/_exp.py off                   # clear all knobs
+    python server/_exp.py off                   # clear the url/bck mutations
+    python server/_exp.py hybrid off            # back to a pure private server
+    python server/_exp.py reset                 # clear everything
 
 Hybrid mode is what makes a forwarded pattern response valid: the upstream
 official server must have a live session, so `login` must be forwarded too.
@@ -70,12 +72,16 @@ def main():
     if not a:
         show()
         return 0
-    if a[0] == 'off':
-        for name in KNOBS:
+    if a[0] in ('off', 'reset'):
+        # `off` = mutations only. Clearing the endpoints too was a trap: it
+        # silently turned a hybrid response test back into a replay test.
+        names = list(KNOBS) if a[0] == 'reset' else ['urls', 'bck']
+        for name in names:
             set_(name, '')
-        legacy = os.path.join(DATA, 'passthrough_pattern')
-        if os.path.exists(legacy):
-            os.remove(legacy)
+        if a[0] == 'reset':
+            legacy = os.path.join(DATA, 'passthrough_pattern')
+            if os.path.exists(legacy):
+                os.remove(legacy)
         show()
         return 0
     if len(a) != 2:
