@@ -178,6 +178,24 @@ python server/_exp.py bck harvested
 Verified by decrypting the response the client accepted: our URL path,
 `Expires = now+150`, a *stale* signature, and the official token.
 
+### Where the blocker lives (from the code)
+
+`8CN26` is raised inside the song-load coroutine `ft.MoveNext`
+(`0x6ffff2fa7327`) via the reporter `InGameCore.dci` (`0x6ffff2e87ec0`), with two
+strings resolved by `oj.UI` (indices 166/167). `dci` is also the only writer of
+the latch at `InGameCore+0x798`, which `ft.MoveNext` checks to decide whether to
+abort — so the code is a **timeout inside the coroutine's wait**, not a verdict
+from anywhere else, and the network is not involved (a failing load opens exactly
+one connection: the handshake-only TLS probe to `3.37.247.33:443`).
+
+The remaining question is *what that wait depends on* — i.e. which step of the
+load pipeline the `bundleCryptKey` feeds. Leads for anyone resuming:
+the strings at `oj.UI(166)`/`oj.UI(167)` (they label the failed step); the wait
+loop inside `ft.MoveNext` around the two latch checks
+(`0x6ffff2fa71c2`/`0x6ffff2fa7205`); and a field-by-field diff of the
+`InGameCore` instance (fields live at 0x510-0x840, §4.3 of `AGENTS.md`) between a
+successful load and a failing one.
+
 ### What is still unknown
 
 The client owns no local copy of the token (a full-heap scan finds exactly two

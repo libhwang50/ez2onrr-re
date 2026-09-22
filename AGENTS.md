@@ -514,6 +514,66 @@ and the silent failure is what the watchdog times out on.
   `…7156…`) — a way to find a literal's consumers that does not depend on the
   literal offset encoding.
 
+**The 8CN26 mechanism, read from the code (endgame of the hunt).** With the
+literal's accessor located (see the addressing note below), the call site is a
+single instruction in the song-load coroutine:
+
+```
+call site: 0x6ffff2fa7327   ->  method attribution: ft.MoveNext @ 0x6ffff2f74230
+reporter : 0x6ffff2e87ec0   ->  InGameCore.dci
+getter   : 0x6ffff2ae5300   ->  oj.UI   (resolve a string by index)
+```
+
+`ft.MoveNext` fetches two strings via `oj.UI(166)` / `oj.UI(167)`, fetches the
+`"8CN26"` literal, and calls `InGameCore.dci(this, str166, str167, "8CN26")` —
+the error reporter — then returns `false`. `dci` is also the **only** writer of
+the latch the coroutine checks:
+
+```
+0x6ffff2e87fb5   mov byte ptr [rbx + 0x798], 1      ; inside InGameCore.dci
+0x6ffff2fa7205   movzx eax, byte ptr [rax + 0x798]  ; inside ft.MoveNext
+0x6ffff2fa721f   jne  -> report 8CN26, return false
+```
+
+So `InGameCore+0x798` means "an error was already reported", and 8CN26 is the
+coroutine's own timeout report (there is no earlier hidden error — the wait
+inside `ft.MoveNext` is the cause). **What that wait depends on is the one open
+item**, and the web of `dci` callers is *not* the answer (they are other,
+unrelated error reports).
+
+Verified along the way: a genuinely failing load opens exactly **one** connection
+(the handshake-only TLS probe to `3.37.247.33:443` — no 4649 frame, no 9902,
+nothing else), so the token is consumed locally, not validated over the network.
+
+**How literals are addressed in this build (needed for any future hunt).**
+
+* Each assembly's literal blob sits in one anonymous mapping that also holds the
+  static-fields region; its base is stored as a *static field of `System.String`*:
+  `blob = [ [StringKlass+0xb8] + STATIC_OFF ]` — e.g. `0x8320` and `0x9f858` for
+  two sampled assemblies (`deref <global> 0xb8,0x8320`).
+* Per-literal accessors are `<PrivateImplementationDetails>{…}.a.XX` methods that
+  set `ecx` = literal index, `edx` = offset in the blob, `r8d` = length, then call
+  the assembly's helper (`…2fd2390`, `…27b5be0`). There is **no** `mov edx,<off>`
+  against a mapping base and **no** RIP-relative `lea` to the blob: the offset is
+  relative to that runtime base, which is why every mapping-base scan returned 0.
+* A second, index-only resolver exists: `oj.UI(index)` returns a string for an
+  index in a different table (used by the error paths).
+* `InGameCore.dci` and `InGameCore.dch` are the reporter and its sibling; the
+  `dc*` cluster also holds the chart decryptor (`dcf`/`dcg`, §3.3).
+
+**Scanning caveats that cost time here (see `tools/README.md`).**
+
+* A byte-by-byte JS loop must only ever walk the module's **own** `r-x` ranges:
+  the earlier `base >= mod.base && base < base+mod.size` filter also matched
+  Wine/Unity JIT mappings, so loops walked ~6 GB and looked like hangs while
+  native `scanSync` (~1 GB/s) merely took seconds.
+* `findhex`'s original 2 GB budget scanned `rw-` before the code and silently
+  returned `hits=0` for code/pointer searches. It now defaults to 16 GB, scans
+  `r-x` first, and reports `budgetExhausted`.
+* AOT code is decrypted per method: scan after the path has executed.
+* Any single long RPC can wedge the Gadget if abandoned — scans are chunked
+  (`scanCallersChunk`) so Ctrl-C is safe between chunks.
+
 **Operating modes.** (1) *Hybrid* — official login + pattern passthrough, our CDN
 cache, private scores. (2) *Offline with a harvested token* — works end-to-end
 today; the only online step is capturing that token once per session. (3) *Pure
