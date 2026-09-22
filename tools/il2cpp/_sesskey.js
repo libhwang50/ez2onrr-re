@@ -272,12 +272,23 @@ rpc.exports.findhex = function (hexstr, budgetMB) {
     const hits = [];
     const ranges = Process.enumerateRanges({ protection: 'rw-', coalesce: true })
       .concat(Process.enumerateRanges({ protection: 'r--', coalesce: true }));
-    for (const r of ranges) {
-      if (scanned > budget || Date.now() - t0 > 120000) break;
-      if (r.size > 400 * 1024 * 1024) continue;      // skip absurd ranges
-      scanned += r.size;
-      let found;
-      try { found = Memory.scanSync(r.base, r.size, pat); } catch (e) { continue; }
+    const CHUNK = 64 * 1024 * 1024;          // big ranges are scanned in chunks:
+    const plen = Math.floor(pat.split(' ').length);   // skipping them entirely
+    for (const r of ranges) {                        // (as an earlier version did)
+      if (scanned > budget || Date.now() - t0 > 240000) break;   // hid real hits
+      let found = [];
+      if (r.size <= CHUNK) {
+        scanned += r.size;
+        try { found = Memory.scanSync(r.base, r.size, pat); } catch (e) {}
+      } else {
+        for (let off = 0; off < r.size; off += CHUNK - plen) {
+          if (scanned > budget || Date.now() - t0 > 240000) break;
+          const len = Math.min(CHUNK, r.size - off);
+          scanned += len;
+          try { found = found.concat(Memory.scanSync(r.base.add(off), len, pat)); }
+          catch (e) {}
+        }
+      }
       for (const m of found) {
         if (hits.length >= 64) break;
         let ctx = '';
