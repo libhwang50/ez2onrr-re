@@ -101,7 +101,10 @@ def main():
                    'len': int(a[1]),
                    'target': a[2] if len(a) > 2 else ''}, timeout=600), max_hits=45)
     elif a[0] == 'findthunk':
-        show(send({'op': 'findthunk', 'target': a[1]}, timeout=900), max_hits=40)
+        # optional second arg: extra candidate bases (comma separated), e.g. the
+        # base derived from findlit's impliedBase
+        show(send({'op': 'findthunk', 'target': a[1],
+                   'bases': a[2] if len(a) > 2 else ''}, timeout=900), max_hits=40)
     elif a[0] == 'hunt1':
         # the literal-data base + the neighbourhood of the anchored literal.
         # Default needle is the 8CN26 error-code text: the game's message table
