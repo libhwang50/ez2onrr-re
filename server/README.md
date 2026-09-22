@@ -307,12 +307,18 @@ python server/_screen.py --watch                 # classify continuously
 python server/_screen.py --list                  # collected anchors
 ```
 
-`classify()` applies a few hard rules (accent blobs) first, then falls back to the
-nearest edge-grid signature among the collected `server/anchors/<STATE>/` frames.
+`classify()` applies a few measured scalar rules first (yellow play disk -> song select;
+very dark -> gameplay; red banner -> game over), then falls back to the nearest match
+over **localized edge probes** of the collected `server/anchors/<STATE>/` frames. The
+probes are only screen-unique regions (`center` and `upperleft`): the shared chrome
+(nav, hint bar) correlates ~0.99 between every screen and would drown out differences,
+which is exactly why a whole-frame signature collided. Measured max cross-state
+correlation is 0.10 (`center`) / 0.19 (`upperleft`), so a match below 0.5, or without a
+0.15 lead, is reported as `UNKNOWN` and the sweep takes the safe recovery. Leaving a
+state's own anchors out never produces a false positive in testing.
 Anchors are git-ignored (they contain BGA art); collect your own with `--collect`.
-Currently only `SONG_SELECT` is anchored — the yellow-disk rule and the anchors both
-resolve it — so the other states fall through to the safe `UNKNOWN` recovery until
-anchors are collected for them.
+Currently `GAMEPLAY`, `GAME_OVER`, `MAIN_MENU`, `PAUSE_MENU` and `SONG_SELECT` are
+anchored; anything else falls through to the safe `UNKNOWN` recovery.
 
 A chart only counts as captured once the CDN body actually arrived: the sweep
 watches for the addon's `CDN OK`/`CDN HIT` line and otherwise reports *asked but

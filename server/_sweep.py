@@ -165,7 +165,7 @@ def screen_state():
         return None
     try:
         import _screen
-        return _screen.classify(_screen.analyze(_screen.grab()))
+        return _screen.classify(_screen.grab())
     except Exception as e:
         print(f'    (screen classifier unavailable: {e})')
         return None

@@ -1,37 +1,37 @@
 #!/usr/bin/env python3
 """Screen-state classifier for the chart sweeper.
 
-Why this is not raw template matching
--------------------------------------
-The song-select UI is semi-transparent over an *animated* music video, and the
-game blurs that video heavily. So panel interiors change every frame and cannot
-be matched pixel-for-pixel. Measured on the real song select:
+Why this is not raw template matching, and not OCR
+--------------------------------------------------
+The song-select UI is semi-transparent over an *animated* music video, and the game
+blurs that video heavily. Measured on the real screen at 1920x1080:
 
-    ROI (1920x1080)                temporal |frame1-frame2|   mean |grad|
-    blurred BGA field                        102                  1.84
-    semi-transparent nav pill                 21                  5.44
-    opaque yellow play disk                  4.9                  5.34
-    static circular BGA preview              4.9                  4.21
+    ROI                          temporal |f1-f2|    mean |grad|
+    blurred BGA field                 102              1.84
+    semi-transparent nav pill          21              5.44
+    opaque yellow play disk           4.9              5.34
+    static circular preview           4.9              4.21
 
-Two consequences, and they drive the design:
+So temporal differencing is useless (the background moves, so translucent UI moves with
+it, while the *static* preview looks UI-stable). Two things do work:
 
-* **Temporal differencing is useless here** — the background moves, so translucent
-  UI moves with it, while the *static* preview looks UI-stable.
-* **Structure survives blending.** Because the BGA is blurred, the UI is the only
-  high-frequency content, so edge energy separates UI from background even through
-  a translucent panel. Saturated, near-opaque accents (the yellow play disk, the
-  white key badges, the cyan selection) are additionally reliable by hue: the BGA
-  shifts a panel's brightness, not its hue.
+* **Saturated, near-opaque accents** by hue (the yellow play disk, red GAME OVER banner,
+  cyan selections) — the BGA shifts a panel's brightness, not its hue.
+* **Localized edge structure.** The BGA is blurred, so the UI is the only high-frequency
+  content, and edge correlation survives alpha blending. It must be *localized*: a
+  whole-frame edge signature is dominated by chrome every screen shares (the top nav,
+  the bottom hint bar), so global matching collides across screens. Restricting to
+  screen-unique regions separates them cleanly — measured max cross-state correlation:
+  `center` 0.10, `upperleft` 0.19, versus `top`/`nav`/`hint` ~0.99.
 
-So a probe is either an accent-colour blob in a fixed ROI, an edge-energy / edge-
-map comparison in a fixed ROI, and never an intensity template of a translucent
-panel. `--collect` gathers per-state anchors (edge-grid signatures + accent stats)
-and `classify()` combines a few hard rules with nearest-signature matching.
+`classify()` therefore applies a few scalar rules (accent colour, darkness, redness)
+and then falls back to nearest-match over localized edge probes of the collected
+`server/anchors/<STATE>/` frames.
 
-Capture is focus-independent: the game is XWayland, so
-`ffmpeg -f x11grab -window_id` reads its pixels without stealing focus. (niri's
-`screenshot-window` only captures the *focused* window, and this desktop is
-focus-follows-mouse, which makes it unusable while the sweep's terminal is up.)
+Capture is focus-independent: the game is XWayland, so `ffmpeg -f x11grab -window_id`
+reads its pixels without stealing focus. (niri's `screenshot-window` only captures the
+*focused* window, and this desktop is focus-follows-mouse, which makes it unusable while
+the sweep's terminal is up.)
 
 Usage
 -----
@@ -66,7 +66,7 @@ class ScreenError(RuntimeError):
     """Raised when the game window cannot be found or captured."""
 
 
-# (x0, y0, x1, y1), all in canonical 1920x1080 coordinates.
+# Fixed regions of interest, all in canonical 1920x1080 coordinates.
 ROI = {
     'play':  (580, 640, 760, 800),     # yellow play disk (song select)
     'nav':   (430, 25, 900, 75),       # top nav pill / selected tab
@@ -77,18 +77,24 @@ ROI = {
     'preview': (300, 180, 560, 420),   # circular BGA preview
 }
 
+# Regions used for edge-probe matching. Only screen-unique regions belong here: the
+# shared chrome (nav, hint bar) correlates ~0.99 between every screen and would drown
+# out the differences.
+PROBES = {
+    'center':    (600, 100, 1320, 330),   # pause wordmark / GAME OVER banner / card art
+    'upperleft': (0, 0, 640, 560),        # mode cards / playfield / stat panels
+}
+
 # PIL 'HSV' is H,S,V in 0..255.
 ACCENT = {
     'yellow': ((25, 140, 180), (45, 255, 255)),
     'cyan':   ((110, 120, 150), (150, 255, 255)),
     'white':  ((0, 0, 225), (255, 45, 255)),
+    'red':    ((0, 110, 70), (18, 255, 255)),
 }
 
-# Hard rules evaluated before nearest-signature matching. Each is
-# (state, feature, min, max) on a scalar feature.
-RULES = [
-    ('SONG_SELECT', 'play_yellow', 1200, 10 ** 9),
-]
+PROBE_MIN = 0.5       # minimum correlation to accept an edge-probe match
+PROBE_MARGIN = 0.15   # required lead over the runner-up state
 
 
 # ---------------------------------------------------------------- capture
@@ -133,7 +139,7 @@ def grab(wid=None, timeout=8.0):
 
 
 # ---------------------------------------------------------------- features
-def edge_mag(gray):
+def edge_map(gray):
     """Mean-abs gradient; large where the (sharp) UI is, small on the blurred BGA."""
     gx = np.zeros_like(gray)
     gy = np.zeros_like(gray)
@@ -142,22 +148,20 @@ def edge_mag(gray):
     return gx + gy
 
 
-def coarse(em, nx=16, ny=9):
-    """A small edge-energy fingerprint of the whole frame (UI layout signature)."""
-    h, w = em.shape
-    ys = np.linspace(0, h, ny + 1).astype(int)
-    xs = np.linspace(0, w, nx + 1).astype(int)
-    g = np.empty((ny, nx), np.float32)
-    for j in range(ny):
-        for i in range(nx):
-            g[j, i] = em[ys[j]:ys[j + 1], xs[i]:xs[i + 1]].mean()
-    return g
+def edge_map_rgb(rgb):
+    return edge_map(np.asarray(Image.fromarray(rgb).convert('L')).astype(np.float32))
 
 
 def _roi_slice(roi, shape):
     x0, y0, x1, y1 = roi
     h, w = shape[:2]
     return slice(min(y0, h), min(y1, h)), slice(min(x0, w), min(x1, w))
+
+
+def patch_vec(em, roi):
+    """Mean-subtracted edge patch of one ROI, flattened (for correlation)."""
+    sub = em[_roi_slice(roi, em.shape)].astype(np.float32)
+    return (sub - sub.mean()).ravel()
 
 
 def _blob(mask, roi):
@@ -173,11 +177,11 @@ def _blob(mask, roi):
 
 
 def analyze(rgb):
-    """Feature dict for one frame. Pure numpy/PIL, a few ms per frame."""
+    """Feature dict for one frame: scalar features + accent blobs (JSON-serializable)."""
     im = Image.fromarray(rgb)
     hsv = np.asarray(im.convert('HSV')).astype(np.int16)
     H, S, V = hsv[..., 0], hsv[..., 1], hsv[..., 2]
-    em = edge_mag(np.asarray(im.convert('L')).astype(np.float32))
+    em = edge_map(np.asarray(im.convert('L')).astype(np.float32))
 
     masks = {}
     for name, (lo, hi) in ACCENT.items():
@@ -185,7 +189,15 @@ def analyze(rgb):
                        (S >= lo[1]) & (S <= hi[1]) &
                        (V >= lo[2]) & (V <= hi[2]))
 
-    feats = {'size': [rgb.shape[1], rgb.shape[0]]}
+    feats = {
+        'size': [rgb.shape[1], rgb.shape[0]],
+        'mean_v': round(float(V.mean()), 2),
+        'dark_pct': round(float((V < 35).mean()) * 100, 2),
+        'bright_pct': round(float((V > 200).mean()) * 100, 2),
+        'red_pct': round(float(masks['red'].mean()) * 100, 3),
+        'cyan_pct': round(float(masks['cyan'].mean()) * 100, 3),
+        'white_pct': round(float(masks['white'].mean()) * 100, 3),
+    }
     for name, roi in ROI.items():
         feats[f'edge_{name}'] = round(float(em[_roi_slice(roi, em.shape)].mean()), 3)
     for name, roi in (('play_yellow', ROI['play']), ('nav_white', ROI['nav']),
@@ -194,30 +206,21 @@ def analyze(rgb):
         feats[name] = n
         feats[name + '_centroid'] = centroid
         feats[name + '_bbox'] = bbox
-    feats['mean_v'] = round(float(V.mean()), 2)
-    feats['edge_grid'] = [round(float(x), 3) for x in coarse(em).ravel()]
     return feats
 
 
-# ---------------------------------------------------------------- classify
-def _corr(a, b):
-    a = np.asarray(a, np.float32)
-    b = np.asarray(b, np.float32)
-    a = a - a.mean()
-    b = b - b.mean()
-    d = float(np.linalg.norm(a) * np.linalg.norm(b))
-    return float((a @ b) / d) if d else 0.0
+# ---------------------------------------------------------------- anchors
+def anchor_dirs():
+    if not os.path.isdir(ANCHORS):
+        return []
+    return [(s, os.path.join(ANCHORS, s)) for s in sorted(os.listdir(ANCHORS))
+            if os.path.isdir(os.path.join(ANCHORS, s))]
 
 
 def load_anchors():
     """{state: [feature dict, ...]} from server/anchors/<state>/*.json."""
     out = {}
-    if not os.path.isdir(ANCHORS):
-        return out
-    for state in sorted(os.listdir(ANCHORS)):
-        d = os.path.join(ANCHORS, state)
-        if not os.path.isdir(d):
-            continue
+    for state, d in anchor_dirs():
         items = []
         for fn in sorted(os.listdir(d)):
             if fn.endswith('.json'):
@@ -230,36 +233,103 @@ def load_anchors():
     return out
 
 
-def classify(feats, anchors=None):
-    """(state, confidence, why). Rules first, then nearest signature by edge-grid corr."""
-    for state, key, lo, hi in RULES:
-        v = feats.get(key, 0)
-        if lo <= v <= hi:
-            return state, 1.0, f'{key}={v}'
-    anchors = anchors if anchors is not None else load_anchors()
-    best = ('UNKNOWN', 0.0, 'no rule fired and no anchors collected')
-    for state, items in anchors.items():
-        for a in items:
-            c = _corr(feats['edge_grid'], a['edge_grid'])
-            if c > best[1]:
-                best = (state, c, f'edge-grid corr {c:.3f}')
-    if best[1] < 0.9:
-        return 'UNKNOWN', best[1], best[2]
-    return best
+_patch_cache = None
+
+
+def load_anchor_patches():
+    """{state: [ {probe: edge patch} ]} from the anchor PNGs (cached)."""
+    global _patch_cache
+    if _patch_cache is not None:
+        return _patch_cache
+    out = {}
+    for state, d in anchor_dirs():
+        sigs = []
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith('.png'):
+                continue
+            try:
+                rgb = np.asarray(Image.open(os.path.join(d, fn)).convert('RGB'))
+            except OSError:
+                continue
+            em = edge_map_rgb(rgb)
+            sigs.append({name: patch_vec(em, roi) for name, roi in PROBES.items()})
+        if sigs:
+            out[state] = sigs
+    _patch_cache = out
+    return out
+
+
+def _corr(a, b):
+    a = np.asarray(a, np.float32)
+    b = np.asarray(b, np.float32)
+    d = float(np.linalg.norm(a) * np.linalg.norm(b))
+    return float((a @ b) / d) if d else 0.0
+
+
+# ---------------------------------------------------------------- classify
+def _rule(f):
+    """Strong, measured scalar rules. Each returns (state, conf, why) or None.
+
+    Order matters: a red-heavy BGA during gameplay must hit the darkness check before
+    the redness one, so GAMEPLAY is tested first (a real GAME_OVER is dimmed but not
+    black: measured dark_pct 45 vs 88 for gameplay).
+    """
+    if f['play_yellow'] > 1200:
+        return 'SONG_SELECT', 1.0, f"play_yellow={f['play_yellow']}"
+    if f['dark_pct'] > 60.0:
+        return 'GAMEPLAY', 1.0, f"dark_pct={f['dark_pct']:.1f}"
+    if f['red_pct'] > 15.0:
+        return 'GAME_OVER', 1.0, f"red_pct={f['red_pct']:.1f}"
+    return None
+
+
+def classify(rgb, anchors=None):
+    """(state, confidence, why) for one RGB frame.
+
+    Scalar rules first (accent/darkness/redness), then nearest match over the
+    localized edge probes of the collected anchors.
+    """
+    f = analyze(rgb)
+    hit = _rule(f)
+    if hit:
+        return hit
+
+    anchors = load_anchor_patches() if anchors is None else anchors
+    if not anchors:
+        return 'UNKNOWN', 0.0, 'no rule fired and no anchors collected'
+
+    em = edge_map_rgb(rgb)
+    live = {name: patch_vec(em, roi) for name, roi in PROBES.items()}
+    scores = {}
+    for state, sigs in anchors.items():
+        best = -1.0
+        for sig in sigs:
+            for name in PROBES:
+                best = max(best, _corr(live[name], sig[name]))
+        scores[state] = best
+
+    order = sorted(scores.items(), key=lambda kv: -kv[1])
+    top = order[0]
+    second = order[1] if len(order) > 1 else ('', -1.0)
+    if top[1] >= PROBE_MIN and (top[1] - second[1]) >= PROBE_MARGIN:
+        return top[0], top[1], (f'edge-probe {top[1]:.3f} '
+                                f'(next {second[0]} {second[1]:.3f})')
+    return 'UNKNOWN', max(top[1], 0.0), (f'best {top[0]} {top[1]:.3f} '
+                                         f'below threshold {PROBE_MIN}')
 
 
 # ---------------------------------------------------------------- rendering
 def annotate(rgb, feats, state, conf, why):
     im = Image.fromarray(rgb).convert('RGB')
     dr = ImageDraw.Draw(im)
-    for name, roi in ROI.items():
-        colour = (255, 60, 60) if name in ('play', 'nav', 'hint') else (90, 180, 255)
+    for name, roi in {**ROI, **{f'probe:{k}': v for k, v in PROBES.items()}}.items():
+        colour = (255, 200, 0) if name.startswith('probe') else (90, 180, 255)
         dr.rectangle(roi, outline=colour, width=2)
         dr.text((roi[0] + 4, roi[1] + 4), name, fill=colour)
     bbox = feats.get('play_yellow_bbox')
     if bbox:
         dr.rectangle(bbox, outline=(255, 255, 0), width=3)
-    dr.rectangle((0, 0, 620, 30), fill=(0, 0, 0))
+    dr.rectangle((0, 0, 700, 30), fill=(0, 0, 0))
     dr.text((8, 8), f'{state}  conf={conf:.2f}  ({why})', fill=(255, 255, 0))
     return im
 
@@ -276,7 +346,6 @@ def save_collect(rgb, state, feats):
 
 # ---------------------------------------------------------------- cli
 def main():
-    a = sys.argv[1:]
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--window-id', type=int, help='X11 window id (default: search EZ2ON)')
@@ -287,7 +356,7 @@ def main():
     ap.add_argument('--watch', action='store_true', help='classify continuously')
     ap.add_argument('--interval', type=float, default=1.0, help='watch poll interval')
     ap.add_argument('--out', default=os.path.join(SHOTS, 'annotated.png'))
-    args = ap.parse_args(a)
+    args = ap.parse_args(sys.argv[1:])
 
     if args.list:
         anchors = load_anchors()
@@ -298,22 +367,24 @@ def main():
         return 0
 
     if args.watch:
-        anchors = load_anchors()
+        global _patch_cache
         last = None
         print('watching (Ctrl-C to stop)...')
         try:
             while True:
                 try:
                     rgb = grab(args.window_id)
-                    f = analyze(rgb)
-                    state, conf, why = classify(f, anchors)
-                except Exception as e:
+                    _patch_cache = None          # pick up anchors collected meanwhile
+                    state, conf, why = classify(rgb)
+                except (ScreenError, OSError, subprocess.SubprocessError) as e:
                     print(f'  grab failed: {e}')
                     time.sleep(args.interval)
                     continue
                 if state != last:
-                    print(f'  {time.strftime("%H:%M:%S")}  {state}  '
-                          f'conf={conf:.2f}  {why}  (play_yellow={f["play_yellow"]})')
+                    f = analyze(rgb)
+                    print(f'  {time.strftime("%H:%M:%S")}  {state}  conf={conf:.2f}  '
+                          f'{why}  (dark={f["dark_pct"]} red={f["red_pct"]} '
+                          f'play={f["play_yellow"]})')
                     last = state
                 time.sleep(args.interval)
         except KeyboardInterrupt:
@@ -322,7 +393,8 @@ def main():
 
     rgb = grab(args.window_id)
     f = analyze(rgb)
-    state, conf, why = classify(f)
+    state, conf, why = classify(rgb)
+
     if args.json:
         print(json.dumps(f, indent=1))
     if args.collect:
@@ -332,8 +404,8 @@ def main():
         annotate(rgb, f, state, conf, why).save(args.out)
         print(f'state={state}  conf={conf:.2f}  ({why})')
         for k in ('play_yellow', 'play_yellow_centroid', 'nav_white', 'list_cyan',
-                  'mean_v', 'edge_play', 'edge_nav', 'edge_list', 'edge_left',
-                  'edge_hint', 'edge_bg', 'edge_preview'):
+                  'mean_v', 'dark_pct', 'bright_pct', 'red_pct', 'cyan_pct', 'white_pct',
+                  'edge_play', 'edge_nav', 'edge_hint', 'edge_left', 'edge_bg'):
             print(f'  {k:22s} {f[k]}')
         print(f'annotated -> {os.path.relpath(args.out, ROOT)}')
     return 0
