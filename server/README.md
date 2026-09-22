@@ -226,22 +226,31 @@ So the game uses a **second, custom TLS client that ignores the WinHTTP proxy**,
 and *that* is the one channel no amount of addon stubbing has ever touched. The
 `bundleCryptKey` verdict matches its timing exactly.
 
-Interception harness — redirects the hostname and the raw IP into a second,
-TLS-terminating mitmproxy on 443 that runs the same addon, so these requests
-appear in `server/pserver.log` as ordinary rank queries and can be answered:
+Interception harness — redirects both the hostname and the raw IP to
+`server/_stub443.py`, a small **loop-proof** TLS stub that signs its certificate
+with the user's mitmproxy CA, logs every request byte-for-byte, and never
+connects upstream:
 
 ```bash
-sudo server/_rawchannel.sh on     # hosts entry + iptables REDIRECT + 443 listener
-# do a hybrid load, then:
-grep -E '^\[[0-9:]+\] rank ' server/pserver.log | tail -20
-sudo server/_rawchannel.sh off    # listener down, hosts + iptables restored
+sudo server/_rawchannel.sh on      # hosts entry + iptables REDIRECT + stub on 443
+sudo server/_rawchannel.sh test    # self-test; should print 3.37.247.33:9902
+# now relaunch the game, log in, load a song, then:
+sudo server/_rawchannel.sh status  # redirect state, matched-packet count, stub log
+tail -40 server/stub443.log
+sudo server/_rawchannel.sh off     # stub down, hosts + iptables restored
 ```
 
-If the client trusts mitmproxy's CA on this path (likely: the same Wine trust
-store already validates it for the proxied hosts), the requests become visible
+⚠ Do **not** use mitmproxy in reverse mode for this. With the hostname redirected
+to 127.0.0.1, a reverse proxy resolves its own upstream to 127.0.0.1, so every
+request it does not intercept opens a connection to itself: an escalating loop
+that ends in `OSError: [Errno 24] Too many open files` and a hung client. (First
+attempt did exactly that.) A stub that never dials upstream cannot loop.
+
+If the client accepts the CA-signed certificate (likely — the same Wine trust
+store already validates it for the proxied hosts) the requests become readable
 and a fully-offline server is a matter of answering them. If the handshake is
-rejected, the client pins its own CA bundle and the next step is to find and
-extend that bundle.
+rejected (`TLS FAILED ... in stub443.log`) the client pins its own CA bundle and
+the next step is to find and extend that bundle.
 
 ## Known simplifications / next steps
 

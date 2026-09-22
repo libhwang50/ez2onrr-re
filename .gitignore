@@ -53,3 +53,9 @@ server/session_key.json
 server/pserver.log
 server/data/
 server/errwatch.log
+# raw-channel stub certificate (signed by the local mitmproxy CA) + its log
+server/data/stub443-cert.pem
+server/data/stub443-key.pem
+server/data/stub443.csr
+server/data/stub443-cert.srl
+server/stub443.log
