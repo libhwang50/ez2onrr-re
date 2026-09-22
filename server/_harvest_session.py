@@ -161,7 +161,13 @@ def main():
             if cmd is not None:
                 log(f'cmd: {cmd.get("op")} {str(cmd.get("hex",""))[:40]}')
                 try:
-                    if cmd.get('op') == 'findhex':
+                    if cmd.get('op') == 'hunt1':
+                        res = script.exports_sync.hunt1(cmd.get('needle', '8CN26'))
+                    elif cmd.get('op') == 'hunt2':
+                        res = script.exports_sync.hunt2(str(cmd.get('off', 0)))
+                    elif cmd.get('op') == 'hunt3':
+                        res = script.exports_sync.hunt3(str(cmd.get('func', 0)))
+                    elif cmd.get('op') == 'findhex':
                         res = script.exports_sync.findhex(cmd.get('hex', ''),
                                                           str(cmd.get('budgetMB', 2048)))
                     elif cmd.get('op') == 'readbytes':

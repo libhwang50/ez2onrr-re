@@ -96,9 +96,19 @@ def main():
         print('scanning for the base64 string form (UTF-16LE)…')
         show(send({'op': 'findhex', 'hex': ' '.join(
             f'{x:02x}' for x in b.encode('utf-16-le'))}))
+    elif a[0] == 'hunt1':
+        # the literal-data base + the neighbourhood of the anchored literal.
+        # Default needle is the 8CN26 error-code text: the game's message table
+        # holds "8CN26" immediately followed by "Song Load timeout".
+        needle = a[1] if len(a) > 1 else 'CN26Song Load timeout'
+        show(send({'op': 'hunt1', 'needle': needle}, timeout=600), max_hits=80)
+    elif a[0] == 'hunt2':
+        show(send({'op': 'hunt2', 'off': a[1]}, timeout=600))
+    elif a[0] == 'hunt3':
+        show(send({'op': 'hunt3', 'func': a[1]}, timeout=600))
     elif a[0] == 'hunt':
-        print('the hunt runs automatically at attach when EZ2_HUNT=1; '
-              'restart the harvester with that env var')
+        print('use hunt1 / hunt2 <off> / hunt3 <funcVA> to drive the stages; '
+              'EZ2_HUNT=1 still runs all three at attach')
     else:
         print(__doc__)
         return 2
