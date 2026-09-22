@@ -60,3 +60,7 @@ server/data/stub443.csr
 server/data/stub443-cert.srl
 server/stub443.log
 server/cmd*.json
+# audit-channel captures (raw game traffic; may contain session material)
+server/stub9902.log
+server/stub9902_last.bin
+server/stub9902_client.bin
