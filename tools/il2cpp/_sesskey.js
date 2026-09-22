@@ -900,3 +900,60 @@ rpc.exports.method = function (addrCsv) {
     return JSON.stringify(out);
   });
 };
+
+// whowrites(dispHex): find every instruction that references a given structure
+// displacement (e.g. 0x798) and name the method containing it. A 4-byte
+// displacement pattern is specific enough that chance matches are negligible, so
+// the hits are real accesses - reads and writes alike - and the method names say
+// which code sets a flag.
+rpc.exports.whowrites = function (dispStr) {
+  return Il2Cpp.perform(() => {
+    const t0 = Date.now();
+    const disp = parseInt(String(dispStr).replace(/^0x/, ''), 16) >>> 0;
+    const b = [disp & 0xff, (disp >> 8) & 0xff, (disp >> 16) & 0xff, (disp >>> 24) & 0xff];
+    const pat = b.map(x => x.toString(16).padStart(2, '0')).join(' ');
+    const mod = Process.getModuleByName('GameAssembly.dll');
+    const xr = moduleCodeRanges(mod);
+    const out = { disp: '0x' + disp.toString(16), pattern: pat, hits: [], methods: [] };
+    const addrs = [];
+    for (const r of xr) {
+      let hs; try { hs = Memory.scanSync(r.base, r.size, pat); } catch (e) { continue; }
+      for (const h of hs) {
+        if (out.hits.length >= 60) break;
+        let ctx = '';
+        try {
+          const s2 = h.address.sub(16);
+          const buf = new Uint8Array(s2.readByteArray(48));
+          for (const x of buf) ctx += x.toString(16).padStart(2, '0');
+        } catch (e) {}
+        out.hits.push({ site: '0x' + h.address.toString(16), ctx: ctx });
+        addrs.push(h.address);
+      }
+    }
+    // name the containing method for each hit
+    const mmap = [];
+    for (const asm of Il2Cpp.domain.assemblies) {
+      let img, classes;
+      try { img = asm.image; } catch (e) { continue; }
+      try { classes = img.classes; } catch (e) { continue; }
+      for (const cls of classes) {
+        let ms; try { ms = cls.methods; } catch (e) { ms = []; }
+        for (const m of ms) { let va; try { va = m.virtualAddress; } catch (e) { continue; }
+          if (!va.isNull()) mmap.push({ va: va, name: (cls.namespace ? cls.namespace + '.' : '') + cls.name + '.' + m.name }); }
+      }
+    }
+    mmap.sort((a, b2) => a.va.compare(b2.va));
+    const attr = (sp) => { let lo = 0, hi = mmap.length - 1, best = null;
+      while (lo <= hi) { const mid = (lo + hi) >> 1;
+        if (mmap[mid].va.compare(sp) <= 0) { best = mmap[mid]; lo = mid + 1; } else hi = mid - 1; }
+      return best; };
+    for (let i = 0; i < out.hits.length; i++) {
+      const e = attr(addrs[i]);
+      out.hits[i].inMethod = e ? e.name + ' @ 0x' + e.va.toString(16) : '?';
+      out.hits[i].delta = e ? (parseInt(addrs[i].toString(16), 16) - parseInt(e.va.toString(16), 16)) : null;
+    }
+    out.methods = [...new Set(out.hits.map(h => h.inMethod))];
+    out.elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+    return JSON.stringify(out);
+  });
+};

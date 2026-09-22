@@ -167,7 +167,9 @@ def main():
                 # duration so Ctrl-C raises inside the wait and we detach.
                 signal.signal(signal.SIGINT, signal.default_int_handler)
                 try:
-                    if cmd.get('op') == 'method':
+                    if cmd.get('op') == 'whowrites':
+                        res = script.exports_sync.whowrites(cmd.get('disp', ''))
+                    elif cmd.get('op') == 'method':
                         res = script.exports_sync.method(cmd.get('addrs', ''))
                     elif cmd.get('op') == 'scan_chunk':
                         res = script.exports_sync.scanCallersChunk(
