@@ -7,7 +7,7 @@ endpoints forwarded upstream, which is also read per request.
 
     python server/_exp.py                       # show current state
     python server/_exp.py offline               # THE fully offline mode (no upstream)
-    python server/_exp.py harvest               # capture: forward login+pattern+cdn
+    python server/_exp.py harvest               # capture: forward login+pattern+cdn, no mutations
     python server/_exp.py hybrid on             # forward login+pattern upstream
     python server/_exp.py hybrid pattern        # forward only the pattern
     python server/_exp.py hybrid off            # pure private server
@@ -102,9 +102,13 @@ def main():
         # extracted_charts/ (without `cdn` a missing chart is a local 404 and
         # nothing can ever be captured).
         set_('endpoints', 'login,pattern,cdn')
-        set_('urls', 'now')
-        set_('bck', 'harvested')
-        set_('chart', 'exact')     # a miss must reach upstream to be captured
+        # NO url/bck mutation here: the forwarded response carries real signed
+        # CloudFront URLs and a fresh token, and CloudFront *checks the
+        # signature* (the client never does) - rewriting Expires with our own
+        # signature is a guaranteed 403. Offline mode is where we mint them.
+        set_('urls', '')
+        set_('bck', '')
+        set_('chart', 'exact')     # irrelevant in passthrough; set for clarity
         show()
         return 0
     if a[0] in ('off', 'reset'):

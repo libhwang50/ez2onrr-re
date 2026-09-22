@@ -405,8 +405,16 @@ def mutate_pattern_response(obj):
         return None
     changed = []
     if m_url:
+        if cdn_passthrough():
+            # The URLs are about to be fetched from the real CloudFront, which
+            # verifies the signature. Rewriting Expires (or the params/host)
+            # invalidates it -> 403 for every chart. Skip and say so loudly.
+            log(f'  WARNING: ignoring urls={m_url} — cdn passthrough is on and '
+                f'CloudFront checks the upstream signature (use `_exp.py offline` '
+                f'for minted URLs)')
+            m_url = ''
         for f in ('final_url_ez', 'final_url_ezi'):
-            if isinstance(obj.get(f), str):
+            if m_url and isinstance(obj.get(f), str):
                 obj[f] = mutate_url(obj[f], m_url)
                 changed.append(f'{f}={m_url}')
     if m_bck:
