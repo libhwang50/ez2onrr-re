@@ -606,6 +606,14 @@ def respond_api(flow, obj):
 
 def handle_rank(flow: http.HTTPFlow):
     q = flow.request.query.get('data', '')
+    body = flow.request.raw_content or b''
+    # log EVERY rank request: the game also talks to this host on a raw,
+    # un-proxied TLS channel (custom client, 3.37.247.33:443, bypasses the
+    # proxy) — see server/README.md, that is where the session/bundleCryptKey
+    # check lives. Anything appearing here after a hosts redirect is that
+    # channel, and its exact shape is what a fully-offline server must answer.
+    log(f'rank {flow.request.method} {flow.request.path[:70]} '
+        f'data={q[:110]!r} body={len(body)}B')
     arg = q.split(',')[0]
     if arg == 'get_battle_server_ip':
         body = BATTLE_SERVER.encode()
@@ -620,8 +628,6 @@ def handle_rank(flow: http.HTTPFlow):
     else:
         # rating / totalranking / getcoursedata / misc — empty matches the
         # official servers' own responses
-        if not q.startswith(('rating', 'totalranking')):
-            log(f'rank query served empty: {q[:120]}')
         body = b''
     flow.response = http.Response.make(
         200, body, {'Content-Type': 'application/json'})

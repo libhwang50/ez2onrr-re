@@ -197,6 +197,52 @@ path/`Expires`/signature length) and saves it to
 `…​.full.json` (real URLs + key, git-ignored) — so a known-good response can be
 diffed against the replay and reused.
 
+## The raw channel — where the `bundleCryptKey` is actually checked
+
+The mutation matrix settled the two open questions:
+
+* **CloudFront URL signature: not verified.** `urls skew` (`Expires` +1 s, so the
+  signature no longer matches, while the URL still looks perfectly fresh) **loads
+  and plays**. So a private server may mint its own URLs with any plausible
+  `Expires` and a shape-valid signature.
+* **`bundleCryptKey`: validated.** `bck garbage` against a fresh, correctly
+  signed upstream response (48 random bytes, same base64 shape) **fails with
+  8CN26**. It is therefore the *only* thing about the pattern response the client
+  checks. It is not derived from the session key (SHA-384/HMAC/AES against
+  `zf.aes_key`/`aes_iv` and the unused `bbk.wdp`/`wdq` static pair all miss), so it
+  is server-minted random data.
+
+Where can it be checked, if not over the proxied HTTP? A `tcpdump` of a
+successful hybrid load (`host 3.37.247.33`) shows, besides the documented
+`websocket-sharp` Notice channel on **4649** (verified again: `GET /Notice?id=…`,
+`101`, then ping/pong — no audit payload, and no port **9902** traffic at all),
+about **nine direct TLS connections to `game1-rank.ez2game.co.kr:443`** whose
+`Sectigo *.ez2game.co.kr` certificate and `1562`-byte ClientHello are followed by
+an encrypted request and no plaintext HTTP — and they cluster **right before the
+chart load**. They are *not* mitmproxy's: with the addon stubbing the rank host,
+mitmproxy provably never dials upstream (verified with a local request through a
+second instance: the addon answers `3.37.247.33:9902` with no `server connect`).
+So the game uses a **second, custom TLS client that ignores the WinHTTP proxy**,
+and *that* is the one channel no amount of addon stubbing has ever touched. The
+`bundleCryptKey` verdict matches its timing exactly.
+
+Interception harness — redirects the hostname and the raw IP into a second,
+TLS-terminating mitmproxy on 443 that runs the same addon, so these requests
+appear in `server/pserver.log` as ordinary rank queries and can be answered:
+
+```bash
+sudo server/_rawchannel.sh on     # hosts entry + iptables REDIRECT + 443 listener
+# do a hybrid load, then:
+grep -E '^\[[0-9:]+\] rank ' server/pserver.log | tail -20
+sudo server/_rawchannel.sh off    # listener down, hosts + iptables restored
+```
+
+If the client trusts mitmproxy's CA on this path (likely: the same Wine trust
+store already validates it for the proxied hosts), the requests become visible
+and a fully-offline server is a matter of answering them. If the handshake is
+rejected, the client pins its own CA bundle and the next step is to find and
+extend that bundle.
+
 ## Known simplifications / next steps
 
 * `c2s_set_game_clear` response is a guess (`{"result":1}`); the real body is
