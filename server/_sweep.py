@@ -79,8 +79,9 @@ DEFAULTS = {
                'after_failed_load': 3.0,
                'poll': 0.25,
                'after_confirm': 3.0,
-               # screen classifier: wait out fades and require a state twice in a row
-               'screen_debounce': 0.4, 'screen_timeout': 3.0},
+               # screen classifier: wait out fades and require a state to persist for
+               # `screen_stable` seconds before acting (the fade effect is ~1.5 s)
+               'screen_debounce': 0.4, 'screen_stable': 2.0, 'screen_timeout': 6.0},
 }
 
 REQ = re.compile(r'c2s_get_pattern_file request: (\{.*\})')
@@ -164,10 +165,10 @@ SCREEN = os.environ.get('EZ2_NO_SCREEN') not in ('1', 'true')
 def screen_state():
     """(state, confidence, why) for the game window, or None if unavailable.
 
-    Debounced, because the sweep classifies right after triggering a transition: a
-    fade to black is reported as TRANSITION and waited out, and every other state must
-    be seen twice in a row, so a mid-fade dark frame (read as GAMEPLAY by the
-    darkness rule) does not decide the recovery.
+    Debounced, because the sweep classifies around scene transitions (~1.5 s of fade):
+    a fade to black is reported as TRANSITION and waited out, and every other state
+    must persist for `screen_stable` seconds before it is accepted. A single dark
+    frame mid-fade is therefore never enough to decide the recovery.
     """
     if not SCREEN:
         return None
@@ -176,23 +177,30 @@ def screen_state():
     except Exception as e:
         print(f'    (screen classifier unavailable: {e})')
         return None
-    deadline = time.time() + T.get('screen_timeout', 3.0)
+    deadline = time.time() + T.get('screen_timeout', 6.0)
     gap = T.get('screen_debounce', 0.4)
-    prev = None
+    stable = T.get('screen_stable', 2.0)
+    candidate = None
+    since = 0.0
+    last = None
     while True:
         try:
             st = _screen.classify(_screen.grab())
         except Exception as e:
             print(f'    (screen classifier unavailable: {e})')
             return None
+        last = st
+        now = time.time()
         if st[0] == 'TRANSITION':
-            prev = None
-        elif st[0] == prev:
-            return st
+            candidate = None
+        elif st[0] == candidate:
+            if now - since >= stable:
+                return st
         else:
-            prev = st[0]
-        if time.time() >= deadline:
-            return st
+            candidate = st[0]
+            since = now
+        if now >= deadline:
+            return last
         time.sleep(gap)
 
 
