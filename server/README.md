@@ -4,10 +4,12 @@ A first working private-server implementation for the Standard/Basic online
 flow. It stubs the game's three HTTPS hosts entirely server-side and keeps the
 raw-TCP channels (battle/control, raw IPs) pointed at the real servers.
 
-**Chart loads work fully offline** (no official login, no CloudFront, no borrowed
-token): the URL signature is never verified and `bundleCryptKey` is minted here —
-it is AES-256-CBC/PKCS7 of a **client-side constant** under the client's live
-session key. See "Fully offline chart loads" below.
+**Chart loads work fully offline by default** (no official login, no
+CloudFront, no borrowed token): the URL signature is never verified and
+`bundleCryptKey` is minted here — it is AES-256-CBC/PKCS7 of a **client-side
+constant** under the client's live session key. No `_exp.py` setup step is
+needed; the offline recipe *is* the default. See "Fully offline chart loads"
+below.
 
 
 Everything cryptographic is already solved (see AGENTS.md §3.1/§3.3); this is
@@ -172,17 +174,25 @@ does that already.
 
 ### The knobs and what they proved
 
+**Offline is the default now.** With no knob files the addon forwards nothing,
+mints its own CDN `Expires` and `bundleCryptKey`, and serves a song's chart for
+any requested variant. The knobs below *override* that default (and `off`/`none`
+turns a piece of it off for an experiment), so the old `hybrid off` + `urls now`
++ `bck mint` recipe is what happens on a fresh install with no setup.
+
 ```bash
-python server/_exp.py                 # show state
-python server/_exp.py chart any       # serve a song's captured chart for any variant
+python server/_exp.py                 # show state (and the effective defaults)
+python server/_exp.py chart any       # the default: chart for any song variant
 python server/_exp.py chart exact     # only the exact keymode/difficulty (capturing)
-python server/_exp.py hybrid off      # no passthrough to the official servers
-python server/_exp.py urls now        # mint our own Expires = now+150
-python server/_exp.py bck mint        # mint the token (client constant + live key)
+python server/_exp.py hybrid off      # no passthrough (the default)
+python server/_exp.py urls now        # mint our own Expires = now+150 (the default)
+python server/_exp.py bck mint        # mint the token (the default)
 python server/_exp.py bck mint:zero   # ... with a zero payload (diagnostic)
 python server/_exp.py bck harvested   # or reuse the token from a captured response
-python server/_exp.py off             # clear the url/bck mutations (hybrid untouched)
-python server/_exp.py reset           # clear everything
+python server/_exp.py urls off        # raw replay, no URL rewrite
+python server/_exp.py bck off         # raw replay, no token mint
+python server/_exp.py off             # clear the url/bck/chart mutations -> offline defaults
+python server/_exp.py reset           # clear everything -> offline defaults
 ```
 
 | run | knob | result | conclusion |
@@ -196,12 +206,20 @@ python server/_exp.py reset           # clear everything
 
 ### The offline recipe
 
-No official contact at all — the protocol-level token is minted here:
+No official contact at all, and **no setup step** — this is the default. The
+protocol-level token is minted from the client's hardcoded build constant and the
+live session key:
 
 ```bash
 .venv/bin/python server/_harvest_session.py   # terminal 1: keeps session_key.json live
 mitmdump -s server/_pserver.py                # terminal 2: the server
+```
 
+The three `_exp.py` commands that used to be required are now the built-in
+defaults (`urls now`, `bck mint`, `chart any`, no passthrough). Running them is
+harmless and remains useful to re-assert the state after experiments:
+
+```bash
 python server/_exp.py hybrid off              # no passthrough
 python server/_exp.py urls now                # our own CDN URLs
 python server/_exp.py bck mint                # mint the token from the live key

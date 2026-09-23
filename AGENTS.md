@@ -567,7 +567,10 @@ which is why hybrid mode must forward the **login** too, not just the pattern.
 **Fully offline chart loads: WORKING, with nothing borrowed — confirmed in game.**
 Private login (`endpoints = ''`, no passthrough), our own minted `Expires`, CDN files from
 the local cache, and a token the server **mints itself** from the session key it reads live
-(§3.2): with `hybrid off` + `urls now` + `bck mint`, Finite 5K HD loads and plays.
+(§3.2): Finite 5K HD loads and plays. **This is now the server's default** — the old
+`hybrid off` + `urls now` + `bck mint` + `chart any` setup step is built in, the 32-byte
+payload constant is embedded in `_pserver.py` (`DEFAULT_BCK_PAYLOAD`), and a knob of
+`off`/`none` is what turns a piece of the default off for an experiment.
 Protocol-level proof: our minted token is byte-identical to the one the official server
 had just served in the same session, so the client has already accepted our own output in
 game. Recipe: `server/README.md`.
@@ -620,9 +623,11 @@ decrypting any captured token with that session's key — which is exactly what
   (`scanCallersChunk`) so Ctrl-C is safe between chunks.
 
 **Operating modes.** (1) *Hybrid* — official login + pattern passthrough, our CDN
-cache, private scores. (2) *Offline with a harvested token* — works end-to-end
-today; the only online step is capturing that token once per session. (3) *Pure
-private* — blocked solely by the token: every HTTP element is already ours.
+cache, private scores. (2) *Offline* — **the default**: nothing is forwarded, the
+CDN URLs and the `bundleCryptKey` token are both minted server-side from the
+live session key (the token's 32-byte payload constant is embedded in
+`_pserver.py`), and a captured song loads at any key mode/difficulty. The only
+input still taken from the running game is its session key (`_harvest_session.py`).
 
 **Private-server trap:** an unhandled exception inside a mitmproxy addon hook does *not*
 abort the request — mitmproxy logs it and **forwards the request to the real upstream**.
@@ -772,7 +777,7 @@ Private server (see **`server/README.md`** for the full guide):
 | `server/_sweep.py` | **drive the game to capture charts** (a capture counts only once the CDN body arrives; captures are filed into `extracted_charts/` by the addon) — blind (the server log is the sensor), guarded by a focused-window check, with `--probe`-style `--calibrate` that deduces the difficulty/keymode keys from the request JSON |
 | `server/_coverage.py` | **audit chart coverage** — songs covered vs the 601-song music list (coverage is per *song*: one capture serves every variant), writes a capture queue, and parses `pserver.log` to verify what a capture run actually asked for |
 | `server/_build_data.py` | rebuild `server/data/` from local captures — decrypted API templates, the chart→CDN map (47 variants / 15 songs), profile overrides |
-| `server/_exp.py` | the experiment knobs: `hybrid on/off`, `urls now/skew/future/expire/noparams/host`, `bck harvested/stale/garbage/empty/literal:…`, `off` (mutations only), `reset`. Read per request — no restart. `off` deliberately does NOT touch the hybrid setting |
+| `server/_exp.py` | the experiment knobs: `hybrid on/off`, `urls now/skew/future/expire/noparams/host`, `bck harvested/stale/garbage/empty/literal:…`, `off` (mutations only), `reset`. Read per request — no restart. **The addon's default is already fully offline** (`urls now` + `bck mint` + `chart any`, no passthrough); an absent knob means the default, `off`/`none` turns a piece of it off. `off` deliberately does NOT touch the hybrid setting |
 | `server/_mem.py` | drive the harvester's command channel: `findhex` (byte pattern over code first, then r--, rw-; default budget 16 GB, reports `budgetExhausted`), `findlea` (rip-relative `lea` to an address), `findlit` (base-free, keyed on `mov r8d,<len>`), `findthunk`, `readbytes`, `bck` (locate the session token in memory) |
 | `server/_stub443.py` | loop-proof TLS stub for the game's **un-proxied** TLS channel to `game1-rank.ez2game.co.kr:443`, with a certificate signed by the local mitmproxy CA (the client accepts it — no pinning) |
 | `server/_stub9902.py` | capturing TCP relay/stub for the raw packet/battle channel (`battle_server.txt`) — where the client's `sendaes,` key hand-off is expected to land (§3.1). Logs both directions |
@@ -861,11 +866,12 @@ server's. In-game validation of the server itself is in progress.
    Also record `gamemode` per capture (BASIC vs STANDARD differs by rule, §3.5). Uncaptured
    songs answer `result:0` and the client retries 5× against **our** server, so a miss
    is harmless.
-8. **`bundleCryptKey` — SOLVED (§3.2/§3.7).** Fully offline chart loads work with a
-   self-minted token: encrypt the client's build-time 32-byte payload constant under the
-   live session key, exactly as the official server does. Nothing comes from an official
-   response any more. Remaining niceties: keep `server/data/bck_payload.hex` per client
-   build, and re-derive it after a game update.
+8. **`bundleCryptKey` — SOLVED (§3.2/§3.7).** Fully offline chart loads are the
+   server's **default**: a self-minted token, encrypting the client's build-time 32-byte
+   payload constant (embedded as `DEFAULT_BCK_PAYLOAD` in `_pserver.py`) under the live
+   session key, exactly as the official server does. Nothing comes from an official
+   response any more. Remaining nicety: a game update can change the constant —
+   re-derive it (a fresh capture or `server/data/bck_payload.hex` overrides).
 9. Persist progression: feed accepted `plf` uploads back into the served myinfo
    `clearlist` so scores/records survive across sessions (the client computes its
    per-key-mode rating from that data — §3.7), and RE the exact per-mode rating

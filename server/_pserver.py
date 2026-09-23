@@ -149,6 +149,18 @@ def pkcs7_unpad(b):
 
 BCK_PAYLOAD_FILE = os.path.join(DATA, 'bck_payload.hex')
 
+# The 32-byte payload constant of the current client build (EZ2ON REBOOT:R,
+# 2026.09.04.001). `bundleCryptKey` is AES-256-CBC/PKCS7 of this constant under
+# the client's live session key; the client decrypts the served token and
+# compares it with its own copy. It is a **build-time constant of the client**,
+# not session material — so this literal is all that is needed to mint a valid
+# token. It is embedded here (rather than only in the git-ignored data/ dir) so
+# a published server works offline out of the box; a future game update can
+# change it, in which case `server/data/bck_payload.hex` or a fresh capture
+# overrides it.
+DEFAULT_BCK_PAYLOAD = bytes.fromhex(
+    'd3163d646fedbbcc07a752f663fcd4cf06f5f9eedbadcc70244f20c82ad76922')
+
 
 def bck_payload():
     """The 32-byte plaintext the client expects inside bundleCryptKey.
@@ -159,9 +171,10 @@ def bck_payload():
     tokens from different key material decrypted to the same 32 bytes. So the
     server does not need an official response at all — it encrypts this constant.
 
-    Order: server/data/bck_payload.hex (git-ignored), else derive it from the
-    last captured upstream pattern response (works when the capture is from the
-    same session key), else zeros with a warning.
+    Order: server/data/bck_payload.hex (per-build override), else derive it from
+    the last captured upstream pattern response (works when the capture is from
+    the same session key — authoritative after a game update), else the
+    hardcoded constant for the known build.
     """
     try:
         h = open(BCK_PAYLOAD_FILE).read().strip()
@@ -183,8 +196,7 @@ def bck_payload():
                 return pl
         except Exception:
             pass
-    log('  WARNING: no bck payload constant available — falling back to zeros')
-    return bytes(32)
+    return DEFAULT_BCK_PAYLOAD
 
 
 def session_key():
@@ -398,10 +410,29 @@ def mutate_url(u, mode):
         query=urllib.parse.urlencode(q)))
 
 
-def mutate_pattern_response(obj):
-    """Apply the knob files. Returns a list of applied changes, or None."""
+def mutate_pattern_response(obj, defaults=True):
+    """Apply the knob files, falling back to the fully-offline defaults.
+
+    With `defaults=True` (the local-serving path) an absent knob means the
+    offline recipe: mint a fresh `Expires` (the CloudFront signature is never
+    verified) and mint the `bundleCryptKey` knowledge proof from the client's
+    live session key. `defaults=False` is used for the *passthrough* response
+    hook, where the upstream already minted both and a rewrite would break the
+    real CloudFront signature.
+
+    A knob of `off`/`none` disables that piece of the default. Returns a list
+    of applied changes, or None."""
+    if not isinstance(obj, dict):
+        return None
     m_url, m_bck = _knob('mutate_urls.txt'), _knob('mutate_bck.txt')
-    if not (m_url or m_bck) or not isinstance(obj, dict):
+    if defaults:
+        m_url = m_url or 'now'
+        m_bck = m_bck or 'mint'
+    if m_url in ('off', 'none'):
+        m_url = ''
+    if m_bck in ('off', 'none'):
+        m_bck = ''
+    if not (m_url or m_bck):
         return None
     changed = []
     if m_url:
@@ -748,15 +779,19 @@ def capture_cdn_response(flow):
 
 
 def chart_mode():
-    """server/data/chart_mode.txt: 'exact' (default) or 'any'.
+    """server/data/chart_mode.txt: 'any' (default) or 'exact'.
 
     'any' serves the best chart we hold *for that song* when the exact
     keymode/difficulty was never captured. The client does not choose the CDN
     path — it downloads whatever URL we return — so one capture per song makes
     every variant of that song loadable (`_coverage.py` counts coverage that
-    way). Keep 'exact' while capturing: a miss must go upstream for the body to
-    be recorded, and 'any' would answer it locally instead."""
-    return (_knob('chart_mode.txt') or 'exact').strip().lower()
+    way). This is the offline default: a published server should serve a song
+    however the player picks it.
+
+    'exact' is for capturing — a miss must go upstream for the body to be
+    recorded, and 'any' would answer it locally instead. `_exp.py harvest`
+    selects it automatically."""
+    return (_knob('chart_mode.txt') or 'any').strip().lower()
 
 
 def pattern_response(req_json):
@@ -821,6 +856,9 @@ def pattern_response(req_json):
         'bundleCryptKey': bundle_crypt_key(),
         'result': 1,
     }
+    ch = mutate_pattern_response(resp)
+    if ch:
+        log(f'  MUTATED (chart): {ch}')
     log(f"pattern: {name!r} km={km} lm={lm} -> {how} "
         f"{hit['keymode_dir']}/{hit['levelmode_dir']}")
     return resp
@@ -993,7 +1031,7 @@ class PrivateServer:
             save_upstream(ep, obj)
             ch = None
             if ep == 'c2s_get_pattern_file' and mutation_requested():
-                ch = mutate_pattern_response(obj)
+                ch = mutate_pattern_response(obj, defaults=False)
                 if ch:
                     flow.response.content = encrypt_response(obj)
             log(f'UPSTREAM {ep}: {summarize_obj(obj, secret=("bundleCryptKey",))}'

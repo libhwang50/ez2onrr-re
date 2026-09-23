@@ -6,12 +6,12 @@ apply live — no mitmdump restart. Only `hybrid on/off` changes the set of
 endpoints forwarded upstream, which is also read per request.
 
     python server/_exp.py                       # show current state
-    python server/_exp.py offline               # THE fully offline mode (no upstream)
+    python server/_exp.py offline               # (the default) fully offline serving
     python server/_exp.py harvest               # capture: forward login+pattern+cdn, no mutations
     python server/_exp.py hybrid on             # forward login+pattern upstream
     python server/_exp.py hybrid pattern        # forward only the pattern
-    python server/_exp.py hybrid off            # pure private server
-    python server/_exp.py urls now              # Expires = now+150s (offline mint)
+    python server/_exp.py hybrid off            # pure private server (also the default)
+    python server/_exp.py urls now              # Expires = now+150s (offline mint; the default)
     python server/_exp.py urls skew             # Expires +1s (breaks signature only)
     python server/_exp.py urls future           # Expires +10y (breaks signature)
     python server/_exp.py urls expire           # Expires in the past
@@ -19,15 +19,21 @@ endpoints forwarded upstream, which is also read per request.
     python server/_exp.py urls host             # swap the CDN host
     python server/_exp.py bck harvested         # the bCK from the last official response
     python server/_exp.py bck garbage           # 48 random bytes
-    python server/_exp.py bck mint              # minted: AES(live key, client constant)
+    python server/_exp.py bck mint              # AES(live key, client constant) — the default
     python server/_exp.py bck mint:zero         # minted with a fixed payload
     python server/_exp.py bck stale             # the older captured real key
     python server/_exp.py bck empty
-    python server/_exp.py chart any             # serve the song's chart for any variant
+    python server/_exp.py chart any             # serve the song's chart for any variant (default)
     python server/_exp.py chart exact           # only exact keymode/difficulty (capturing)
-    python server/_exp.py off                   # clear the url/bck mutations
+    python server/_exp.py off                   # clear explicit mutations -> back to offline defaults
     python server/_exp.py hybrid off            # back to a pure private server
-    python server/_exp.py reset                 # clear everything
+    python server/_exp.py reset                 # clear everything -> offline defaults
+
+Offline is now the default. With no knob files the addon forwards nothing,
+mints its own CDN `Expires` and `bundleCryptKey` from the client's live session
+key, and serves a song's chart for any requested variant. `mutate_urls.txt` /
+`mutate_bck.txt` therefore *override* that default; `off`/`none` turns a piece
+of it off (a raw replay) for experiments.
 
 Hybrid mode is what makes a forwarded pattern response valid: the upstream
 official server must have a live session, so `login` must be forwarded too.
@@ -69,9 +75,10 @@ def set_(name, value):
 
 def show():
     print(f'data dir: {DATA}')
+    print('  (fully offline is the default; explicit knob files override it)')
     for name in KNOBS:
         v = get(name)
-        print(f'  {name:10s} = {v!r}' + ('' if v else '   (off)'))
+        print(f'  {name:10s} = {v!r}' + ('' if v else '   (default)'))
     legacy = os.path.exists(os.path.join(DATA, 'passthrough_pattern'))
     print(f'  legacy passthrough_pattern marker: {"present" if legacy else "absent"}'
           + ('  (use `hybrid pattern` instead)' if legacy else ''))
@@ -112,8 +119,11 @@ def main():
         show()
         return 0
     if a[0] in ('off', 'reset'):
-        # `off` = mutations only. Clearing the endpoints too was a trap: it
-        # silently turned a hybrid response test back into a replay test.
+        # `off` clears the explicit mutations, which now means "back to the
+        # fully-offline defaults" (mint URLs + mint bCK + chart any). Use
+        # `urls off` / `bck off` for a raw replay experiment. Clearing the
+        # endpoints too was a trap: it silently turned a hybrid response test
+        # back into a replay test.
         names = list(KNOBS) if a[0] == 'reset' else ['urls', 'bck', 'chart']
         for name in names:
             set_(name, '')

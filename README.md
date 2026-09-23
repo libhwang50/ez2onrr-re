@@ -1,15 +1,15 @@
 # EZ2ON REBOOT: R — asset ripper & reverse-engineering toolset
 
 Tools for decrypting and extracting assets from **EZ2ON REBOOT: R** (Unity IL2CPP):
-FLAC/OGG keysounds, BGA videos, AssetBundles, and the chart payloads the game fetches
-from its CDN. The full technical write-up is in **`AGENTS.md`**.
+keysounds, BGA videos, AssetBundles, and the chart payloads the game fetches
+from its CDN. The full technical write-up for AI agents (or humans) is in **`AGENTS.md`**.
 
 > **For archiving and personal educational use only.** All rights to the game, its
 > assets, audio, video and chart files belong to Neonovice / EZ2ON REBOOT: R.
 
 ## Status
 
-| | |
+| What is done | Details |
 |---|---|
 | ✅ AssetBundles | first 1,024 bytes XOR-encrypted (`true_key_1024.bin`); everything after is plaintext Unity data |
 | ✅ Keysounds & BGA | extracted byte-exact from raw `TextAsset` / `VideoClip` objects |
@@ -20,10 +20,8 @@ from its CDN. The full technical write-up is in **`AGENTS.md`**.
 
 ## Private server
 
-`server/` implements a basic private server as a **mitmproxy addon**: the Wine prefix
-already routes the game through mitmproxy and trusts its CA, so the addon simply stubs
-`game1-play` (the AES-CBC API), `game1-rank` (leaderboards, score upload) and
-`game1-cdn` (chart payloads) server-side — no hosts edits, no certificates, no root.
+`server/` implements a basic private server as a **mitmproxy addon**.
+
 The one thing the client never puts on the wire is its own API session key, so a small
 Frida bridge reads it from the running game:
 
@@ -37,33 +35,31 @@ mitmdump -s server/_pserver.py
 
 Then start the game as usual; `server/pserver.log` shows every request. Songs whose chart is
 in the local archive are playable; `server/_coverage.py` reports the current coverage and
-`server/_build_data.py` regenerates the data from your own captures. Full details and
+`server/_build_data.py` regenerates the data from your own captures with `dump_song.py` (see below). Full details and
 caveats: **`server/README.md`**.
 
 ### Offline play
 
-Songs load with **no official server contact at all**. Two things make that work:
-
-* the client never verifies the CloudFront URL signature or its expiry, so the
-  server mints its own `Expires` and serves the chart blobs from its cache;
-* `bundleCryptKey` looks like key material but is
-  `AES-256-CBC/PKCS7(<a constant 32-byte payload>)` under the client's **live
-  session key** — a knowledge proof the server can produce itself once it knows
-  that key (`server/data/bck_payload.hex`).
-
-So the only thing taken from the running game is its session key (which it
-generates locally and never puts on the wire; the harvester bridges it):
+Songs load with **no official server contact at all**, and no setup step: with no
+knob files the server already forwards nothing, mints its own CDN URLs and
+`bundleCryptKey`, and serves a captured song at any key mode/difficulty
+(`chart any`). So the offline recipe is the default — just start the two
+processes:
 
 ```bash
 python server/_harvest_session.py      # terminal 1: keeps session_key.json live
 mitmdump -s server/_pserver.py         # terminal 2: the server
+```
 
+The old explicit setup still works (and is harmless) if you want to re-assert
+the state after an experiment:
+
+```bash
 python server/_exp.py hybrid off       # no passthrough to the official servers
 python server/_exp.py urls now         # our own CDN URLs
 python server/_exp.py bck mint         # mint the token from the live session key
 ```
 
-`server/_exp.py` re-reads its knobs on every request, so the switches are live.
 Note that the session key **rotates within a launch**, so the harvester must keep
 running and the server re-reads the key per request.
 
