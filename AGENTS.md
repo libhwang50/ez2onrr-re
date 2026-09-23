@@ -760,7 +760,7 @@ User-facing (repo root):
 | `render_song.py` | **render a song** — plays every note's keysound at its scheduled time; `--assets auto` matches keysounds by content |
 | `visualize_song.py` | **visualise a render** — mp4 with keysounds, lanes and progress overlaid on the BGA; player-lane rows are bright, auto-played rows dimmed (`--no-auto-dim` to disable); bulk-renders a whole song dir or `--all`, with `--skip-existing`/`--force` |
 | `harvest_metadata.py` | dump the game's song metadata table (title, composer) → `music_names.json` |
-| `song_meta.py` | resolve a song's title/composer, with folding and prefix fallbacks |
+| `song_meta.py` | resolve a song's title/composer — by resource name via the API music list (`c2s_get_gameinfo`, exact + per-game-mode MUSIC_ID) with display-title folding/prefix fallbacks |
 | `dump_song.py` | **per-song snapshot** — byte-exact CDN archive, decrypted plaintext, `da.rus` buffers, plus the song/mode/difficulty label read from the running game. `instrumentDic.json` only with `--read-instrument-dic`; a capture is redirected to `<name>_mismatch/` when the chart disagrees with the runtime label; stops the watch when the read path dies |
 
 Private server (see **`server/README.md`** for the full guide):

@@ -321,7 +321,8 @@ def describe(snap, d, runtime=None):
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import song_meta
-        rec = song_meta.by_name(song)
+        rec = song_meta.by_resource(
+            song, gamemode=runtime.get('gamemode') or lab.get('gamemode'))
         if rec:
             meta = {'title': song_meta.title(rec) or song,
                     'composer': rec.get('Composer') or None,
@@ -404,7 +405,7 @@ def capture_name(rt, snap, name_by='variant'):
             try:
                 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
                 import song_meta
-                rec = song_meta.by_name(resource)
+                rec = song_meta.by_resource(resource, gamemode=(rt or {}).get('gamemode'))
                 if rec and rec.get('id'):
                     resource = str(rec['id'])
             except Exception:
