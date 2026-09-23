@@ -29,7 +29,6 @@ mitm_live/
 mitm_parsed/
 extracted_charts/
 il2cpp_code/
-tools/legacy/*_out.json
 tools/**/*_out.json
 
 # rendered audio (derived from extracted_assets + charts)

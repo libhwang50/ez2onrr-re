@@ -97,13 +97,25 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
   defaults are the metadata placeholders `01234567890123456789012345678901` /
   `0123456789012345`. Read the live values with `il2cpp_field_static_get_value`, never
   the metadata defaults.
-* **The key never crosses HTTPS.** `c2s_login` carries no key material: the encrypted
-  `data=` part is `RSA-2048/PKCS1v1.5("")` — an *empty* plaintext, `zf.publicKey` being
-  the baked-in server key (`<RSAKeyValue>` literal; `zf` = `WebManager`) — followed by
-  plaintext form fields `ticket=<Steam auth session ticket, hex>` and
-  `identity=<SteamID or a constant>`. The real server must learn the AES key
-  out-of-band (presumably the raw-TCP control/battle channels, `zf` RSA+AES); a private
-  server reads it from the running game instead (`server/_harvest_session.py`).
+* **How the server learns the AES key** *(2026-09-23; the earlier “`data` =
+  `RSA("")`” reading is superseded — PKCS#1 v1.5 **encryption** is randomized, so a
+  re-encryption byte-match can neither prove nor disprove an empty plaintext, and all
+  7 captured login blobs differ).* The login request has exactly three fields:
+  `data`, `ticket=<Steam auth session ticket, hex>` and `identity=<SteamID>`, so `data`
+  is the only carrier. It is exactly one 2048-bit RSA block (256 B) and
+  `zf.publicKey` is the baked-in 2048-bit server key (`<RSAKeyValue>` literal;
+  `zf` = `WebManager`), with `zf.RSAEncrypt`/`RSADecrypt`/`CreateRSAKey` present. The
+  protocol forces the server to already know the key when it replies (**the login
+  *response* is b64 AES-CBC, and our fully-offline server — which never runs a battle
+  handshake — encrypts it under the harvested key and is accepted**), so the working
+  hypothesis is **`data` = RSA(session key/IV) under `zf.publicKey`**, the official
+  server holding the private half. A second hand-off exists for the battle/multiplayer
+  server: the `sendaes,` packet (literals `[9903]sendKeyDataStr:`, `[AES 키 전송
+  완료]`, acked by `s2c_aes_connect_completed`) on the raw packet channel
+  (`aes,<command>[,<args>]` framing, addressed by `get_battle_server_ip` →
+  `3.37.247.33:9902`). **Neither is confirmed by decryption yet** — see §4.6/§7.6.
+  Until then a private server reads the key from the running game
+  (`server/_harvest_session.py`).
 * Request bodies = b64( **magic `d3ad76d3adb8` (6 B)** ‖ AES-CBC-PKCS7(json) )
   *(supersedes the “fixed 16-byte prefix” reading — that was the magic plus the first
   ciphertext block, shared across requests only because those requests shared their
@@ -678,13 +690,12 @@ function onMain(fn) {
   rel32 call/jmp sites targeting given VAs, builds its own 176,021-method symbol map, and
   attributes every hit to its enclosing method (nearest preceding method VA). Full sweep
   ≈40 s. This is what located the chart decryptor (`dcf`, and its `jmp` to `dcg`).
-  Supersedes `_findcallers.js`, which had a hardcoded, per-launch-stale module base.
-* `tools/il2cpp/_findcallers.js` — older fixed-base variant; kept for reference.
+  (A fixed-base predecessor, `_findcallers.js`, was stale every launch and was removed
+  in the 2026-09-23 tools prune; `_encl.js`, whose standalone attribution `_callers.js`
+  now does inline, went with it.)
 * `tools/il2cpp/_staticscan.js` — the correct IL2CPP static-access signature:
   `mov r64,[r64+0xb8]` then `add r64, imm32`. Scanning the displacement form instead
   yields ~90× false positives.
-* `tools/il2cpp/_encl.js` — standalone enclosing-method attribution; `_callers.js` now
-  does this inline.
 
 ### 4.4.1 Virtual dispatch is resolvable after all
 
@@ -757,14 +768,14 @@ Private server (see **`server/README.md`** for the full guide):
 | Tool | Purpose |
 |---|---|
 | `server/_pserver.py` | **the private server** — a mitmproxy addon that stubs `game1-play` / `game1-rank` / `game1-cdn` server-side; no extra certs, no hosts edits (the Wine prefix already proxies through mitmproxy and trusts its CA) |
-| `server/_harvest_session.py` | Frida bridge: polls `zf.aes_key`/`aes_iv` at 1 Hz → `server/session_key.json` (the client generates the API session key locally and never sends it — §3.1). Also owns the **one-session command channel**: it polls `server/cmd.json` and answers in `server/cmd_result.json`, so memory probes never need a second Frida session (which crashes the game). Restores the default SIGINT handler while an RPC runs, so Ctrl-C aborts a slow scan and detaches cleanly |
+| `server/_harvest_session.py` | Frida bridge: polls `zf.aes_key`/`aes_iv` at 1 Hz → `server/session_key.json` (the client generates the API session key locally; it is absent from the HTTPS wire, though it may be handed over on the raw packet channel — §3.1). Also owns the **one-session command channel**: it polls `server/cmd.json` and answers in `server/cmd_result.json`, so memory probes never need a second Frida session (which crashes the game). Restores the default SIGINT handler while an RPC runs, so Ctrl-C aborts a slow scan and detaches cleanly |
 | `server/_sweep.py` | **drive the game to capture charts** (a capture counts only once the CDN body arrives; captures are filed into `extracted_charts/` by the addon) — blind (the server log is the sensor), guarded by a focused-window check, with `--probe`-style `--calibrate` that deduces the difficulty/keymode keys from the request JSON |
 | `server/_coverage.py` | **audit chart coverage** — songs covered vs the 601-song music list (coverage is per *song*: one capture serves every variant), writes a capture queue, and parses `pserver.log` to verify what a capture run actually asked for |
 | `server/_build_data.py` | rebuild `server/data/` from local captures — decrypted API templates, the chart→CDN map (47 variants / 15 songs), profile overrides |
 | `server/_exp.py` | the experiment knobs: `hybrid on/off`, `urls now/skew/future/expire/noparams/host`, `bck harvested/stale/garbage/empty/literal:…`, `off` (mutations only), `reset`. Read per request — no restart. `off` deliberately does NOT touch the hybrid setting |
 | `server/_mem.py` | drive the harvester's command channel: `findhex` (byte pattern over code first, then r--, rw-; default budget 16 GB, reports `budgetExhausted`), `findlea` (rip-relative `lea` to an address), `findlit` (base-free, keyed on `mov r8d,<len>`), `findthunk`, `readbytes`, `bck` (locate the session token in memory) |
 | `server/_stub443.py` | loop-proof TLS stub for the game's **un-proxied** TLS channel to `game1-rank.ez2game.co.kr:443`, with a certificate signed by the local mitmproxy CA (the client accepts it — no pinning) |
-| `server/_stub9902.py` | capturing TCP relay/stub for the raw audit channel (`battle_server.txt`), logging both directions |
+| `server/_stub9902.py` | capturing TCP relay/stub for the raw packet/battle channel (`battle_server.txt`) — where the client's `sendaes,` key hand-off is expected to land (§3.1). Logs both directions |
 | `server/_rawchannel.sh` | redirects that hostname and the raw IP into `_stub443.py` (`on`/`test`/`status`/`off`) |
 
 Investigation tooling — layout, build step and crash warnings: **`tools/README.md`**.
@@ -772,8 +783,9 @@ Drivers are loaded as `bridge + driver` and regenerated with
 `bash tools/il2cpp/build_run.sh`.
 
 Notable: `tools/probes/_poll_da.py` (safe 4 Hz `da.rus` watcher — the pattern to copy),
-`tools/crypto/_rijndael256.py` (verified Nb=8 Rijndael; `pycryptodome` cannot do it),
-`tools/legacy/` (superseded first-generation scripts).
+`tools/crypto/_rijndael256.py` (verified Nb=8 Rijndael; `pycryptodome` cannot do it).
+The 2026-09-23 `tools/` prune removed `legacy/`, the one-off probe campaigns, the failed
+crypto sweeps and the superseded fixed-base scanners; they live on in git history.
 
 ## 6. Outputs
 
@@ -823,9 +835,19 @@ server's. In-game validation of the server itself is in progress.
    irrelevant) to decrypt the real `c2s_set_game_clear` response (48/64 B, length varies)
    and the real `c2s_get_userinfo` response (≈832 B / 10 profiles). A first attempt
    captured the traffic but not the key — the API bodies of that dump are sealed. Also
-   pins the constant `plf` fields (§3.7).
-6. Make the server Frida-free: patch `zf.gnf` to a fixed session key, or RE the raw-TCP
-   control/battle channel (`zf` RSA+AES) the real server presumably uses to learn the key.
+   pins the constant `plf` fields (§3.7). The same session settles §3.1: RSA-decrypt
+   `c2s_login.data` with the (swapped-in) private key, or at minimum pair a harvested
+   key with its own login blob so the login can be tested directly.
+6. Make the server Frida-free. The likely mechanism is §3.1: swap the baked
+   `zf.publicKey` for our own and RSA-decrypt the session key from `c2s_login.data`;
+   the fallback is the raw packet channel's `sendaes,` hand-off. The `unp` literal is
+   **not** plaintext on disk (checked `global-metadata.dat` and `GameAssembly.dll`, not
+   ASCII and not UTF-16), so a static string patch is out — the practical route is a
+   runtime read/write of the `zf.publicKey` static field via `/proc/<pid>/mem`
+   (read/write, not a hook, so it stays inside the project's safety rules). A purely
+   client-side fallback that needs no binary patch: make `zf.gnf` deterministic by
+   interposing the 32+16-byte RNG draws. **First experiment:** swap in a throwaway
+   keypair and log the decrypted `data` (expect 32 or 48 B).
 7. Broaden chart coverage in `server/data/`. Measured: **158 of 601 songs** at the time
    of writing (the
    music list's 1,201 entries are two `GAME_MODE`s of the same songs, and gamemode is

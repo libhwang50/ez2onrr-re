@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Capture the game's raw audit channel (the "battle server", default
-3.37.247.33:9902) and try to read it.
+"""Capture the game's raw packet/battle channel (default 3.37.247.33:9902) and
+read it.
 
-Why: the bCK is validated, but the client holds no independent copy of it
-(memory scan: only the two response-derived 48-byte arrays, no third), so the
-verdict cannot be a local comparison. `da.rus` assembles { .ez ciphertext,
-.ezi ciphertext, the 48-byte key } and relays it, so the validation is almost
-certainly this channel's server-side audit. The address is served by OUR rank
-stub (get_battle_server_ip), so redirect it here with:
+Why: this is where the client hands its session key to the *battle* server. The
+`zf` literals `[9903]sendKeyDataStr:`, `sendaes,`, `[AES 키 전송 완료]` and
+`s2c_aes_connect_completed` describe the exchange, and the packet framing is
+`aes,<command>[,<args>]` (AGENTS.md §3.1). Catching `sendaes,` would show how the
+key travels on this channel and whether it is RSA-wrapped (compare with
+`c2s_login.data`, the API server's copy). Earlier notes here called this the
+"server-side audit" of `bundleCryptKey`; that reading is superseded — the bCK is
+validated **locally** (AGENTS.md §3.2).
+
+The address is served by OUR rank stub (`get_battle_server_ip`), so redirect it
+here with:
 
     echo '127.0.0.1:9902' > server/data/battle_server.txt
     python3 server/_stub9902.py 9902

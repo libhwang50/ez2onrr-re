@@ -4,24 +4,33 @@ Everything here is investigation tooling, kept separate from the user-facing
 ripper scripts at the repository root (`extract_assets.py`, `find_bundle.py`,
 `dump_song.py`, `harvest_key.py`).
 
+The directory was pruned on 2026-09-23: the one-off probe campaigns, failed
+crypto sweeps and first-generation scripts were removed. What remains is the
+canonical set that the root tools, the private server and the current open work
+actually use. Deleted work is recoverable from git history; the important
+*findings* from it are kept as prose below and in `AGENTS.md`.
+
 ## Layout
 
 | directory | contents |
 |---|---|
-| `il2cpp/` | `frida-il2cpp-bridge` (`_il2cpp_bridge.js`) plus all IL2CPP drivers: symbolication (`_sym.js`, `_encl.js`), **call-site scanning and enclosing-method attribution (`_callers.js` — the workhorse)**, **klass/vtable inspection (`_slotfind.js`, `_probe_cls.js`)**, **static-field extraction (`_statics.js`, `_mem.js`, `_methods.js`, `_vt.js`, `_clsstr.js` — static string values)**, code dumping (`_dump_code.js`), field/class inspection (`_igc.js`, `_tables.js`, `_cova.js`, `_namemap.js`, `_klassname.js`), scanners (`_staticscan.js`, `_zfscan.js` — klass-verified static-write scan, `_finddisp.js`, `_sbox3.js`, `_asascan.js`), one-shot probes (`_zfdbg.js`, `_zflit.js` — string-literal thunks, `_zfinst.js`), the private server's session-key reader **and memory-probe toolkit** (`_sesskey.js`), and older live-introspection tools (`_diag.py`, `_poll_capture.py`). |
-| `probes/` | Passive runtime probes (safe) and the hook experiments. |
-| `mitm/` | mitmproxy addons (`_cdn_rewrite.py` rewrite oracle, `_capture_all.py` full-corpus capture), flow parsing (`_replay_extract.py` — native `-w` dump → per-flow JSONL + bodies), API decryption. |
-| `crypto/` | Cipher analysis. `_chart_cipher.py` is the **reference implementation of the (now-solved) CDN chart cipher** — mask + AES-256-CBC; the production CLI lives at the repo root as `decrypt_chart.py`. Also a verified parameterised Rijndael (`_rijndael256.py`, `_rijsearch.py`), key sweeps, brute-forcers. |
-| `legacy/` | Superseded first-generation tooling (in-process WinHTTP download, early camera/field dumpers, `harvest_chart.py` — replaced by `dump_song.py`, `run_dumper.sh` — Il2CppDumper, blocked by the metadata's missing magic). |
-| `../data/` | Derived analysis artefacts (JSON: symbol maps, key-candidate tables, scan results). |
+| `il2cpp/` | `frida-il2cpp-bridge` (`_il2cpp_bridge.js`) plus the IL2CPP drivers: symbolication (`_sym.js`, `_namemap.js`, `_methods.js`), **call-site scanning and enclosing-method attribution (`_callers.js` — the workhorse)**, **klass/vtable inspection (`_slotfind.js`, `_probe_cls.js`, `_vt.js`)**, **static-field extraction (`_statics.js`, `_mem.js`, `_staticscan.js`, `_clsstr.js` — static string values)**, string hunting (`_findstr.js` — the `patternjson` scanner), the per-song dump driver (`_dumpsong.js`) and the music-table dumper (`_musicdic.js`), and the private server's session-key reader **and memory-probe toolkit** (`_sesskey.js`). |
+| `probes/` | `_poll_da.py` — the safe 4 Hz host-side poll loop, the pattern for any new passive watcher. (The hook/guard-page experiments were deleted; never re-add them, see the crash notes below.) |
+| `mitm/` | mitmproxy addons (`_cdn_rewrite.py` rewrite oracle, `_capture_all.py` full-corpus capture), flow parsing (`_replay_extract.py` — native `-w` dump → per-flow JSONL + bodies), API decryption (`_decrypt_api.py`, `_decrypt_api_all.py`). |
+| `crypto/` | Cipher analysis. `_chart_cipher.py` is the **reference implementation of the solved CDN chart cipher** — mask + AES-256-CBC; the production CLI lives at the repo root as `decrypt_chart.py`. `_rijndael256.py` is the verified parameterised Rijndael (Nb=8). |
 | `build/` | **Generated** runnable drivers (git-ignored) — one flat directory, so the source dirs stay clean. |
 | `../data/` | Derived analysis artefacts (JSON: symbol maps, key-candidate tables, scan results). |
 | `../logs/` | Captured run logs from the probe campaigns. |
 
+Drivers used by shipped tools, do not rename: `_sesskey.js` (the harvester),
+`_dumpsong.js` (`dump_song.py`), `_musicdic.js` (`harvest_metadata.py`),
+`_statics.js` (`chart_labels.py`), `_findstr.js` (`AGENTS.md` §3.2), `_poll_da.js`
+(`tools/probes/_poll_da.py`).
+
 ## Running a driver
 
 A driver is loaded by concatenating it **after** the bridge, because
-`rpc.exports.*` must be defined after `Il2Cpp` exists.  The runnable form is
+`rpc.exports.*` must be defined after `Il2Cpp` exists. The runnable form is
 generated for you:
 
 ```bash
@@ -29,30 +38,19 @@ bash tools/il2cpp/build_run.sh        # regenerates tools/build/*_run.js
 ```
 
 Generated drivers land in **`tools/build/`** (one flat, git-ignored directory);
-the source directories contain only hand-written code.
-
-**Run `build_run.sh` after editing any driver** — a hand-edited `*_run.js` is
-overwritten.  The `*_run.js` files are generated artefacts (git-ignored).
-
-```python
-import frida
-dev = frida.get_device_manager().add_remote_device("127.0.0.1:27042")
-s   = dev.attach("Gadget")
-sc  = s.create_script(open("tools/il2cpp/_sym_run.js").read())
-sc.load()
-print(sc.exports_sync.sym(["0x6ffff..."]) if False else "ready")
-```
+the source directories contain only hand-written code. **Run `build_run.sh`
+after editing any driver** — a hand-edited `*_run.js` is overwritten.
 
 Or just use the runner, which resolves and loads `tools/build/<driver>_run.js`:
 
 ```bash
-python3 tools/_r.py _callers all '["0x6ffff2d97380"]'      # callers of one VA, attributed
-python3 tools/_r.py _statics statics '"Assembly-CSharp"' '"InGameCore"'   # static fields
-python3 tools/_dis.py 0x6ffff2d971b0 0x1e0                  # disassemble a range
+python3 tools/_r.py _callers all '["0x6ffff2d97380"]'                    # callers of one VA, attributed
+python3 tools/_r.py _statics statics '"Assembly-CSharp"' '"InGameCore"'  # static fields
+python3 tools/_dis.py 0x6ffff2d971b0 0x1e0                               # disassemble a range
 ```
 
-`tools/_dis.py` reads live module bytes through the gadget and disassembles with capstone,
-so it needs no local copy of `GameAssembly.dll`.
+`tools/_dis.py` reads live module bytes through the gadget and disassembles with
+capstone, so it needs no local copy of `GameAssembly.dll`.
 
 ### `_sesskey.js` — the one-session memory-probe toolkit
 
@@ -98,14 +96,13 @@ Behaviour worth knowing before trusting a result:
 
 ## ⚠️ Things that crash the game — do not repeat
 
-Three separate approaches have killed the process. They are kept here as
-evidence, not as tools:
+Three approaches killed the process repeatedly; their scripts were deleted, but
+the lesson stays:
 
-* **`MemoryAccessMonitor` guard pages** (`probes/_watch.js`, `probes/_slotwatch*.js`)
-  — any page touched per-frame (e.g. `da`'s static-fields page, read ~350×/s from
-  several threads) becomes a trap storm under Wine and takes the game down.
-* **`Interceptor.attach` on anything** (`probes/_hook_aes*.js`,
-  `probes/_hookcrypto.js`) — crashed on a hot BCL function, and again on
+* **`MemoryAccessMonitor` guard pages** — any page touched per-frame (e.g. `da`'s
+  static-fields page, read ~350×/s from several threads) becomes a trap storm under
+  Wine and takes the game down.
+* **`Interceptor.attach` on anything** — crashed on a hot BCL function, and again on
   *cold* cipher constructors that run once per cipher.
 * **High-frequency in-process polling** (the 10 ms `Il2Cpp.perform` loop) on top
   of either of the above.

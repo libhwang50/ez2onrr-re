@@ -353,7 +353,7 @@ chart_labels.py  harvest_metadata.py  song_meta.py naming and metadata
 render_song.py  visualize_song.py                  render and visualise a song
 server/              basic private server (mitmproxy addon + Frida key bridge) — see server/README.md
 tools/               investigation tooling — see tools/README.md
-  il2cpp/  probes/  mitm/  crypto/  legacy/
+  il2cpp/  probes/  mitm/  crypto/
 data/  logs/  mitm_live/  mitm_parsed/  il2cpp_code/    ignored capture artefacts
 extracted_assets/  extracted_charts/                     outputs
 ```

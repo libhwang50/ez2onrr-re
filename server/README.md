@@ -75,7 +75,7 @@ exit; tune `data/userinfo_entry.json` if that appears.
 | `_exp.py` | control the experiment knobs from the shell (`hybrid`, `urls`, `bck`, `off`, `reset`) |
 | `_mem.py` | drive the harvester's command channel: `findhex`, `findlea`, `findlit`, `findthunk`, `readbytes`, `bck` |
 | `_stub443.py` | loop-proof TLS stub for the game's un-proxied 443 channel (mitmproxy-CA-signed cert) |
-| `_stub9902.py` | capturing TCP relay for the raw audit channel; address comes from `data/battle_server.txt` |
+| `_stub9902.py` | capturing TCP relay for the raw packet/battle channel; address comes from `data/battle_server.txt`. This is where the client's `sendaes,` AES-key hand-off is expected to land (AGENTS.md §3.1) |
 | `_rawchannel.sh` | `on`/`test`/`status`/`off` — redirects the un-proxied channel into `_stub443.py` |
 
 All of `data/` is generated locally and git-ignored (it contains your profile, play
@@ -444,28 +444,25 @@ strings resolved by `oj.UI` (indices 166/167). `dci` is also the only writer of
 the latch at `InGameCore+0x798`, which `ft.MoveNext` checks to decide whether to
 abort — so the code is a **timeout inside the coroutine's wait**, not a verdict
 from anywhere else, and the network is not involved (a failing load opens exactly
-one connection: the handshake-only TLS probe to `3.37.247.33:443`).
+one connection: the handshake-only TLS probe to `3.37.247.33:443`). What the wait
+depends on is the `bundleCryptKey` check (AGENTS.md §3.2); the code trail is kept
+here for anyone chasing the exact step.
 
-The remaining question is *what that wait depends on* — i.e. which step of the
-load pipeline the `bundleCryptKey` feeds. Leads for anyone resuming:
-the strings at `oj.UI(166)`/`oj.UI(167)` (they label the failed step); the wait
-loop inside `ft.MoveNext` around the two latch checks
-(`0x6ffff2fa71c2`/`0x6ffff2fa7205`); and a field-by-field diff of the
-`InGameCore` instance (fields live at 0x510-0x840, §4.3 of `AGENTS.md`) between a
-successful load and a failing one.
+### The token (solved) and the key (open)
 
-### What is still unknown
+The client's token comparison is **local** and the token is a **session-key
+knowledge proof** — the server proves it knows the client's live key by
+AES-encrypting a fixed 32-byte client constant; the client decrypts and compares
+with its own single `byte[32]` copy. `_pserver.py` mints the token itself, so
+no official response is needed. The full account, including why the earlier
+"the client owns no independent copy / the server audits out-of-band" reading was
+wrong, is in **AGENTS.md §3.2 and §3.7**.
 
-The client owns no local copy of the token (a full-heap scan finds exactly two
-copies, both derived from the response — no independent copy, no base64 copy in
-UTF-8 or UTF-16) and opens no socket at load time (443 probes are handshake-only,
-4649 carries ping/pong, 9902 is never dialled — even when our stub is the
-`get_battle_server_ip` it is served). Tested and rejected as derivations:
-SHA-384/512, HMAC and AES combinations over the session key, the Steam ticket,
-the login ciphertext, the SteamID. So it is *used as a key* somewhere in the load
-pipeline and the silent failure is what times out. The trail forward
-(`findhex`/`findlea`/`findthunk`, the literal-keyed runtime hash tables, `da.rus`'s
-hand-off) is described in `AGENTS.md` §3.7 and §7.8.
+The one genuinely open item is how the *official* server learns the session key:
+the working hypothesis is RSA in `c2s_login.data` (the login response is AES and
+must be decryptable by the server, and our offline server — which runs no battle
+handshake — is accepted), with the raw packet channel's `sendaes,` packet as the
+battle server's copy. See AGENTS.md §3.1 and §7.6.
 
 ## Known simplifications / next steps
 
@@ -476,9 +473,10 @@ hand-off) is described in `AGENTS.md` §3.7 and §7.8.
 * `c2s_get_userinfo` serves a **guessed list shape** (`data/userinfo_entry.json`
   cloned per requested SteamID); a wrong shape makes the client pop its JSON
   parse error — screenshot it if you see it, it names the expected type.
-* The session key still requires the Frida bridge. Long-term options: patch
-  `zf.gnf` to a fixed key, or RE the TCP control channel (where the real
-  server presumably learns the key).
+* The session key still requires the Frida bridge. The Frida-free route (AGENTS.md
+  §3.1/§7.6): swap the baked `zf.publicKey` for our own and RSA-decrypt the key from
+  `c2s_login.data`, or catch the `sendaes,` hand-off on the raw packet channel; the
+  no-binary-patch fallback is making `zf.gnf` deterministic.
 * Rank endpoints accept any signature; nothing is verified or persisted.
 * Songs without a captured chart fail at chart load (`result:0`) — extend
   coverage with `dump_song.py` and re-run `_build_data.py`.
@@ -487,6 +485,3 @@ hand-off) is described in `AGENTS.md` §3.7 and §7.8.
   it by decrypting a captured token (that is `bck_payload()`'s fallback), or just
   re-check `server/data/bck_payload.hex`. Its *purpose* is now known (a session-key
   knowledge proof); its *preimage* is not, and does not matter.
-* The session key still requires the Frida bridge — it is generated in the client
-  and never sent, so a bridge-free server would need `zf.gnf` patched or the raw
-  TCP channel RE'd. This is the last dependency on Frida.
