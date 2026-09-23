@@ -174,16 +174,18 @@ does that already.
 
 ### The knobs and what they proved
 
-**Offline is the default now.** With no knob files the addon forwards nothing,
-mints its own CDN `Expires` and `bundleCryptKey`, and serves a song's chart for
-any requested variant. The knobs below *override* that default (and `off`/`none`
-turns a piece of it off for an experiment), so the old `hybrid off` + `urls now`
-+ `bck mint` recipe is what happens on a fresh install with no setup.
+**Offline is the default now.** With no knob files the addon forwards nothing
+and mints its own CDN `Expires` and `bundleCryptKey`. The knobs below *override*
+that default (and `off`/`none` turns a piece of it off for an experiment), so
+the old `hybrid off` + `urls now` + `bck mint` recipe is what happens on a fresh
+install with no setup. Chart serving stays **exact** by default; `chart any` is
+a deliberate override because a chart's note assignment is per
+keymode/difficulty.
 
 ```bash
 python server/_exp.py                 # show state (and the effective defaults)
-python server/_exp.py chart any       # the default: chart for any song variant
-python server/_exp.py chart exact     # only the exact keymode/difficulty (capturing)
+python server/_exp.py chart any       # serve any captured variant of the song (opt-in; wrong lanes)
+python server/_exp.py chart exact     # only the exact keymode/difficulty (the default)
 python server/_exp.py hybrid off      # no passthrough (the default)
 python server/_exp.py urls now        # mint our own Expires = now+150 (the default)
 python server/_exp.py bck mint        # mint the token (the default)
@@ -216,7 +218,7 @@ mitmdump -s server/_pserver.py                # terminal 2: the server
 ```
 
 The three `_exp.py` commands that used to be required are now the built-in
-defaults (`urls now`, `bck mint`, `chart any`, no passthrough). Running them is
+defaults (`urls now`, `bck mint`, no passthrough). Running them is
 harmless and remains useful to re-assert the state after experiments:
 
 ```bash
@@ -449,8 +451,7 @@ recorded per capture, and worth preferring on serve once the captures carry it.
 BASIC vs STANDARD, for reference: KOOL window 40 ms vs 22 ms, and for STANDARD
 charts at level ≥6 (4K) / ≥8 (5K/6K) / ≥11 (DLC) the EZ~NM patterns are replaced
 by easier BASIC-exclusive ones (HD/SHD unchanged; a few named exceptions).
-Source: NamuWiki "EZ2ON REBOOT : R/시스템". Then `_exp.py offline` serves them
-with `chart any`. `_coverage.py --log` is how a capture macro's progress is
+Source: NamuWiki "EZ2ON REBOOT : R/시스템". `_coverage.py --log` is how a capture macro's progress is
 verified without watching the screen — the game's own request names the song,
 keymode and difficulty.
 

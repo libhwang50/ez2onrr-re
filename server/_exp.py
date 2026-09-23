@@ -23,17 +23,18 @@ endpoints forwarded upstream, which is also read per request.
     python server/_exp.py bck mint:zero         # minted with a fixed payload
     python server/_exp.py bck stale             # the older captured real key
     python server/_exp.py bck empty
-    python server/_exp.py chart any             # serve the song's chart for any variant (default)
-    python server/_exp.py chart exact           # only exact keymode/difficulty (capturing)
+    python server/_exp.py chart any             # serve the song's chart for any variant
+    python server/_exp.py chart exact           # only exact keymode/difficulty (the default)
     python server/_exp.py off                   # clear explicit mutations -> back to offline defaults
     python server/_exp.py hybrid off            # back to a pure private server
     python server/_exp.py reset                 # clear everything -> offline defaults
 
-Offline is now the default. With no knob files the addon forwards nothing,
+Offline is now the default. With no knob files the addon forwards nothing and
 mints its own CDN `Expires` and `bundleCryptKey` from the client's live session
-key, and serves a song's chart for any requested variant. `mutate_urls.txt` /
-`mutate_bck.txt` therefore *override* that default; `off`/`none` turns a piece
-of it off (a raw replay) for experiments.
+key. `mutate_urls.txt` / `mutate_bck.txt` therefore *override* that default;
+`off`/`none` turns a piece of it off (a raw replay) for experiments. Chart
+serving stays **exact** by default: `chart any` is a deliberate override because
+a chart's note assignment is per keymode/difficulty.
 
 Hybrid mode is what makes a forwarded pattern response valid: the upstream
 official server must have a live session, so `login` must be forwarded too.
@@ -93,10 +94,12 @@ def main():
         # Fully offline: no endpoint is forwarded, we mint the URLs, and the
         # token is produced here from the client's payload constant + the live
         # session key (byte-identical to what the official server would send).
+        # Chart matching stays exact — `chart any` is a deliberate, unsafe
+        # override (it serves a different variant's note assignment).
         set_('endpoints', '')
         set_('urls', 'now')
         set_('bck', 'mint')
-        set_('chart', 'any')
+        set_('chart', 'exact')
         legacy = os.path.join(DATA, 'passthrough_pattern')
         if os.path.exists(legacy):
             os.remove(legacy)
@@ -120,8 +123,8 @@ def main():
         return 0
     if a[0] in ('off', 'reset'):
         # `off` clears the explicit mutations, which now means "back to the
-        # fully-offline defaults" (mint URLs + mint bCK + chart any). Use
-        # `urls off` / `bck off` for a raw replay experiment. Clearing the
+        # fully-offline defaults" (mint URLs + mint bCK; chart matching stays
+        # exact). Use `urls off` / `bck off` for a raw replay experiment. Clearing the
         # endpoints too was a trap: it silently turned a hybrid response test
         # back into a replay test.
         names = list(KNOBS) if a[0] == 'reset' else ['urls', 'bck', 'chart']

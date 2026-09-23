@@ -41,10 +41,11 @@ caveats: **`server/README.md`**.
 ### Offline play
 
 Songs load with **no official server contact at all**, and no setup step: with no
-knob files the server already forwards nothing, mints its own CDN URLs and
-`bundleCryptKey`, and serves a captured song at any key mode/difficulty
-(`chart any`). So the offline recipe is the default — just start the two
-processes:
+knob files the server already forwards nothing and mints its own CDN URLs and
+`bundleCryptKey`. Chart matching stays **exact** (the capture for the requested
+key mode/difficulty); `_exp.py chart any` is an opt-in that serves a song's
+other variant and will play the wrong lane assignment. So the offline recipe is
+the default — just start the two processes:
 
 ```bash
 python server/_harvest_session.py      # terminal 1: keeps session_key.json live

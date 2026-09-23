@@ -779,19 +779,21 @@ def capture_cdn_response(flow):
 
 
 def chart_mode():
-    """server/data/chart_mode.txt: 'any' (default) or 'exact'.
+    """server/data/chart_mode.txt: 'exact' (default) or 'any'.
 
     'any' serves the best chart we hold *for that song* when the exact
     keymode/difficulty was never captured. The client does not choose the CDN
     path — it downloads whatever URL we return — so one capture per song makes
     every variant of that song loadable (`_coverage.py` counts coverage that
-    way). This is the offline default: a published server should serve a song
-    however the player picks it.
+    way). But it is **not a safe default**: a chart's notes are assigned to
+    lanes per keymode/difficulty, so serving a 5K SHD chart for a 6K EZ request
+    plays the wrong lane assignment (the game just ignores lanes beyond the
+    selected key mode). Keep 'exact' unless you deliberately want that.
 
-    'exact' is for capturing — a miss must go upstream for the body to be
-    recorded, and 'any' would answer it locally instead. `_exp.py harvest`
-    selects it automatically."""
-    return (_knob('chart_mode.txt') or 'any').strip().lower()
+    'any' is also wrong while capturing: a miss must go upstream for the body to
+    be recorded, and 'any' would answer it locally instead. `_exp.py harvest`
+    selects 'exact' automatically."""
+    return (_knob('chart_mode.txt') or 'exact').strip().lower()
 
 
 def pattern_response(req_json):
