@@ -1,8 +1,0 @@
-{
- "cmd": {
-  "op": "findhex",
-  "hex": "d3 16 3d 64 6f ed bb cc 07 a7 52 f6 63 fc d4 cf 06 f5 f9 ee db ad cc 70 24 4f 20 c8 2a d7 69 22",
-  "budgetMB": 2048
- },
- "result": "{\"pattern\":\"d3 16 3d 64 6f ed bb cc 07 a7 52 f6 63 fc d4 cf 06 f5 f9 ee db ad cc 70 24 4f 20 c8 2a d7 69 22\",\"scannedMB\":2050,\"budgetMB\":2048,\"budgetExhausted\":true,\"seconds\":\"7.4\",\"hits\":[{\"addr\":\"0x75e295c0\",\"ascii\":\"k._.0.1...f.l.a.c............... L-0.................... .........=do.....R.c..........p$O .*.i\\\"........`\\\".u....P..u.................... .......316A60CAF5320622\",\"hex\":\"00000000000000002000000000000000d3163d646fedbbcc07a752f663fcd4cf06f5f9eedbadcc70244f20c82ad7692200000000000000006022da75000000005095e275000000000000000000000000\",\"prot\":\"rw-\"}]}"
-}
