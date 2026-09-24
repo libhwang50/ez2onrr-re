@@ -15,54 +15,43 @@ from its CDN. The full technical write-up for AI agents (or humans) is in **`AGE
 | ✅ Keysounds & BGA | extracted byte-exact from raw `TextAsset` / `VideoClip` objects |
 | ✅ API traffic | `game1-play.ez2game.co.kr` decrypted (AES-CBC, live session key) |
 | ✅ Charts & keysound index | **cracked** — `decrypt_chart.py` decrypts CDN payloads offline |
-| ✅ Basic private server | login → music list → profile → chart download → score upload, all served locally (`server/`) |
+| ✅ **Private server (standalone, multi-user)** | login → music list → profile → chart download → leaderboard, served locally or from a homeserver (`server/`, Docker included). Per-user progression + server-issued accounts; the client runs Frida-free via a pubkey-swap `version.dll` |
 | ✅ **Fully offline songs (confirmed in game)** | no official server contact at all: the CloudFront URL signature is never verified, and `bundleCryptKey` is minted server-side (it is AES-CBC of a client-side *constant* under the live session key — `AGENTS.md` §3.2). The only input from the running game is its session key, which it never sends |
 
 ## Private server
 
-`server/` implements a basic private server as a **mitmproxy addon**.
-
-The one thing the client never puts on the wire is its own API session key, so a small
-Frida bridge reads it from the running game:
+`server/` is a **standalone** server — no mitmproxy needed on the host. It serves
+login, the music list, profiles, chart downloads and leaderboards, with per-user
+progression and server-issued accounts. It runs either as a local mitmproxy addon
+the game already points at, or as a plain HTTP(S)/ASGI service (Docker Compose
+included) for a public homeserver.
 
 ```bash
-# terminal 1 — session-key bridge (before starting the game!)
-.venv/bin/python server/_harvest_session.py
-
-# terminal 2 — the server
+# local, single machine (the game's Wine proxy already points at mitmproxy)
+python server/_rsa.py init            # once — the client version.dll embeds this key
 mitmdump -s server/_pserver.py
+
+# standalone (public / homeserver)
+python server/app.py --host 0.0.0.0 --port 8081      # or: docker compose up -d
+docker compose --profile caddy up -d                 # optional TLS front end
 ```
 
-Then start the game as usual; `server/pserver.log` shows every request. Songs whose chart is
-in the local archive are playable; `server/_coverage.py` reports the current coverage and
-`server/_build_data.py` regenerates the data from your own captures with `dump_song.py` (see below). Full details and
-caveats: **`server/README.md`**.
+**No Frida by default.** The drop-in `client/patcher/version.dll` rewrites the
+build's baked-in RSA public key to ours, so `c2s_login` hands the server both the
+session key and the identity (`server/_rsa.py`). The memory harvester remains a
+fallback for an unpatched client. For a public server the client runs a thin relay
+(`server/_relay.py`) to the remote `server/app.py`, and access is gated by accounts
+/ bearer tokens with a configurable guest tier (`server/_auth.py`,
+`server/_accounts.py`).
 
-### Offline play
+Songs load **fully offline** with no setup step: the server mints its own CDN URLs
+and `bundleCryptKey`, and forwards nothing. Chart matching is exact (the capture for
+the requested key mode and difficulty). Coverage is per song; `server/_coverage.py`
+reports it and `server/_build_data.py` regenerates the data from your own captures.
 
-Songs load with **no official server contact at all**, and no setup step: with no
-knob files the server already forwards nothing and mints its own CDN URLs and
-`bundleCryptKey`. Chart matching stays **exact** (the capture for the requested
-key mode/difficulty); `_exp.py chart any` is an opt-in that serves a song's
-other variant and will play the wrong lane assignment. So the offline recipe is
-the default — just start the two processes:
-
-```bash
-python server/_harvest_session.py      # terminal 1: keeps session_key.json live
-mitmdump -s server/_pserver.py         # terminal 2: the server
-```
-
-The old explicit setup still works (and is harmless) if you want to re-assert
-the state after an experiment:
-
-```bash
-python server/_exp.py hybrid off       # no passthrough to the official servers
-python server/_exp.py urls now         # our own CDN URLs
-python server/_exp.py bck mint         # mint the token from the live session key
-```
-
-Note that the session key **rotates within a launch**, so the harvester must keep
-running and the server re-reads the key per request.
+Full guides: **`server/README.md`** (running, Docker, identity, the offline recipe)
+and **`client/README.md`** (the patcher, and Goldberg for players with no Steam
+account).
 
 ## Setup
 
@@ -78,9 +67,13 @@ scripts need, grouped by which part of the toolset uses it. The only hard requir
 the offline ripper are **UnityPy** (bundles) and **pycryptodome** (the ciphers); `mutagen`
 is optional (FLAC tags) and `frida` is only needed for the live-game reads.
 
-The game runs under Proton/Wine with **Frida Gadget on `127.0.0.1:27042`**.
-`true_key_1024.bin` must sit in the repo root; derive it once with the game running and a
-song loaded:
+The game runs under Proton/Wine. **Frida is only needed for the *live-game read*
+tools** (`dump_song.py`, `harvest_key.py`, `harvest_metadata.py` and the
+`tools/il2cpp` drivers), which attach to a Frida Gadget on `127.0.0.1:27042`. The
+private server no longer needs it: the client-side `version.dll` patcher
+(`client/patcher/`) handles the session-key hand-off, and the memory harvester is
+a fallback. `true_key_1024.bin` must sit in the repo root; derive it once with the
+game running and a song loaded:
 
 ```bash
 python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 1024 B
@@ -337,19 +330,26 @@ The safe pattern is read-only memory reads, managed calls on the game's main thr
 ```
 AGENTS.md            full technical report
 README.md
-requirements.txt     Python dependencies (see Setup)
-ruff.toml            lint gate for the tools
+requirements.txt     Python deps for the ripper + live tools (see Setup)
+ruff.toml            lint gate
 true_key_1024.bin    master bundle XOR key (derive with harvest_key.py)
 song_index.json      bundle-hash → song index
 ez2lib.py            shared helpers — imported by the tools, not run directly
+Dockerfile  docker-compose.yml  deploy/Caddyfile   standalone server container
 
 extract_assets.py  find_bundle.py                  bundles → assets / index
 dump_song.py  harvest_key.py                       live-game reads over the Frida Gadget
 decrypt_chart.py  parse_chart.py  check_charts.py  chart ciphers, readers and audits
 chart_labels.py  harvest_metadata.py  song_meta.py naming and metadata
 render_song.py  visualize_song.py                  render and visualise a song
-server/              basic private server (mitmproxy addon + Frida key bridge) — see server/README.md
-tools/               investigation tooling — see tools/README.md
+server/              private server + capture automation — see server/README.md
+  app.py _core.py _flowshim.py                     standalone HTTP(S)/ASGI server
+  _pserver.py _relay.py _fake_client.py            game logic, client relay, test client
+  _auth.py _accounts.py _store.py _sessions.py     identity, accounts, progression
+  _rsa.py _build_data.py _harvest_mem.py           key hand-off, data build, fallback
+  _screen.py _sweep.py _coverage.py                guided chart capture
+client/              Frida-free version.dll patcher — see client/README.md
+tools/               reverse-engineering toolbox — see tools/README.md
   il2cpp/  probes/  mitm/  crypto/
 data/  logs/  mitm_live/  mitm_parsed/  il2cpp_code/    ignored capture artefacts
 extracted_assets/  extracted_charts/                     outputs
