@@ -952,9 +952,20 @@ server's. In-game validation of the server itself is in progress.
    into the client's 16-wide arrays), seeded for the owner from the captured
    `myinfo.json` (319 variants). `c2s_set_game_clear` now records every play
    (best-of score, never downgrade the lamp, count plays) and `c2s_get_myinfo` /
-   `c2s_get_userinfo` read it. Still to do: feed the rank `plf…` uploads in too
-   (the same data over the other host), and RE / implement the per-mode rating
-   formula (the client computes it from this clearlist — §3.7).
+   `c2s_get_userinfo` read it. Leaderboards are also computed from the store now
+   (Top100 / MyRange), falling back to the captured `rank_csv/` only for a variant
+   nobody here has played. The login response and `set_game_clear` are per-user —
+   they no longer serve the captured owner's SteamID/level to other accounts.
+   `server/_fake_client.py` creates a second user end-to-end (RSA login → play →
+   leaderboard) with no second game install, so multi-user is testable locally.
+   Still to do: feed the rank `plf…` uploads in too (the same data over the other
+   host — its fields do not cleanly carry `levelmode`, so `set_game_clear` remains
+   authoritative), and RE / implement the per-mode rating formula (the client
+   computes it from this clearlist — §3.7). For a **public** server the claimed
+   SteamID must not be trusted: issue a server-side identity token instead (a
+   Steam emulator such as Goldberg lets account-less users play, but its identity
+   is self-asserted), and every user must set a **unique** SteamID or the session
+   registry and store collide.
 10. Re-check the captions in the "8CN26" sections above when touching them: the code
    means "Song Load timeout" (a watchdog), NOT "corrupt file" — the Korean popup text
    ("게임 파일이 손상되었습니다") is the generic wrapper the reporter shows.

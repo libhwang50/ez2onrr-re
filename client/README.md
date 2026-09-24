@@ -71,6 +71,50 @@ Linux note: `ptrace_scope=1` means a non-parent process needs root, so for a
 Proton game run `sudo` (or use the DLL, which runs in-process and needs
 nothing). On Windows it works same-user, no admin.
 
+## 3. Playing without a Steam account (Goldberg)
+
+Users who do not own the game on Steam (and therefore have no SteamID) can still
+join a private server by running the client under a Steam emulator. The build is
+well suited to it:
+
+* it uses **Steamworks.NET** and ships the emulatable Unity plugin
+  `EZ2ON_Data/Plugins/x86_64/steam_api64.dll` (this is the file an emulator
+  replaces);
+* `EZ2ON.exe` has **no SteamStub `.bind` section** — no Steamless unpack step;
+* `RestartAppIfNecessary` is **not called**, so there is no "relaunch through
+  Steam" DRM gate;
+* the only Steam data the private server ever sees is the **SteamID** and the
+  auth ticket in `c2s_login`, and the server **does not validate the ticket**.
+
+Setup (Goldberg, per client):
+
+1. Replace `EZ2ON_Data/Plugins/x86_64/steam_api64.dll` with Goldberg's build
+   for that file.
+2. Put `steam_appid.txt` containing `1477590` in the game root (or where your
+   Goldberg version reads it — its `steam_settings/` folder).
+3. Give the install a **unique SteamID64** and persona name in Goldberg's
+   config (`steam_settings/`; the exact filenames depend on the Goldberg
+   version, e.g. `configs.user.ini` / `configs.main.ini`, `user_steam_id.txt`,
+   `account_name.txt`). Spoof ownership of `1477590` if your config asks.
+4. Launch the game. Steamworks init succeeds against the emulator, the client
+   reads its (fake) SteamID/persona and sends them to whichever server it is
+   pointed at, and the private server accepts them.
+
+The game touches `SteamUser`, `SteamFriends`, `SteamApps`, `SteamUserStats`,
+`SteamUtils` and `GetAuthSessionTicket` — a modern Goldberg covers all of them.
+
+Caveats:
+
+* **Unique SteamID is mandatory.** Two users sharing one ID (e.g. Goldberg's
+  default) collide in the server's session registry and progression store; set a
+  distinct one per install.
+* The patcher `version.dll` and Goldberg coexist — different slots — so install
+  Goldberg's `steam_api64.dll` *and* (if the server uses the RSA hand-off) the
+  patcher `version.dll` (with `WINEDLLOVERRIDES=version=n,b` under Proton).
+* The emulated identity is **self-asserted**. That is fine for a friends/LAN
+  server; a public server must not trust the claimed SteamID and needs the
+  server-issued identity token planned for that deployment.
+
 ## Why the RSA block is the key
 
 `c2s_login.data` is exactly 256 B (2048-bit) on every capture — see `server/_rsa.py`

@@ -764,7 +764,7 @@ def handle_api(flow: http.HTTPFlow):
         tpl = TEMPLATES.get('login')
         if tpl is None:
             return respond_api(flow, {'result': 0}, sess)
-        return respond_api(flow, apply_profile(tpl), sess)
+        return respond_api(flow, login_response(tpl, sess), sess)
 
     if endpoint == 'c2s_get_gameinfo':
         tpl = TEMPLATES.get('gameinfo')
@@ -813,18 +813,19 @@ def handle_api(flow: http.HTTPFlow):
             except Exception as e:
                 log(f'set_game_clear: could not store play ({e})')
         cfg = os.path.join(DATA, 'set_game_clear.json')
-        if os.path.exists(cfg):
+        p = STORE.player(sess.steamid) if (sess and sess.steamid) else None
+        if p is not None:
+            tpl = {'level': int(p['level']), 'exp': int(p['exp']),
+                   'nextExp': int(p['next_exp']), 'result': 1}
+        elif sess is not None and sess.steamid:
+            tpl = {'level': 1, 'exp': 0, 'nextExp': 0, 'result': 1}
+        elif os.path.exists(cfg):
             tpl = json.load(open(cfg))
         else:
-            p = STORE.player(sess.steamid) if (sess and sess.steamid) else None
-            if p:
-                tpl = {'level': int(p['level']), 'exp': int(p['exp']),
-                       'nextExp': int(p['next_exp']), 'result': 1}
-            else:
-                prof = get_profile()
-                tpl = {'level': int(prof.get('LEVEL', 1)),
-                       'exp': int(prof.get('EXP', 0)),
-                       'nextExp': int(prof.get('NEXT_EXP', 0)), 'result': 1}
+            prof = get_profile()
+            tpl = {'level': int(prof.get('LEVEL', 1)),
+                   'exp': int(prof.get('EXP', 0)),
+                   'nextExp': int(prof.get('NEXT_EXP', 0)), 'result': 1}
         return respond_api(flow, tpl, sess)
 
     log(f'UNKNOWN api endpoint {path} — returning generic result')
@@ -1069,6 +1070,36 @@ def bundle_crypt_key():
     if os.path.exists(p):
         return open(p).read().strip()
     return '0' * 96
+
+
+def login_response(tpl, sess):
+    """Rewrite the captured login template's `member` to the caller.
+
+    The template is the owner's real login response, so serving it verbatim
+    leaks the owner's SteamID/nickname to every other account (and makes a new
+    user look like the owner).  Per-user fields come from the store; the owner
+    keeps the `profile.json` overrides.
+    """
+    try:
+        d = json.loads(json.dumps(tpl))
+    except Exception:
+        d = dict(tpl)
+    m = d.get('member')
+    sid = sess.steamid if sess else None
+    if isinstance(m, dict) and sid:
+        m['STEAM_ID'] = str(sid)
+        p = STORE.player(sid)
+        m['LEVEL'] = int(p.get('level') or 1) if p else 1
+        m['RATING'] = float(p.get('rating') or 0.0) if p else 0.0
+        if sid == OWNER:
+            apply_profile(m)
+        else:
+            # a stable, non-identifying placeholder — never the owner's persona
+            m['NICKNAME'] = 'Player'
+            m['PLAY_COUNT'] = 0
+            m['WIN_COUNT'] = 0
+            m['LOSE_COUNT'] = 0
+    return d
 
 
 def myinfo_response(tpl, steamid):

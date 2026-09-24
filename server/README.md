@@ -69,6 +69,7 @@ session key had rotated away); see AGENTS.md §3.2.
 | `_store.py` | per-user progression store (SQLite, `data/store.db`): `memberinfo` + the 16-wide `clearlist` arrays, normalised to one row per cleared variant; seeds the owner from the captured `myinfo.json` |
 | `_rsa.py` | server keypair + **strict** RSA decode of the login block (`init`/`show`/`decrypt`/`selftest`). The old `cryptography` PKCS#1 v1.5 call was not a validity oracle (82% of random blocks "decrypted"); this is |
 | `_login_probe.py` | standalone probe: captures `c2s_login`, strict-decodes `data`, reports the payload shape. The experiment that pinned the login JSON |
+| `_fake_client.py` | **synthetic second client** for multi-user testing — logs in as any SteamID (RSA-wrapped key), then drives `c2s_get_myinfo` / `c2s_set_game_clear` / `c2s_get_userinfo` and the rank leaderboard. Creates a fresh account and a competing score with **no second game install** |
 | `_harvest_mem.py` | **fallback** session key: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds at login → `session_key.json`. Handles relaunches/rotations; keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/sudo, Windows is same-user |
 | `_harvest_session.py` | Frida bridge (fallback): polls `zf.aes_key`/`aes_iv` at 1 Hz → `session_key.json`; **auto-re-attaches when the game restarts** |
 | `_build_data.py` | (re)builds `data/` from the captured artefacts in the repo |
@@ -148,9 +149,34 @@ Notes:
   with `result:0`; the client retries 5× then boots to the main screen.
 * Only songs with a captured chart are playable (see `charts.json`); add more by
   running `dump_song.py`/captures and re-running `_build_data.py`.
-* Score uploads (`plf…`) are logged but stored nowhere yet; leaderboards serve
-  real captured CSVs when available (`data/rank_csv/`, Top100 + MyRange for
-  Finite) and fall back to a static sample.
+* Score uploads (`plf…`) are logged but not persisted directly (the `plf` fields do not cleanly carry `levelmode`); the authoritative per-play write is `c2s_set_game_clear`, which feeds the store. Leaderboards are **computed from the store** (Top100 / MyRange) and fall back to the real captured CSVs (`data/rank_csv/`) only for a variant nobody here has played.
+
+## Testing a second user
+
+Anything that reaches the proxy with a distinct SteamID is a distinct account —
+no second game install required:
+
+```bash
+# log in as a brand-new user (empty profile), record a play, read the board
+python3 server/_fake_client.py 76561190000000001
+python3 server/_fake_client.py 76561190000000002 --play --score 1012345 --leaderboard
+# then see them compete (rank 0 vs 1) — repeat the second command as user 1
+```
+
+`_fake_client.py` speaks the real wire protocol (`data=<b64( d3ad76d3adb8 ||
+AES )>`, RSA-wrapped login), so it also serves as the protocol test harness for
+the public-server auth work. For a **real** second client:
+
+* another machine on the LAN can point its Wine proxy at this mitmdump and use the
+  patched `version.dll` + a unique SteamID;
+* on this machine, a second copy of the game under **Goldberg** (replace
+  `EZ2ON_Data/Plugins/x86_64/steam_api64.dll`, add `steam_appid.txt` = `1477590`,
+  set a unique SteamID in Goldberg's `steam_settings/`) runs without a Steam
+  account — see `client/README.md`.
+
+Every real user must set a **unique SteamID**: the session registry and the store
+both key on it, so two clients sharing one ID overwrite each other's key and
+progression.
 
 ## Fully offline chart loads — WORKING, and what's still open
 
