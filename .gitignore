@@ -60,6 +60,8 @@ server/anchors/
 server/session_key.json
 server/pserver.log
 server/mitmdump.out
+server/app.out
+server/relay.out
 server/login_probe.log
 server/harvest_mem.log
 server/harvester.out

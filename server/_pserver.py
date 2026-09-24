@@ -36,6 +36,8 @@ the addon serves an explicit error instead — otherwise mitmproxy silently
 proxies to the official servers and the session becomes a confusing mix of
 real and fake data (this exact bug shipped once).
 """
+from __future__ import annotations
+
 import base64
 import hashlib
 import json
@@ -48,11 +50,18 @@ import urllib.parse
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from mitmproxy import http
+# mitmproxy is optional: the same handlers run under the standalone server
+# (server/app.py).  `_flowshim` supplies the request/response pieces and returns
+# a real mitmproxy Response when mitmproxy is importable.
+try:
+    from mitmproxy import http  # noqa: F401  (annotations only)
+except Exception:               # pragma: no cover - standalone deployment
+    http = None  # type: ignore
 
 # server/_rsa.py is next to this addon; mitmdump does not put the script's dir
 # on sys.path, so add it explicitly (the RSA hand-off is the Frida-free route).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _flowshim  # noqa: E402
 import _rsa  # noqa: E402
 import _sessions  # noqa: E402
 import _store  # noqa: E402
@@ -780,7 +789,7 @@ def handle_api(flow: http.HTTPFlow):
         if sess is None:
             log('ERROR: no session key for login — patcher version.dll not '
                 'active on the client, and no harvested key available')
-            flow.response = http.Response.make(
+            flow.response = _flowshim.make(
                 502, b'private server: no session key',
                 {'Content-Type': 'text/plain'})
             return
@@ -1241,12 +1250,12 @@ def respond_api(flow, obj, sess=None):
             log('NO SESSION KEY for a client — cannot encrypt the API response. '
                 'Install the patcher version.dll (client/patcher), or start '
                 'the harvester: /usr/bin/python server/_harvest_mem.py.')
-        flow.response = http.Response.make(
+        flow.response = _flowshim.make(
             502,
             b'private server: no session key - run server/_harvest_session.py',
             {'Content-Type': 'text/plain'})
         return
-    flow.response = http.Response.make(
+    flow.response = _flowshim.make(
         200, body, upstream_like_headers())
 
 
@@ -1290,7 +1299,7 @@ def handle_rank(flow: http.HTTPFlow):
         # rating / totalranking / getcoursedata / misc — empty matches the
         # official servers' own responses
         body = b''
-    flow.response = http.Response.make(
+    flow.response = _flowshim.make(
         200, body, {'Content-Type': 'application/json'})
 
 
@@ -1333,11 +1342,11 @@ def handle_cdn(flow: http.HTTPFlow):
             log(f'CDN MISS {p} -> upstream (harvest)')
             return
         log(f'CDN MISS {p}')
-        flow.response = http.Response.make(404, b'', {'Content-Type': 'text/plain'})
+        flow.response = _flowshim.make(404, b'', {'Content-Type': 'text/plain'})
         return
     log(f'CDN HIT {p}')
     data = open(os.path.join(ROOT, rel), 'rb').read()
-    flow.response = http.Response.make(
+    flow.response = _flowshim.make(
         200, data, {'Content-Type': 'application/octet-stream'})
 
 
@@ -1365,9 +1374,9 @@ class PrivateServer:
             # real/fake mix (shipped once — do not repeat).
             log('ADDON ERROR on', flow.request.path, '\n' + traceback.format_exc())
             if host == CDN_HOST:
-                flow.response = http.Response.make(404, b'', {})
+                flow.response = _flowshim.make(404, b'', {})
             else:
-                flow.response = http.Response.make(
+                flow.response = _flowshim.make(
                     502, b'private server error (see pserver.log)',
                     {'Content-Type': 'text/plain'})
 

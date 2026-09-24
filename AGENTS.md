@@ -983,3 +983,15 @@ server's. In-game validation of the server itself is in progress.
    standalone ASGI server (so the token rides an `X-EZ2-Token` header instead of a local
    file), and optional Steam OpenID binding so a real SteamID can be *proven* rather
    than claimed.
+12. Standalone server — **done**: the game handlers in `_pserver.py` are now
+   transport-neutral (`_flowshim.py` supplies the few mitmproxy pieces they use and
+   returns a real mitmproxy `Response` when it is importable; `mitmproxy` itself is
+   an optional import).  `server/app.py` is a stdlib HTTP(S) server (TLS via
+   `--cert`/`--key`, `/healthz`, plus an ASGI `asgi_app` for uvicorn/hypercorn) that
+   routes by `X-EZ2-Host` or `Host`; `_core.handle(host,method,path,headers,body)` is
+   the transport-free entry point.  The client side is a thin mitmproxy relay
+   (`_relay.py`) that forwards each game host to the remote server with `X-EZ2-Host`
+   and `X-EZ2-Token`.  Verified: in-process core (login→myinfo→rank→404), the HTTP
+   server by `curl`, and the full path (`_fake_client` → relay:8082 → app:8081 →
+   leaderboard), in open and token mode.  The addon path (`mitmdump -s
+   server/_pserver.py`, the local single-machine setup) still works unchanged.

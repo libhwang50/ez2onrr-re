@@ -64,7 +64,11 @@ session key had rotated away); see AGENTS.md §3.2.
 
 | file | purpose |
 |---|---|
-| `_pserver.py` | the mitmproxy addon (the server itself); logs to `pserver.log`; never forwards game-host traffic upstream |
+| `_pserver.py` | the game logic + mitmproxy addon (the server itself); logs to `pserver.log`; never forwards game-host traffic upstream. Importable without mitmproxy |
+| `_flowshim.py` | transport-neutral request/response so the handlers run under mitmproxy **or** a plain HTTP(S) server; returns a real mitmproxy `Response` when available |
+| `_core.py` | `(host, method, path, headers, body) -> response` — routes the three game hosts, turns failures into explicit errors |
+| `app.py` | **standalone server** (stdlib HTTP(S) + `/healthz` + ASGI `asgi_app`) — no mitmproxy |
+| `_relay.py` | **client-side relay** mitmproxy addon: forwards the game's hosts to a remote `app.py` with `X-EZ2-Host` + `X-EZ2-Token` |
 | `_sessions.py` | per-user API session registry: `steamid -> {key, iv}`, with an address cache and trial decryption for the SteamID-less requests |
 | `_store.py` | per-user progression store (SQLite, `data/store.db`): `memberinfo` + the 16-wide `clearlist` arrays, normalised to one row per cleared variant; seeds the owner from the captured `myinfo.json` |
 | `_rsa.py` | server keypair + **strict** RSA decode of the login block (`init`/`show`/`decrypt`/`selftest`). The old `cryptography` PKCS#1 v1.5 call was not a validity oracle (82% of random blocks "decrypted"); this is |
@@ -154,6 +158,46 @@ Notes:
 * Only songs with a captured chart are playable (see `charts.json`); add more by
   running `dump_song.py`/captures and re-running `_build_data.py`.
 * Score uploads (`plf…`) are logged but not persisted directly (the `plf` fields do not cleanly carry `levelmode`); the authoritative per-play write is `c2s_set_game_clear`, which feeds the store. Leaderboards are **computed from the store** (Top100 / MyRange) and fall back to the real captured CSVs (`data/rank_csv/`) only for a variant nobody here has played.
+
+## Standalone / public deployment
+
+The same handlers run with no mitmproxy:
+
+```bash
+python server/app.py --host 0.0.0.0 --port 8443 \
+  --cert fullchain.pem --key privkey.pem        # TLS; omit both for plain HTTP
+```
+
+`app.py` routes by the `X-EZ2-Host` header (the game's three hostnames) or the
+request `Host`, and exposes `/healthz`.  An ASGI callable is exported too:
+
+```bash
+uvicorn --factory server.app:asgi_app --host 0.0.0.0 --port 8443
+```
+
+The client side becomes a **thin relay**: the client's local mitmproxy (already
+trusted by the Wine prefix) forwards each game-host request to the remote
+server with the original host and the account token:
+
+```bash
+EZ2_REMOTE=https://ez2.example.com EZ2_TOKEN_FILE=/path/token.txt \
+  mitmdump -s server/_relay.py
+```
+
+`server/data/relay.json` may hold `remote` / `token_file` / `insecure` instead of
+the env vars.  The local mitmproxy still MITMs the game (its `Host` stays
+`game1-*.ez2game.co.kr`); the remote server sees `X-EZ2-Host`.  That is where the
+identity policy's `token_file` fallback stops being needed in production — the
+relay is the only place the token lives, and the server just reads `X-EZ2-Token`.
+
+| piece | transport | runs where |
+|---|---|---|
+| `_pserver.py` | mitmproxy addon (or core) | the game's machine (local) **or** the server |
+| `_core.py` | none — `(host,method,path,headers,body) -> response` | — |
+| `app.py` | HTTP(S) / ASGI | the server |
+| `_relay.py` | mitmproxy addon | each client |
+
+The engine and content layers are unchanged; only the transport is swappable.
 
 ## Identity & accounts (for a public server)
 
