@@ -54,10 +54,13 @@ from mitmproxy import http
 # on sys.path, so add it explicitly (the RSA hand-off is the Frida-free route).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _rsa  # noqa: E402
+import _sessions  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, 'server', 'data')
 KEYFILE = os.path.join(ROOT, 'server', 'session_key.json')
+# multi-user: steamid -> Session (key/iv), plus an addr cache; see _sessions.py
+SESSIONS = _sessions.Registry()
 LOG = open(os.path.join(ROOT, 'server', 'pserver.log'), 'a', buffering=1)
 
 API_HOST = 'game1-play.ez2game.co.kr'
@@ -204,72 +207,75 @@ def bck_payload():
     return DEFAULT_BCK_PAYLOAD
 
 
-def write_session_key(key: bytes, iv: bytes):
+def write_session_key(key: bytes, iv: bytes, steamid: str | None = None):
     """Persist the live session key/iv (same file the Frida harvester writes)."""
     tmp = KEYFILE + '.tmp'
-    json.dump({'aes_key': key.decode('ascii', 'replace'),
-               'aes_iv': iv.decode('ascii', 'replace'),
-               'source': 'rsa', 't': time.time()},
-              open(tmp, 'w'))
+    rec = {'aes_key': key.decode('ascii', 'replace'),
+           'aes_iv': iv.decode('ascii', 'replace'),
+           'source': 'rsa', 't': time.time()}
+    if steamid:
+        rec['steamid'] = steamid
+    json.dump(rec, open(tmp, 'w'))
     os.replace(tmp, KEYFILE)
-    log(f'session key <- RSA login: {key!r} / {iv!r}')
+    log(f'session key <- RSA login: {key!r} / {iv!r}'
+        + (f' (steamid {steamid})' if steamid else ''))
 
 
-def try_login_rsa(body: bytes) -> bool:
+def try_login_rsa(body: bytes, addr: str | None = None):
     """Frida-free hand-off: RSA-decrypt `c2s_login.data` under our private key.
 
-    The login request's `data` field is one 2048-bit (256 B) RSA block — the
-    only carrier for the client's session key/IV (AGENTS.md §3.1).  When the
-    drop-in patcher has replaced the client's `zf.publicKey` with ours, this
-    recovers key||iv and writes session_key.json.  Returns True when a key is
-    available afterwards.  Never raises.
+    **Confirmed live 2026-09-24**: the login `data` field is one 2048-bit
+    (256 B) RSA block whose plaintext is the client's login JSON
+    `{"steamid","appid","version","key","iv"}` — so it carries the session
+    key/IV *and* the identity (AGENTS.md §3.1).  The drop-in patcher rewrites
+    `zf.publicKey` to ours, so this recovers both with no Frida and no memory
+    scan.  We always attempt the decode (the key rotates within a launch), bind
+    the result in the session registry, and return that `Session`.  On failure
+    (unpatched client) fall back to this address's registry entry, then to the
+    legacy single-client `session_key.json`.  Never raises.
     """
     have = session_key()
-    force = bool(os.environ.get('EZ2_LOGIN_RSA_ALWAYS'))
-    if have and not force:
-        return True
+    fallback = lambda: SESSIONS.by_addr(addr) or legacy_session()
     enc = parse_form(body)
     if not enc:
-        return False
+        return fallback()
     try:
         raw = base64.b64decode(enc + '=' * (-len(enc) % 4))
     except Exception as e:
         log(f'login RSA: bad base64 ({e})')
-        return False
+        return fallback()
     try:
         with open(os.path.join(DATA, 'login_data.bin'), 'wb') as f:
             f.write(raw)
     except Exception:
         pass
     if len(raw) not in (128, 256, 384, 512):
-        # not a single RSA block — likely the still-parsed magic||AES shape, or
-        # the public key has not been swapped on this client
         log(f'login RSA: data is {len(raw)}B, not a single RSA block '
             f'(head={raw[:6].hex()})')
-        return False
+        return fallback()
     label, pt = _rsa.decrypt(raw)
     if pt is None:
-        log('login RSA: no padding scheme decrypted the block — is the '
-            'zf.publicKey swap active on this client?')
-        return False
-    # keep the raw plaintext for shape analysis (key||iv vs key-only)
+        log('login RSA: block is not encrypted under our public key — is the '
+            'patcher version.dll active (version=n,b)?')
+        return fallback()
     try:
         with open(os.path.join(DATA, 'login_rsa_plain.bin'), 'wb') as f:
             f.write(pt)
     except Exception:
         pass
     key, iv = _rsa.split_key_iv(pt)
-    log(f'login RSA ({label}): {len(pt)}B plaintext key={key!r} iv={iv!r}')
+    steamid = _rsa.login_steamid(pt)
+    log(f'login RSA ({label}): {len(pt)}B json steamid={steamid} '
+        f'key={key!r} iv={iv!r}')
     if key is not None and iv is not None:
         if have and (key, iv) != (have[0], have[1]):
-            log('login RSA: WARNING — recovered key differs from the '
-                'harvester file (the client did not encrypt to our public key?)')
-        if not have:
-            write_session_key(key, iv)
-        return True
-    log('login RSA: plaintext is not key(32)||iv(16); see '
+            log('login RSA: key ROTATED vs session_key.json — adopting the '
+                'login block (authoritative for this session)')
+        write_session_key(key, iv, steamid)
+        return SESSIONS.bind(steamid, key, iv, addr, source='rsa')
+    log('login RSA: plaintext is not a key/iv carrier; see '
         'server/data/login_rsa_plain.bin')
-    return False
+    return fallback()
 
 
 def session_key():
@@ -285,6 +291,24 @@ def session_key():
     return None
 
 
+def legacy_session():
+    """The single-client fallback: whatever the harvester last wrote."""
+    sk = session_key()
+    if sk is None:
+        return None
+    key, iv, _age = sk
+    return _sessions.Session(None, key, iv, source='file')
+
+
+def flow_addr(flow):
+    """The client's source IP (for the addr->session fast path), or ''."""
+    try:
+        peer = flow.client_conn.peername
+        return peer[0] if peer else ''
+    except Exception:
+        return ''
+
+
 def parse_form(body: bytes):
     """The API posts form fields (data=..., and ticket=/identity= on login).
     Returns the url-decoded `data` value, or None."""
@@ -296,8 +320,8 @@ def parse_form(body: bytes):
     return None
 
 
-def decrypt_request(body: bytes):
-    """API request -> (json_text, error). Never raises."""
+def decrypt_request(body: bytes, sess=None):
+    """API request -> (json_text, error) under `sess`. Never raises."""
     enc = parse_form(body)
     if enc is None:
         return None, 'no data= field'
@@ -307,10 +331,9 @@ def decrypt_request(body: bytes):
         return None, f'bad base64: {e}'
     if raw[:6] != MAGIC:
         return None, f'bad magic {raw[:6].hex()}'
-    sk = session_key()
-    if sk is None:
+    if sess is None:
         return None, 'no session key'
-    key, iv, _age = sk
+    key, iv = sess.key, sess.iv
     try:
         dec = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
         pt = pkcs7_unpad(dec.update(raw[6:]) + dec.finalize())
@@ -319,33 +342,66 @@ def decrypt_request(body: bytes):
         return None, f'decrypt failed (stale session key?): {e}'
 
 
-def session_encrypt(raw: bytes) -> bytes:
+def decrypt_with(body, sess):
+    """The request body iff `sess` decrypts it, else None (magic + padding)."""
+    return decrypt_request(body, sess)[0]
+
+
+def resolve_session(body, addr):
+    """Attribute a magic||AES API request to a user.
+
+    Returns (session, json_text, error).  Order: the address's cached session,
+    then every known key by trial decryption, then the legacy single-client
+    harvester file.  The magic (`d3ad76d3adb8`) plus PKCS#7 padding makes a
+    wrong key fail cleanly, so trial decryption is safe for a handful of users —
+    and it survives NAT and a client that reconnects on a new port.
+    """
+    s = SESSIONS.by_addr(addr) if addr else None
+    if s is not None:
+        txt = decrypt_with(body, s)
+        if txt is not None:
+            return s, txt, None
+    for s in SESSIONS.all():
+        txt = decrypt_with(body, s)
+        if txt is not None:
+            if addr and s.steamid:
+                SESSIONS.note_addr(addr, s.steamid)
+            return s, txt, None
+    g = legacy_session()
+    if g is not None:
+        txt = decrypt_with(body, g)
+        if txt is not None:
+            return g, txt, None
+    if len(SESSIONS) or g is not None:
+        return None, None, 'no known session key decrypts this request'
+    return None, None, 'no session key (no login seen)'
+
+
+def session_encrypt(raw: bytes, sess=None) -> bytes:
     """AES-256-CBC/PKCS7 under the client's own session key (raw ciphertext).
 
     Same primitive the API bodies use; `bundleCryptKey` is this over a 32-byte
     payload (see the `mint` bck mode)."""
-    sk = session_key()
-    if sk is None:
+    if sess is None:
         raise RuntimeError('no session key')
-    key, iv, _age = sk
+    key, iv = sess.key, sess.iv
     enc = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
     return enc.update(pkcs7_pad(raw)) + enc.finalize()
 
 
-def encrypt_response(json_obj) -> bytes:
+def encrypt_response(json_obj, sess=None) -> bytes:
     pt = json.dumps(json_obj, separators=(',', ':'), ensure_ascii=False).encode()
-    return base64.b64encode(session_encrypt(pt))
+    return base64.b64encode(session_encrypt(pt, sess))
 
 
-def decrypt_api_body(body: bytes):
+def decrypt_api_body(body: bytes, sess=None):
     """An upstream API response body -> json object, or None. Never raises.
 
     Same cipher as encrypt_response (b64 of AES-CBC/PKCS7 under the client's
     own session key — upstream encrypts with the key the client uses)."""
-    sk = session_key()
-    if sk is None:
+    if sess is None:
         return None
-    key, iv, _age = sk
+    key, iv = sess.key, sess.iv
     b = (body or b'').strip()
     try:
         raw = base64.b64decode(b + b'=' * (-len(b) % 4))
@@ -483,7 +539,7 @@ def mutate_url(u, mode):
         query=urllib.parse.urlencode(q)))
 
 
-def mutate_pattern_response(obj, defaults=True):
+def mutate_pattern_response(obj, defaults=True, sess=None):
     """Apply the knob files, falling back to the fully-offline defaults.
 
     With `defaults=True` (the local-serving path) an absent knob means the
@@ -566,7 +622,7 @@ def mutate_pattern_response(obj, defaults=True):
             else:
                 payload = hashlib.sha256(spec.encode()).digest()
             try:
-                obj['bundleCryptKey'] = base64.b64encode(session_encrypt(payload)).decode()
+                obj['bundleCryptKey'] = base64.b64encode(session_encrypt(payload, sess)).decode()
                 log(f'  bck=mint payload={payload.hex()} -> {obj["bundleCryptKey"][:16]}…')
             except Exception as e:
                 log(f'  bck=mint failed: {e}')
@@ -637,17 +693,26 @@ def ensure_key(timeout=20.0):
 def handle_api(flow: http.HTTPFlow):
     path = flow.request.path.split('?')[0]
     endpoint = path.rstrip('/').split('/')[-1]
-    # Experimental RSA route, off by default: recovering the key from the login
-    # block needs the client patched to encrypt to us, and PKCS#1 v1.5 padding
-    # can (very rarely) false-positive — never let that overwrite a good
-    # memory-harvested key. Enable with EZ2_LOGIN_RSA=1.
-    if endpoint == 'c2s_login' and os.environ.get('EZ2_LOGIN_RSA'):
-        try_login_rsa(flow.request.raw_content or b'')
-    ensure_key()
-    req_json, err = decrypt_request(flow.request.raw_content or b'')
+    addr = flow_addr(flow)
+    body = flow.request.raw_content or b''
+    # The login block is RSA under our public key (patcher `version.dll`) and
+    # carries the session key/IV *and* the SteamID; it creates (or refreshes) the
+    # user's session.  Every other API request carries no SteamID, so it is
+    # attributed by address, then by trial decryption against the known keys.
+    if endpoint == 'c2s_login':
+        sess = try_login_rsa(body, addr)
+        if sess is None and ensure_key():
+            sess = legacy_session()
+        req_json, err = None, None
+    else:
+        sess, req_json, err = resolve_session(body, addr)
+    try:
+        flow.metadata['ps_session'] = sess
+    except Exception:
+        pass
     if err:
         log(f'WARN {endpoint}: request not decrypted ({err})')
-    else:
+    elif req_json is not None:
         log(f'{endpoint} request: {req_json[:300]}')
         try:
             flow.metadata['ps_req'] = req_json
@@ -665,40 +730,38 @@ def handle_api(flow: http.HTTPFlow):
             return
 
     if endpoint == 'c2s_login':
-        sk = session_key()
-        if sk is None:
-            log('ERROR: no session key for login — is _harvest_session.py '
-                'running and attached to this game session?')
+        if sess is None:
+            log('ERROR: no session key for login — patcher version.dll not '
+                'active on the client, and no harvested key available')
             flow.response = http.Response.make(
                 502, b'private server: no session key',
                 {'Content-Type': 'text/plain'})
             return
-        log(f"login: serving template under key {sk[0][:8].decode()}... "
-            f"(key file {sk[2]:.0f}s old)")
+        log(f'login: serving template to {sess.label()}')
         tpl = TEMPLATES.get('login')
         if tpl is None:
-            return respond_api(flow, {'result': 0})
-        return respond_api(flow, apply_profile(tpl))
+            return respond_api(flow, {'result': 0}, sess)
+        return respond_api(flow, apply_profile(tpl), sess)
 
     if endpoint == 'c2s_get_gameinfo':
         tpl = TEMPLATES.get('gameinfo')
         if tpl is None:
-            return respond_api(flow, {'result': 0})
-        return respond_api(flow, tpl)
+            return respond_api(flow, {'result': 0}, sess)
+        return respond_api(flow, tpl, sess)
 
     if endpoint == 'c2s_get_myinfo':
         tpl = TEMPLATES.get('myinfo')
         if tpl is None:
-            return respond_api(flow, {'result': 0})
-        return respond_api(flow, apply_profile(tpl))
+            return respond_api(flow, {'result': 0}, sess)
+        return respond_api(flow, apply_profile(tpl), sess)
 
     if endpoint == 'c2s_get_userinfo':
-        return respond_api(flow, userinfo_response(req_json))
+        return respond_api(flow, userinfo_response(req_json), sess)
 
     if endpoint == 'c2s_get_pattern_file':
-        resp = pattern_response(req_json)
+        resp = pattern_response(req_json, sess)
         register_cdn_urls(req_json, resp)
-        return respond_api(flow, resp)
+        return respond_api(flow, resp, sess)
 
     if endpoint == 'c2s_set_game_clear':
         # refinement candidate: the real response is 48 B of ciphertext; the
@@ -706,10 +769,10 @@ def handle_api(flow: http.HTTPFlow):
         # validated response in the first test actually came from upstream).
         cfg = os.path.join(DATA, 'set_game_clear.json')
         tpl = json.load(open(cfg)) if os.path.exists(cfg) else {'result': 1}
-        return respond_api(flow, tpl)
+        return respond_api(flow, tpl, sess)
 
     log(f'UNKNOWN api endpoint {path} — returning generic result')
-    return respond_api(flow, {'result': 1})
+    return respond_api(flow, {'result': 1}, sess)
 
 
 def norm(s):
@@ -875,7 +938,7 @@ def chart_mode():
     return (_knob('chart_mode.txt') or 'exact').strip().lower()
 
 
-def pattern_response(req_json):
+def pattern_response(req_json, sess=None):
     """c2s_get_pattern_file: (musicresourcename, keymode, levelmode) -> URLs."""
     try:
         req = json.loads(req_json) if req_json else {}
@@ -893,7 +956,7 @@ def pattern_response(req_json):
     if key in PATTERN_REPLAY:
         log(f'pattern: {name!r} km={km} lm={lm} -> REPLAYED official response')
         obj = dict(PATTERN_REPLAY[key])
-        ch = mutate_pattern_response(obj)
+        ch = mutate_pattern_response(obj, sess=sess)
         if ch:
             log(f'  MUTATED (replayed): {ch}')
         return obj
@@ -937,7 +1000,7 @@ def pattern_response(req_json):
         'bundleCryptKey': bundle_crypt_key(),
         'result': 1,
     }
-    ch = mutate_pattern_response(resp)
+    ch = mutate_pattern_response(resp, sess=sess)
     if ch:
         log(f'  MUTATED (chart): {ch}')
     log(f"pattern: {name!r} km={km} lm={lm} -> {how} "
@@ -986,19 +1049,23 @@ def userinfo_response(req_json):
 _warned_no_key = False
 
 
-def respond_api(flow, obj):
+def respond_api(flow, obj, sess=None):
     global _warned_no_key
+    if sess is None:
+        try:
+            sess = flow.metadata.get('ps_session')
+        except Exception:
+            sess = None
     try:
-        body = encrypt_response(obj)
+        body = encrypt_response(obj, sess)
     except RuntimeError:
-        # almost always: the Frida harvester is not running, so the client's
-        # per-session key is unknown and NOTHING can be encrypted for it.
+        # No key for this client: either its login was never seen (so the
+        # session registry is empty for it) or the harvester is not running.
         if not _warned_no_key:
             _warned_no_key = True
-            log('NO SESSION KEY — cannot encrypt any API response. Start the '
-                'bridge: .venv/bin/python server/_harvest_session.py (or forward '
-                'this endpoint too, e.g. passthrough_endpoints.txt = '
-                'login,gameinfo,myinfo,pattern).')
+            log('NO SESSION KEY for a client — cannot encrypt the API response. '
+                'Install the patcher version.dll (client/patcher), or start '
+                'the harvester: /usr/bin/python server/_harvest_mem.py.')
         flow.response = http.Response.make(
             502,
             b'private server: no session key - run server/_harvest_session.py',
@@ -1122,7 +1189,8 @@ class PrivateServer:
         if not any(e in ep for e in eps):
             return
         try:
-            obj = decrypt_api_body(flow.response.content)
+            sess = flow.metadata.get('ps_session')
+            obj = decrypt_api_body(flow.response.content, sess)
             if obj is None:
                 log(f'{ep}: upstream response did not decrypt (stale session '
                     'key? — was the login forwarded too?)')
@@ -1130,9 +1198,9 @@ class PrivateServer:
             save_upstream(ep, obj)
             ch = None
             if ep == 'c2s_get_pattern_file' and mutation_requested():
-                ch = mutate_pattern_response(obj, defaults=False)
+                ch = mutate_pattern_response(obj, defaults=False, sess=sess)
                 if ch:
-                    flow.response.content = encrypt_response(obj)
+                    flow.response.content = encrypt_response(obj, sess)
             log(f'UPSTREAM {ep}: {summarize_obj(obj, secret=("bundleCryptKey",))}'
                 + (f'  MUTATED {ch}' if ch else ''))
             if ep == 'c2s_get_pattern_file' and isinstance(obj, dict):
