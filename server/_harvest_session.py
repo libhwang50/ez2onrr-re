@@ -205,6 +205,10 @@ def main():
                     elif cmd.get('op') == 'readbytes':
                         res = script.exports_sync.readbytes(cmd.get('addr', ''),
                                                             str(cmd.get('len', 64)))
+                    elif cmd.get('op') == 'zfstatics':
+                        res = script.exports_sync.zfstatics(cmd.get('cls', 'zf'))
+                    elif cmd.get('op') == 'pubkey':
+                        res = script.exports_sync.pubkey()
                     else:
                         res = json.dumps({'err': f'unknown op {cmd.get("op")}'})
                 except KeyboardInterrupt:

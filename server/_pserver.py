@@ -50,6 +50,11 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from mitmproxy import http
 
+# server/_rsa.py is next to this addon; mitmdump does not put the script's dir
+# on sys.path, so add it explicitly (the RSA hand-off is the Frida-free route).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _rsa  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, 'server', 'data')
 KEYFILE = os.path.join(ROOT, 'server', 'session_key.json')
@@ -197,6 +202,74 @@ def bck_payload():
         except Exception:
             pass
     return DEFAULT_BCK_PAYLOAD
+
+
+def write_session_key(key: bytes, iv: bytes):
+    """Persist the live session key/iv (same file the Frida harvester writes)."""
+    tmp = KEYFILE + '.tmp'
+    json.dump({'aes_key': key.decode('ascii', 'replace'),
+               'aes_iv': iv.decode('ascii', 'replace'),
+               'source': 'rsa', 't': time.time()},
+              open(tmp, 'w'))
+    os.replace(tmp, KEYFILE)
+    log(f'session key <- RSA login: {key!r} / {iv!r}')
+
+
+def try_login_rsa(body: bytes) -> bool:
+    """Frida-free hand-off: RSA-decrypt `c2s_login.data` under our private key.
+
+    The login request's `data` field is one 2048-bit (256 B) RSA block — the
+    only carrier for the client's session key/IV (AGENTS.md §3.1).  When the
+    drop-in patcher has replaced the client's `zf.publicKey` with ours, this
+    recovers key||iv and writes session_key.json.  Returns True when a key is
+    available afterwards.  Never raises.
+    """
+    have = session_key()
+    force = bool(os.environ.get('EZ2_LOGIN_RSA_ALWAYS'))
+    if have and not force:
+        return True
+    enc = parse_form(body)
+    if not enc:
+        return False
+    try:
+        raw = base64.b64decode(enc + '=' * (-len(enc) % 4))
+    except Exception as e:
+        log(f'login RSA: bad base64 ({e})')
+        return False
+    try:
+        with open(os.path.join(DATA, 'login_data.bin'), 'wb') as f:
+            f.write(raw)
+    except Exception:
+        pass
+    if len(raw) not in (128, 256, 384, 512):
+        # not a single RSA block — likely the still-parsed magic||AES shape, or
+        # the public key has not been swapped on this client
+        log(f'login RSA: data is {len(raw)}B, not a single RSA block '
+            f'(head={raw[:6].hex()})')
+        return False
+    label, pt = _rsa.decrypt(raw)
+    if pt is None:
+        log('login RSA: no padding scheme decrypted the block — is the '
+            'zf.publicKey swap active on this client?')
+        return False
+    # keep the raw plaintext for shape analysis (key||iv vs key-only)
+    try:
+        with open(os.path.join(DATA, 'login_rsa_plain.bin'), 'wb') as f:
+            f.write(pt)
+    except Exception:
+        pass
+    key, iv = _rsa.split_key_iv(pt)
+    log(f'login RSA ({label}): {len(pt)}B plaintext key={key!r} iv={iv!r}')
+    if key is not None and iv is not None:
+        if have and (key, iv) != (have[0], have[1]):
+            log('login RSA: WARNING — recovered key differs from the '
+                'harvester file (the client did not encrypt to our public key?)')
+        if not have:
+            write_session_key(key, iv)
+        return True
+    log('login RSA: plaintext is not key(32)||iv(16); see '
+        'server/data/login_rsa_plain.bin')
+    return False
 
 
 def session_key():
@@ -564,6 +637,12 @@ def ensure_key(timeout=20.0):
 def handle_api(flow: http.HTTPFlow):
     path = flow.request.path.split('?')[0]
     endpoint = path.rstrip('/').split('/')[-1]
+    # Experimental RSA route, off by default: recovering the key from the login
+    # block needs the client patched to encrypt to us, and PKCS#1 v1.5 padding
+    # can (very rarely) false-positive — never let that overwrite a good
+    # memory-harvested key. Enable with EZ2_LOGIN_RSA=1.
+    if endpoint == 'c2s_login' and os.environ.get('EZ2_LOGIN_RSA'):
+        try_login_rsa(flow.request.raw_content or b'')
     ensure_key()
     req_json, err = decrypt_request(flow.request.raw_content or b'')
     if err:
@@ -929,6 +1008,15 @@ def respond_api(flow, obj):
         200, body, upstream_like_headers())
 
 
+def rank_delay():
+    """Seconds to hold the pre-login battle-server lookup (server/data/rank_delay.txt)."""
+    try:
+        v = float(open(os.path.join(DATA, 'rank_delay.txt')).read().strip())
+        return max(0.0, min(v, 60.0))
+    except Exception:
+        return float(os.environ.get('EZ2_RANK_DELAY', '0') or 0)
+
+
 def handle_rank(flow: http.HTTPFlow):
     q = flow.request.query.get('data', '')
     body = flow.request.raw_content or b''
@@ -941,6 +1029,15 @@ def handle_rank(flow: http.HTTPFlow):
         f'data={q[:110]!r} body={len(body)}B')
     arg = q.split(',')[0]
     if arg == 'get_battle_server_ip':
+        # Key-patch window: this request immediately precedes the login block
+        # build.  Holding the response gives a host-side patcher time to swap
+        # zf.publicKey / the cached modulus before the client encrypts.  Read
+        # per request so it can be changed without a restart; 0 disables it.
+        delay = rank_delay()
+        if delay:
+            log(f'rank: holding get_battle_server_ip {delay:.0f}s '
+                f'(client key-patch window)')
+            time.sleep(delay)
         body = BATTLE_SERVER.encode()
     elif q.startswith('get') and q != 'get_battle_server_ip' and arg[3:].isdigit():
         # a leaderboard query — serve the real captured CSV when we have it

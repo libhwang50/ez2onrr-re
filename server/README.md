@@ -36,8 +36,10 @@ Wire format (verified byte-for-byte against captures):
 * API **response** = b64( AES-CBC-PKCS7(json) )
 * key/IV = the ASCII bytes of `zf.aes_key` / `zf.aes_iv` — generated
   **client-side** per session (`zf.gnf`: `RNGCryptoServiceProvider` →
-  `BitConverter.ToString` → strip `-`) and never sent over HTTPS, so the server
-  learns them from the running game via the Frida bridge (below).
+  `BitConverter.ToString` → strip `-`) and never sent over HTTPS. The client
+  keeps them in a small in-memory JSON (`{"key":"<32hex>","iv":"<16hex>"}`),
+  which **`_harvest_mem.py` reads with a plain memory scan — Frida-free, no
+  client patch** (the Frida bridge `_harvest_session.py` remains as a fallback).
 
 **No upstream leakage.** An unhandled exception inside a mitmproxy addon hook
 does not abort the request — mitmproxy forwards it to the real upstream. The
@@ -58,7 +60,8 @@ exit; tune `data/userinfo_entry.json` if that appears.
 | file | purpose |
 |---|---|
 | `_pserver.py` | the mitmproxy addon (the server itself); logs to `pserver.log`; never forwards game-host traffic upstream |
-| `_harvest_session.py` | Frida bridge: polls `zf.aes_key`/`aes_iv` at 1 Hz → `session_key.json`; **auto-re-attaches when the game restarts** (a stale key makes the client reject every response) |
+| `_harvest_mem.py` | **Frida-free session key**: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds at login → `session_key.json`. Handles relaunches/rotations; keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/sudo, Windows is same-user |
+| `_harvest_session.py` | Frida bridge (fallback): polls `zf.aes_key`/`aes_iv` at 1 Hz → `session_key.json`; **auto-re-attaches when the game restarts** |
 | `_build_data.py` | (re)builds `data/` from the captured artefacts in the repo |
 | `data/login.json` | `c2s_login` response template (real, captured) |
 | `data/myinfo.json` | `c2s_get_myinfo` template — `clearlist`, `memberinfo`, … |
@@ -94,8 +97,10 @@ export EZ2_API_SESSION_IV=<16-char ASCII zf.aes_iv of that session>
 ## Running
 
 ```bash
-# terminal 1 — session-key bridge (start once, leave running)
-.venv/bin/python server/_harvest_session.py
+# terminal 1 — Frida-free session-key harvester (start once, leave running)
+#   Linux: one-time `sudo sysctl -w kernel.yama.ptrace_scope=0` (ptrace access)
+#   Windows: same-user, nothing to enable
+/usr/bin/python server/_harvest_mem.py
 
 # terminal 2 — the server
 mitmdump -s server/_pserver.py
@@ -103,9 +108,10 @@ mitmdump -s server/_pserver.py
 
 Then start the game normally. Watch `server/pserver.log`.
 
-**Ordering no longer matters** — the harvester auto-re-attaches when the game
-restarts, and the login handler waits up to 15 s for the key. Start the
-harvester once and forget it. (The game generates its session key before the
+**Ordering no longer matters** — the harvester tracks game relaunches and key
+rotations, and the login handler waits up to 15 s for the key. Start the
+harvester once and forget it. (`_harvest_session.py`, the Frida bridge, still
+works as a fallback.) (The game generates its session key before the
 login request; without a key the login can only fail — the client pops
 "Object reference not set…" and OK quits the game, because a response
 cannot be encrypted without the key.)
@@ -213,7 +219,7 @@ protocol-level token is minted from the client's hardcoded build constant and th
 live session key:
 
 ```bash
-.venv/bin/python server/_harvest_session.py   # terminal 1: keeps session_key.json live
+/usr/bin/python server/_harvest_mem.py        # terminal 1: keeps session_key.json live
 mitmdump -s server/_pserver.py                # terminal 2: the server
 ```
 
@@ -492,10 +498,13 @@ battle server's copy. See AGENTS.md §3.1 and §7.6.
 * `c2s_get_userinfo` serves a **guessed list shape** (`data/userinfo_entry.json`
   cloned per requested SteamID); a wrong shape makes the client pop its JSON
   parse error — screenshot it if you see it, it names the expected type.
-* The session key still requires the Frida bridge. The Frida-free route (AGENTS.md
-  §3.1/§7.6): swap the baked `zf.publicKey` for our own and RSA-decrypt the key from
-  `c2s_login.data`, or catch the `sendaes,` hand-off on the raw packet channel; the
-  no-binary-patch fallback is making `zf.gnf` deterministic.
+* **The session key is now Frida-free.** `_harvest_mem.py` scans the game's memory
+  for the transient `{"key":"<32hex>","iv":"<16hex>"}` JSON and writes
+  `session_key.json`; `ensure_key()` makes login wait for it. Verified end-to-end.
+  The RSA `zf.publicKey`-swap route is **not** needed for a local server (the client
+  caches the provider at `zf` static-init, before a host-side patch lands). For a
+  remote/public server the scan must run on the client, so ship a small local helper
+  that forwards the key; the raw-channel `sendaes,` hand-off is the alternative.
 * Rank endpoints accept any signature; nothing is verified or persisted.
 * Songs without a captured chart fail at chart load (`result:0`) — extend
   coverage with `dump_song.py` and re-run `_build_data.py`.

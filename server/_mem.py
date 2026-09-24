@@ -133,6 +133,10 @@ def main():
         # session-scoped material the bCK payload could be derived from
         show(send({'op': 'zfstatics', 'cls': a[1] if len(a) > 1 else 'zf'},
                   timeout=120))
+    elif a[0] == 'pubkey':
+        # the live zf.publicKey string + its raw address: what the Frida-free
+        # patcher (client/ez2on_patch.py) must find in writable memory
+        show(send({'op': 'pubkey'}, timeout=120))
     elif a[0] == 'whowrites':
         show(send({'op': 'whowrites', 'disp': a[1]}, timeout=300), max_hits=60)
     elif a[0] == 'method':

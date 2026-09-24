@@ -24,6 +24,34 @@ rpc.exports.readkey = function () {
   });
 };
 
+// pubkey: the live zf.publicKey string plus where its characters actually are.
+// The Frida-free patcher (client/ez2on_patch.py) finds that string by scanning
+// for <RSAKeyValue>; this read-only call pins the exact value (modulus,
+// exponent, length) and the raw address so a host-side scan can be validated
+// against the same byte-for-byte blob in one session.
+// IL2CPP String layout: [klass 8][monitor 8][length int32 @0x10][chars @0x14].
+rpc.exports.pubkey = function () {
+  return Il2Cpp.perform(() => {
+    const out = {};
+    let zf;
+    try {
+      zf = Il2Cpp.domain.assembly("Assembly-CSharp").image.class("zf");
+    } catch (e) { return JSON.stringify({ err: 'class lookup: ' + e }); }
+    let v;
+    try { v = zf.field("publicKey").value; }
+    catch (e) { return JSON.stringify({ err: 'field lookup: ' + e }); }
+    try { out.content = v.content; } catch (e) { out.err = String(e); }
+    try { out.length = v.content.length; } catch (e) {}
+    try { out.handle = v.handle.toString(); } catch (e) {}
+    try { out.chars = v.handle.add(0x14).toString(); } catch (e) {}
+    // does the raw char buffer match the managed value?
+    try {
+      out.charsMatches = v.handle.add(0x14).readUtf16String(out.length) === out.content;
+    } catch (e) {}
+    return JSON.stringify(out);
+  });
+};
+
 // zfstatics: every static field of a class (default zf) with its live value.
 // The API session key is generated client-side per launch; if the bCK payload
 // is not derived from aes_key/aes_iv then the material it *is* derived from is

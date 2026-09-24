@@ -1,6 +1,6 @@
 # EZ2ON REBOOT: R — Reverse Engineering Technical Report
 
-Current state as of 2026-09-22. `README.md` is the user-facing guide; `tools/README.md`
+Current state as of 2026-09-24. `README.md` is the user-facing guide; `tools/README.md`
 covers the investigation harness; `server/README.md` covers the private server. Superseded
 conclusions are marked *(supersedes …)* rather than kept as narrative.
 
@@ -113,9 +113,28 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
   server: the `sendaes,` packet (literals `[9903]sendKeyDataStr:`, `[AES 키 전송
   완료]`, acked by `s2c_aes_connect_completed`) on the raw packet channel
   (`aes,<command>[,<args>]` framing, addressed by `get_battle_server_ip` →
-  `3.37.247.33:9902`). **Neither is confirmed by decryption yet** — see §4.6/§7.6.
-  Until then a private server reads the key from the running game
-  (`server/_harvest_session.py`).
+  `3.37.247.33:9902`). Neither is confirmed by decryption.
+* **Frida-free key acquisition — SOLVED (2026-09-24).** The client serialises a
+  small JSON while building the login request and keeps it readable in memory:
+  `{…,"version":"<client version>","key":"<32 uppercase hex>","iv":"<16 uppercase
+  hex>"}`. `server/_harvest_mem.py` scans the game's writable memory for
+  `"key":"…","iv":"…"`, extracts key/IV and writes `server/session_key.json` —
+  **no Frida, no RSA swap, no client modification, no official server**. Because
+  `_pserver.py`'s `ensure_key()` holds login until `session_key.json` exists, the
+  scan wins the race deterministically even though the JSON is **transient**
+  (freed once login completes). The harvester therefore keeps the last key and
+  clears it only when the game process exits, so a relaunch waits for the new
+  session's key instead of serving the old one (a stale key gives the client the
+  “Object reference not set…” NRE, indistinguishable from having no key).
+  Verified end-to-end in-game (login → `c2s_get_gameinfo` → `c2s_get_myinfo`).
+  An earlier attempt to instead swap `zf.publicKey` and RSA-decrypt the login
+  block is **not needed** for a local server: the client caches its
+  `RSACryptoServiceProvider` from the baked key at `zf` static-init, before any
+  host-side patch can land (a full-scan patch of the literal, the managed string
+  and the raw cached modulus left the login block still encrypted to the original
+  key). A *remote* server would still need a small client-side helper to run the
+  memory scan where the game runs and send the key, since `zf.aes_key`/`aes_iv`
+  never appear on the HTTPS wire.
 * Request bodies = b64( **magic `d3ad76d3adb8` (6 B)** ‖ AES-CBC-PKCS7(json) )
   *(supersedes the “fixed 16-byte prefix” reading — that was the magic plus the first
   ciphertext block, shared across requests only because those requests shared their
@@ -776,6 +795,7 @@ Private server (see **`server/README.md`** for the full guide):
 | Tool | Purpose |
 |---|---|
 | `server/_pserver.py` | **the private server** — a mitmproxy addon that stubs `game1-play` / `game1-rank` / `game1-cdn` server-side; no extra certs, no hosts edits (the Wine prefix already proxies through mitmproxy and trusts its CA) |
+| `server/_harvest_mem.py` | **Frida-free session key**: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds for login → `server/session_key.json`. Tracks relaunches/rotations, keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/root; Windows is same-user |
 | `server/_harvest_session.py` | Frida bridge: polls `zf.aes_key`/`aes_iv` at 1 Hz → `server/session_key.json` (the client generates the API session key locally; it is absent from the HTTPS wire, though it may be handed over on the raw packet channel — §3.1). Also owns the **one-session command channel**: it polls `server/cmd.json` and answers in `server/cmd_result.json`, so memory probes never need a second Frida session (which crashes the game). Restores the default SIGINT handler while an RPC runs, so Ctrl-C aborts a slow scan and detaches cleanly |
 | `server/_sweep.py` | **drive the game to capture charts** (a capture counts only once the CDN body arrives; captures are filed into `extracted_charts/` by the addon) — blind (the server log is the sensor), guarded by a focused-window check, with `--probe`-style `--calibrate` that deduces the difficulty/keymode keys from the request JSON |
 | `server/_coverage.py` | **audit chart coverage** — songs covered vs the 601-song music list (coverage is per *song*: one capture serves every variant), writes a capture queue, and parses `pserver.log` to verify what a capture run actually asked for |
@@ -846,16 +866,14 @@ server's. In-game validation of the server itself is in progress.
    pins the constant `plf` fields (§3.7). The same session settles §3.1: RSA-decrypt
    `c2s_login.data` with the (swapped-in) private key, or at minimum pair a harvested
    key with its own login blob so the login can be tested directly.
-6. Make the server Frida-free. The likely mechanism is §3.1: swap the baked
-   `zf.publicKey` for our own and RSA-decrypt the session key from `c2s_login.data`;
-   the fallback is the raw packet channel's `sendaes,` hand-off. The `unp` literal is
-   **not** plaintext on disk (checked `global-metadata.dat` and `GameAssembly.dll`, not
-   ASCII and not UTF-16), so a static string patch is out — the practical route is a
-   runtime read/write of the `zf.publicKey` static field via `/proc/<pid>/mem`
-   (read/write, not a hook, so it stays inside the project's safety rules). A purely
-   client-side fallback that needs no binary patch: make `zf.gnf` deterministic by
-   interposing the 32+16-byte RNG draws. **First experiment:** swap in a throwaway
-   keypair and log the decrypted `data` (expect 32 or 48 B).
+6. **Make the server Frida-free — SOLVED locally (§3.1).** `server/_harvest_mem.py`
+   scans the running game's memory for the transient
+   `{"key":"<32hex>","iv":"<16hex>"}` JSON and writes `session_key.json`; no
+   Frida, no client patch, verified end-to-end. The RSA-swap route is not needed
+   for a local server (the provider is cached at `zf` static-init). Remaining for
+   a **remote/public** server: ship a small client-side helper that runs that scan
+   where the game runs and forwards the key (it must be read where the game is).
+   The raw-channel `sendaes,` hand-off is the second candidate key source.
 7. Broaden chart coverage in `server/data/`. Measured: **158 of 601 songs** at the time
    of writing (the
    music list's 1,201 entries are two `GAME_MODE`s of the same songs, and gamemode is
