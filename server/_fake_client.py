@@ -65,19 +65,21 @@ def _aes_dec(ct: bytes, key: bytes, iv: bytes) -> bytes:
     return _unpad(c.update(ct) + c.finalize())
 
 
-def _post(host: str, path: str, form: dict) -> bytes:
+def _post(host: str, path: str, form: dict, token: str = None) -> bytes:
     body = urllib.parse.urlencode(form).encode()
-    req = urllib.request.Request(
-        f'http://{host}{path}', data=body,
-        headers={'Content-Type': 'application/x-www-form-urlencoded'})
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    if token:
+        headers['X-EZ2-Token'] = token
+    req = urllib.request.Request(f'http://{host}{path}', data=body, headers=headers)
     op = urllib.request.build_opener(
         urllib.request.ProxyHandler({'http': PROXY, 'https': PROXY}))
     with op.open(req, timeout=10) as r:
         return r.read()
 
 
-def _get(host: str, path: str) -> bytes:
-    req = urllib.request.Request(f'http://{host}{path}')
+def _get(host: str, path: str, token: str = None) -> bytes:
+    headers = {'X-EZ2-Token': token} if token else {}
+    req = urllib.request.Request(f'http://{host}{path}', headers=headers)
     op = urllib.request.build_opener(
         urllib.request.ProxyHandler({'http': PROXY, 'https': PROXY}))
     with op.open(req, timeout=10) as r:
@@ -85,9 +87,11 @@ def _get(host: str, path: str) -> bytes:
 
 
 class FakeClient:
-    def __init__(self, steamid: str, version: str = '2026.09.04.001'):
+    def __init__(self, steamid: str, version: str = '2026.09.04.001',
+                 token: str = None):
         self.steamid = str(steamid)
         self.version = version
+        self.token = token
         self.key = secrets.token_hex(16).upper().encode()   # 32 ASCII hex
         self.iv = secrets.token_hex(8).upper().encode()     # 16 ASCII hex
 
@@ -100,7 +104,8 @@ class FakeClient:
         block = _rsa.load_private().public_key().encrypt(payload, padding.PKCS1v15())
         enc = base64.b64encode(block).decode()
         raw = _post(API_HOST, '/api/c2s_login', {
-            'data': enc, 'ticket': secrets.token_hex(20), 'identity': self.steamid})
+            'data': enc, 'ticket': secrets.token_hex(20), 'identity': self.steamid},
+            token=self.token)
         # Login responses use the API cipher, not the magic framing.
         try:
             return json.loads(_aes_dec(base64.b64decode(raw), self.key, self.iv))
@@ -111,7 +116,7 @@ class FakeClient:
     def call(self, endpoint: str, obj: dict):
         pt = json.dumps(obj, separators=(',', ':')).encode()
         data = base64.b64encode(MAGIC + _aes_enc(pt, self.key, self.iv)).decode()
-        raw = _post(API_HOST, f'/api/{endpoint}', {'data': data})
+        raw = _post(API_HOST, f'/api/{endpoint}', {'data': data}, token=self.token)
         return json.loads(_aes_dec(base64.b64decode(raw), self.key, self.iv))
 
     def myinfo(self):
@@ -131,7 +136,8 @@ class FakeClient:
     def leaderboard(self, musicid, keymode, levelmode, page=0, steamid=None):
         key = f'{musicid}{keymode}{levelmode}'
         q = f'get{key},{page}' + (f',{steamid}' if steamid else '')
-        return _get(RANK_HOST, '/?' + urllib.parse.urlencode({'data': q})).decode()
+        return _get(RANK_HOST, '/?' + urllib.parse.urlencode({'data': q}),
+                    token=self.token).decode()
 
 
 def _cleared(info):
@@ -155,11 +161,13 @@ def main():
     ap.add_argument('--keymode', type=int, default=1)       # 4K
     ap.add_argument('--levelmode', type=int, default=1)     # EZ
     ap.add_argument('--score', type=int, default=0)
+    ap.add_argument('--token', default=os.environ.get('EZ2_TOKEN'),
+                    help='server account token (or $EZ2_TOKEN); omitted = guest/open')
     ap.add_argument('--play', action='store_true', help='record a clear')
     ap.add_argument('--leaderboard', action='store_true')
     args = ap.parse_args()
 
-    c = FakeClient(args.steamid)
+    c = FakeClient(args.steamid, token=args.token)
     print(f'login {args.steamid}: {c.login()}')
     info = c.myinfo()
     mi = info.get('memberinfo', {})

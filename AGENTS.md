@@ -969,3 +969,17 @@ server's. In-game validation of the server itself is in progress.
 10. Re-check the captions in the "8CN26" sections above when touching them: the code
    means "Song Load timeout" (a watchdog), NOT "corrupt file" — the Korean popup text
    ("게임 파일이 손상되었습니다") is the generic wrapper the reporter shows.
+11. Public-server identity — **Phase 1 started**: a third party *cannot* verify the
+   Steam auth ticket (`ISteamUserAuth/AuthenticateUserTicket` and `CheckAppOwnership`
+   require the app **publisher's** Web API key), and the RSA pubkey-swap only proves
+   the client runs our patcher — so the SteamID is not a credential.  Access is now a
+   **server-issued bearer token** (`server/_auth.py`, `server/_accounts.py`, accounts
+   table in `_store.py`): `auth.json` `mode` = `open` (default, the old behaviour) or
+   `token`; a `guest` tier (`allow`/`deny`, `guest_persist`) is configurable; providers
+   (Discord OAuth) are optional registration front ends only.  The account's public id
+   is chosen at registration (real SteamID or a generated pseudo-SteamID) and the
+   server overrides the login's claimed id with it; on the Goldberg path the launcher
+   writes that id into the emulator config.  Still to do: the thin client relay +
+   standalone ASGI server (so the token rides an `X-EZ2-Token` header instead of a local
+   file), and optional Steam OpenID binding so a real SteamID can be *proven* rather
+   than claimed.

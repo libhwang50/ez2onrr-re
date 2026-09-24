@@ -77,12 +77,32 @@ CREATE TABLE IF NOT EXISTS clears (
     updated    REAL,
     PRIMARY KEY (steamid, music_id, keymode, levelmode)
 );
+CREATE TABLE IF NOT EXISTS accounts (
+    id           TEXT PRIMARY KEY,   -- canonical, SteamID-shaped public id
+    token_hash   TEXT UNIQUE,        -- sha256 hex of the bearer token
+    provider     TEXT DEFAULT '',    -- 'admin' | 'discord' | 'steam' | ''
+    provider_id  TEXT DEFAULT '',
+    display_name TEXT DEFAULT '',
+    created      REAL,
+    last_seen    REAL,
+    banned       INTEGER DEFAULT 0
+);
 """
 
 
 def slot(keymode, levelmode):
     """The 16-wide clearlist index for one variant (keymode-major)."""
     return (int(keymode) - 1) * 4 + (int(levelmode) - 1)
+
+
+def new_pseudo_steamid():
+    """A 17-digit, SteamID64-shaped id for accounts with no real SteamID.
+
+    Used for Discord/admin accounts and for the Goldberg path, where the
+    launcher writes it into the emulator's config so the client presents the
+    same id the server assigned."""
+    import random
+    return '7656119' + f'{random.randrange(10 ** 10):010d}'
 
 
 class Store:
@@ -265,3 +285,61 @@ class Store:
                     self.upsert_clear(steamid, mid, keymode, levelmode, **vals)
                     n += 1
         return n
+
+    # -- accounts ---------------------------------------------------------
+    def account(self, account_id):
+        with self._lock:
+            r = self._db.execute('SELECT * FROM accounts WHERE id=?',
+                                 (str(account_id),)).fetchone()
+        return dict(r) if r else None
+
+    def account_by_token_hash(self, token_hash):
+        if not token_hash:
+            return None
+        with self._lock:
+            r = self._db.execute('SELECT * FROM accounts WHERE token_hash=?',
+                                 (str(token_hash),)).fetchone()
+        return dict(r) if r else None
+
+    def account_by_provider(self, provider, provider_id):
+        with self._lock:
+            r = self._db.execute(
+                'SELECT * FROM accounts WHERE provider=? AND provider_id=?',
+                (str(provider), str(provider_id))).fetchone()
+        return dict(r) if r else None
+
+    def issue_account(self, token_hash, *, account_id=None, provider='',
+                      provider_id='', display_name='', steamid=None):
+        """Create an account.  The public id is `steamid` if given (real Steam),
+        else a generated pseudo-SteamID (Discord/admin/Goldberg)."""
+        aid = str(steamid or account_id or '') or new_pseudo_steamid()
+        while self.account(aid) is not None:
+            aid = new_pseudo_steamid()
+        now = time.time()
+        with self._lock:
+            self._db.execute(
+                'INSERT INTO accounts(id, token_hash, provider, provider_id, '
+                'display_name, created, last_seen) VALUES(?,?,?,?,?,?,?)',
+                (aid, token_hash, provider, str(provider_id), display_name,
+                 now, now))
+            self._db.commit()
+        return self.account(aid)
+
+    def update_account(self, account_id, **fields):
+        if not fields:
+            return self.account(account_id)
+        cols = ', '.join(f'{k}=?' for k in fields)
+        with self._lock:
+            self._db.execute(f'UPDATE accounts SET {cols} WHERE id=?',
+                             (*fields.values(), str(account_id)))
+            self._db.commit()
+        return self.account(account_id)
+
+    def touch_account(self, account_id):
+        self.update_account(account_id, last_seen=time.time())
+
+    def accounts(self):
+        with self._lock:
+            rows = self._db.execute(
+                'SELECT * FROM accounts ORDER BY created').fetchall()
+        return [dict(r) for r in rows]

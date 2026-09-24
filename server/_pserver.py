@@ -56,6 +56,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _rsa  # noqa: E402
 import _sessions  # noqa: E402
 import _store  # noqa: E402
+import _auth  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, 'server', 'data')
@@ -341,6 +342,29 @@ def parse_form(body: bytes):
         if k == 'data':
             return urllib.parse.unquote(v)
     return None
+
+
+def client_token(flow):
+    """The caller's bearer token (_auth.py): relay header `X-EZ2-Token`, an
+    `Authorization: Bearer`, or the configured local token file (single-machine
+    use — the public deployment's relay supplies the header instead)."""
+    try:
+        h = flow.request.headers
+    except Exception:
+        h = {}
+    tok = h.get('x-ez2-token')
+    if not tok:
+        auth = h.get('authorization') or ''
+        if auth[:7].lower() == 'bearer ':
+            tok = auth[7:].strip()
+    if not tok:
+        p = _auth.load().get('token_file') or ''
+        if p:
+            try:
+                tok = open(p).read().strip() or None
+            except Exception:
+                tok = None
+    return tok or None
 
 
 def decrypt_request(body: bytes, sess=None):
@@ -760,6 +784,17 @@ def handle_api(flow: http.HTTPFlow):
                 502, b'private server: no session key',
                 {'Content-Type': 'text/plain'})
             return
+        # Resolve who this is (see _auth.py).  In open mode the claimed
+        # SteamID is the account (backwards compatible); in token mode a
+        # server-issued bearer token decides, with a configurable guest tier.
+        ident = _auth.identify(STORE, sess.steamid, client_token(flow))
+        if ident.kind in ('denied', 'banned'):
+            log(f'login denied (claimed={sess.steamid}): {ident.reason}')
+            return respond_api(flow, {'result': 0}, sess)
+        sess.steamid = ident.account_id
+        sess.persist = ident.persist
+        sess.kind = ident.kind
+        log(f'login identity: {ident}')
         log(f'login: serving template to {sess.label()}')
         tpl = TEMPLATES.get('login')
         if tpl is None:
@@ -776,7 +811,7 @@ def handle_api(flow: http.HTTPFlow):
         tpl = TEMPLATES.get('myinfo')
         if tpl is None:
             return respond_api(flow, {'result': 0}, sess)
-        return respond_api(flow, myinfo_response(tpl, sess.steamid if sess else None), sess)
+        return respond_api(flow, myinfo_response(tpl, sess), sess)
 
     if endpoint == 'c2s_get_userinfo':
         return respond_api(flow, userinfo_response(req_json, sess), sess)
@@ -790,7 +825,8 @@ def handle_api(flow: http.HTTPFlow):
         # real DTO (metadata-mined): {level, exp, nextExp, result}; the request
         # carries musicid/keymode/levelmode + the play's statistics, which we
         # fold into the per-user store so get_myinfo reflects them next session.
-        if sess is not None and sess.steamid and req_json:
+        # A non-persistent guest never reaches the store or a leaderboard.
+        if sess is not None and sess.persist and sess.steamid and req_json:
             try:
                 r = json.loads(req_json)
                 mid = int(r.get('musicid') or 0)
@@ -813,10 +849,12 @@ def handle_api(flow: http.HTTPFlow):
             except Exception as e:
                 log(f'set_game_clear: could not store play ({e})')
         cfg = os.path.join(DATA, 'set_game_clear.json')
-        p = STORE.player(sess.steamid) if (sess and sess.steamid) else None
+        p = STORE.player(sess.steamid) if (sess and sess.persist and sess.steamid) else None
         if p is not None:
             tpl = {'level': int(p['level']), 'exp': int(p['exp']),
                    'nextExp': int(p['next_exp']), 'result': 1}
+        elif sess is not None and sess.steamid and not sess.persist:
+            tpl = {'level': 1, 'exp': 0, 'nextExp': 0, 'result': 1}
         elif sess is not None and sess.steamid:
             tpl = {'level': 1, 'exp': 0, 'nextExp': 0, 'result': 1}
         elif os.path.exists(cfg):
@@ -1076,9 +1114,8 @@ def login_response(tpl, sess):
     """Rewrite the captured login template's `member` to the caller.
 
     The template is the owner's real login response, so serving it verbatim
-    leaks the owner's SteamID/nickname to every other account (and makes a new
-    user look like the owner).  Per-user fields come from the store; the owner
-    keeps the `profile.json` overrides.
+    leaks the owner's SteamID/nickname to every other account.  Per-user fields
+    come from the store (persistent callers) or are blanked (guests).
     """
     try:
         d = json.loads(json.dumps(tpl))
@@ -1088,13 +1125,12 @@ def login_response(tpl, sess):
     sid = sess.steamid if sess else None
     if isinstance(m, dict) and sid:
         m['STEAM_ID'] = str(sid)
-        p = STORE.player(sid)
+        p = STORE.player(sid) if (sess is None or sess.persist) else None
         m['LEVEL'] = int(p.get('level') or 1) if p else 1
         m['RATING'] = float(p.get('rating') or 0.0) if p else 0.0
         if sid == OWNER:
             apply_profile(m)
         else:
-            # a stable, non-identifying placeholder — never the owner's persona
             m['NICKNAME'] = 'Player'
             m['PLAY_COUNT'] = 0
             m['WIN_COUNT'] = 0
@@ -1102,27 +1138,47 @@ def login_response(tpl, sess):
     return d
 
 
-def myinfo_response(tpl, steamid):
-    """Build `c2s_get_myinfo` from the per-user store.
-
-    With a resolved SteamID the `memberinfo` and `clearlist` come from the store
-    (the store is seeded from the captured `myinfo.json` for the owner).  Without
-    one — the legacy single-client harvester path — the captured template is
-    served unchanged.  `profile.json` overrides still apply to the owner.
-    """
+def default_myinfo(tpl, steamid):
+    """A read-only default profile for a guest (no store row is created)."""
     try:
         mi = json.loads(json.dumps(tpl))
     except Exception:
         mi = dict(tpl)
-    if steamid:
+    mi['memberinfo'] = STORE.memberinfo(steamid) if steamid else mi.get('memberinfo', {})
+    mi['clearlist'] = STORE.clearlist(steamid) if steamid else []
+    mi.setdefault('course_clearlist', [])
+    return mi
+
+
+def myinfo_response(tpl, sess):
+    """Build `c2s_get_myinfo` from the per-user store.
+
+    A persistent caller gets/creates its store row; a non-persistent guest is
+    served a default profile **without** writing anything, so it cannot appear
+    on a leaderboard.  With no identity (the legacy harvester path) the captured
+    template is served unchanged, and `profile.json` overrides still apply.
+    """
+    steamid = sess.steamid if sess else None
+    persist = sess is None or bool(sess.persist)
+    if steamid and persist:
         STORE.touch_player(steamid)
+        try:
+            mi = json.loads(json.dumps(tpl))
+        except Exception:
+            mi = dict(tpl)
         mi['memberinfo'] = STORE.memberinfo(steamid)
         mi['clearlist'] = STORE.clearlist(steamid)
         mi.setdefault('course_clearlist', [])
         if steamid == OWNER:
             apply_profile(mi)
-    else:
-        apply_profile(mi)
+        return mi
+    if steamid:
+        return default_myinfo(tpl, steamid)
+    try:
+        mi = json.loads(json.dumps(tpl))
+    except Exception:
+        mi = dict(tpl)
+    apply_profile(mi)
     return mi
 
 

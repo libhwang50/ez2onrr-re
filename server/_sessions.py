@@ -32,7 +32,8 @@ import time
 class Session:
     """One client's live API key/IV, plus the identity that owns it."""
 
-    __slots__ = ('steamid', 'key', 'iv', 'addr', 'seen', 'source')
+    __slots__ = ('steamid', 'key', 'iv', 'addr', 'seen', 'source', 'persist',
+                 'kind')
 
     def __init__(self, steamid, key, iv, addr=None, source='rsa'):
         self.steamid = steamid            # str SteamID, or None for the legacy file
@@ -41,6 +42,8 @@ class Session:
         self.addr = addr                  # last source IP seen
         self.seen = time.time()
         self.source = source              # 'rsa' | 'file'
+        self.persist = True               # False for a non-persistent guest
+        self.kind = 'open'                # 'open' | 'account' | 'guest'
 
     def touch(self):
         self.seen = time.time()

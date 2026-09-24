@@ -69,6 +69,8 @@ session key had rotated away); see AGENTS.md §3.2.
 | `_store.py` | per-user progression store (SQLite, `data/store.db`): `memberinfo` + the 16-wide `clearlist` arrays, normalised to one row per cleared variant; seeds the owner from the captured `myinfo.json` |
 | `_rsa.py` | server keypair + **strict** RSA decode of the login block (`init`/`show`/`decrypt`/`selftest`). The old `cryptography` PKCS#1 v1.5 call was not a validity oracle (82% of random blocks "decrypted"); this is |
 | `_login_probe.py` | standalone probe: captures `c2s_login`, strict-decodes `data`, reports the payload shape. The experiment that pinned the login JSON |
+| `_auth.py` | identity & access policy: `auth.json` (`open`/`token` mode, guest tier), token hashing, account resolution, optional Discord OAuth |
+| `_accounts.py` | admin CLI: `issue` / `list` / `ban` / `unban` server accounts + bearer tokens (no external service needed) |
 | `_fake_client.py` | **synthetic second client** for multi-user testing — logs in as any SteamID (RSA-wrapped key), then drives `c2s_get_myinfo` / `c2s_set_game_clear` / `c2s_get_userinfo` and the rank leaderboard. Creates a fresh account and a competing score with **no second game install** |
 | `_harvest_mem.py` | **fallback** session key: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds at login → `session_key.json`. Handles relaunches/rotations; keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/sudo, Windows is same-user |
 | `_harvest_session.py` | Frida bridge (fallback): polls `zf.aes_key`/`aes_iv` at 1 Hz → `session_key.json`; **auto-re-attaches when the game restarts** |
@@ -77,6 +79,8 @@ session key had rotated away); see AGENTS.md §3.2.
 | `data/myinfo.json` | `c2s_get_myinfo` template — `clearlist`, `memberinfo`, … |
 | `data/gameinfo.json` | `c2s_get_gameinfo` template — the 1,201-entry music list |
 | `data/profile.json` | your member-field overrides (`LEVEL`, `EXP`, …), deep-merged into the `c2s_get_myinfo` template. The real `memberinfo` DTO has **no nickname field** — the name shown in game and sent in `plf…` is the Steam persona name from Steamworks. The in-game rating shown per key mode is **computed client-side** from your play data — `RATING` here only sets the myinfo field |
+| `data/auth.json` | optional identity config (`mode`, `guest`, `guest_persist`, `token_file`, `discord`). Absent = `open` mode (the old behaviour). Re-read per request |
+| `data/client_token.txt` | optional local bearer token, read when no `X-EZ2-Token` header is present (single-machine testing; the public relay supplies the header) |
 | `data/charts.json` | (song, keymode, levelmode) → CDN paths, 47 variants / 15 songs |
 | `data/cdn_paths.json` | CDN path → local ciphertext file (126 paths) |
 | `data/rank_sample.csv` | fallback leaderboard body when no exact capture matches |
@@ -151,6 +155,49 @@ Notes:
   running `dump_song.py`/captures and re-running `_build_data.py`.
 * Score uploads (`plf…`) are logged but not persisted directly (the `plf` fields do not cleanly carry `levelmode`); the authoritative per-play write is `c2s_set_game_clear`, which feeds the store. Leaderboards are **computed from the store** (Top100 / MyRange) and fall back to the real captured CSVs (`data/rank_csv/`) only for a variant nobody here has played.
 
+## Identity & accounts (for a public server)
+
+The **SteamID is not a credential**.  A third party cannot verify the Steam auth
+session ticket — the Web API's `AuthenticateUserTicket` / `CheckAppOwnership`
+need the app *publisher's* key — and the RSA pubkey-swap only proves a client
+runs our patcher.  So access is a **server-issued bearer token**, and the
+SteamID-shaped value is merely how an account appears in game.
+
+Config lives in `server/data/auth.json` (optional; absent = `open`, the old
+behaviour; re-read per request):
+
+| key | values | meaning |
+|---|---|---|
+| `mode` | `open` / `token` | `open`: the claimed SteamID is the account (LAN/dev). `token`: a valid token is required for a persistent account |
+| `guest` | `allow` / `deny` | what an absent/invalid token may do in `token` mode |
+| `guest_persist` | `false` / `true` | guests get a throwaway profile and no leaderboard row, or persist like accounts |
+| `token_file` | path | local file to read the token from when no `X-EZ2-Token` header is present (single-machine use) |
+| `discord` | `{enabled,client_id,client_secret,guild_id,redirect_uri}` | optional OAuth registration |
+
+Mint accounts with no external service:
+
+```bash
+python server/_accounts.py issue --name Alice                      # prints id + token ONCE
+python server/_accounts.py issue --name Bob --steamid 7656119...   # a real id
+python server/_accounts.py list
+python server/_accounts.py ban <id>
+```
+
+The token reaches `c2s_login` as an `X-EZ2-Token` header (or `Authorization:
+Bearer`), added by the client-side relay; for single-machine testing set
+`token_file`, or pass `--token` to `_fake_client.py`.  Providers are **optional**
+— Discord OAuth (`_auth.register_provider`) is only a registration front end;
+the server core just validates token hashes.
+
+The account's **public id is chosen at registration** (`--steamid` for a real
+account, else a generated pseudo-SteamID), and the server is authoritative: it
+overwrites the login's claimed id with the account's id.  On the Goldberg path
+the launcher writes that id into the emulator's config so the client presents it.
+
+What this buys: no account/SteamID impersonation, no account takeover, and one
+path for Steam and Goldberg users alike.  What it does **not**: forged scores
+(client-computed) — a separate anti-cheat problem.
+
 ## Testing a second user
 
 Anything that reaches the proxy with a distinct SteamID is a distinct account —
@@ -165,7 +212,16 @@ python3 server/_fake_client.py 76561190000000002 --play --score 1012345 --leader
 
 `_fake_client.py` speaks the real wire protocol (`data=<b64( d3ad76d3adb8 ||
 AES )>`, RSA-wrapped login), so it also serves as the protocol test harness for
-the public-server auth work. For a **real** second client:
+the public-server auth work.  In `token` mode, pass the account's token and the
+id the server assigned:
+
+```bash
+TOKEN=$(python3 server/_accounts.py issue --name Alice | awk -F': ' '/token/{print $2}')
+python3 server/_fake_client.py 76561190000000020 --token "$TOKEN" --play --score 1234500 --leaderboard
+# without a token: guest (if guest=allow) or refused `{'result': 0}` (guest=deny)
+```
+
+For a **real** second client:
 
 * another machine on the LAN can point its Wine proxy at this mitmdump and use the
   patched `version.dll` + a unique SteamID;
