@@ -152,6 +152,34 @@ class Store:
                 args)
             self._db.commit()
 
+    def leaderboard(self, music_id, keymode, levelmode, limit=100, page=0,
+                    steamid=None):
+        """Ranked `(rank, steamid, score)` for one variant — the body the rank
+        host's `get<music_id><keymode><levelmode>,<page>[,<steamid>]` wants.
+
+        Page 0 is the Top `limit`; a page with a steamid is that player's
+        `limit`-wide window centred on their own rank (the real MyRange was 50
+        before / 49 after).  Returns `(rows, total)`; `total` is 0 only when the
+        variant has no local scores at all (the caller may then fall back to a
+        captured CSV)."""
+        with self._lock:
+            rs = self._db.execute(
+                'SELECT steamid, score FROM clears WHERE music_id=? AND '
+                'keymode=? AND levelmode=? AND score>0 '
+                'ORDER BY score DESC, updated ASC',
+                (int(music_id), int(keymode), int(levelmode))).fetchall()
+        entries = [(i, r['steamid'], r['score']) for i, r in enumerate(rs)]
+        total = len(entries)
+        if not total:
+            return [], 0
+        if page and steamid is not None:
+            idx = next((i for i, sid, _ in entries if str(sid) == str(steamid)), None)
+            if idx is None:
+                return [], total
+            start = max(0, idx - limit // 2)
+            return entries[start:start + limit], total
+        return entries[:limit], total
+
     def clear(self, steamid, music_id, keymode, levelmode):
         with self._lock:
             r = self._db.execute(

@@ -1195,10 +1195,7 @@ def handle_rank(flow: http.HTTPFlow):
             time.sleep(delay)
         body = BATTLE_SERVER.encode()
     elif q.startswith('get') and q != 'get_battle_server_ip' and arg[3:].isdigit():
-        # a leaderboard query — serve the real captured CSV when we have it
-        # (Top100 / MyRange for a captured song), else the static sample
-        csv = os.path.join(DATA, 'rank_csv', q.replace(',', '_') + '.csv')
-        body = open(csv).read().encode() if os.path.exists(csv) else RANK_CSV_SAMPLE.encode()
+        body = leaderboard_body(q)
     elif q.startswith('plf'):
         log(f'score upload: {urllib.parse.unquote(q)[:200]}')
         body = b''
@@ -1208,6 +1205,35 @@ def handle_rank(flow: http.HTTPFlow):
         body = b''
     flow.response = http.Response.make(
         200, body, {'Content-Type': 'application/json'})
+
+
+def leaderboard_body(q):
+    """Compute the `rank,score,steamid,…` stream for a leaderboard query.
+
+    Query: `get<music_id><keymode><levelmode>[,<page>[,<steamid>]]`.  Scores come
+    from the per-user store; when the variant has no local scores at all we fall
+    back to the real captured CSV (so a song nobody here has played still looks
+    populated) and then to the static sample.
+    """
+    parts = q.split(',')
+    key = parts[0][3:]
+    if len(key) < 3 or not key[:-2].isdigit():
+        return RANK_CSV_SAMPLE.encode()
+    music_id, km, lm = int(key[:-2]), int(key[-2]), int(key[-1])
+    page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    steamid = parts[2] if len(parts) > 2 else None
+    rows, total = STORE.leaderboard(music_id, km, lm, page=page, steamid=steamid)
+    if total:
+        out = []
+        for rank, sid, score in rows:
+            out += [str(rank), str(score), str(sid)]
+        log(f'leaderboard get{music_id}{km}{lm} page={page} -> {len(rows)} rows '
+            f'(of {total})')
+        return ','.join(out).encode()
+    csv = os.path.join(DATA, 'rank_csv', q.replace(',', '_') + '.csv')
+    if os.path.exists(csv):
+        return open(csv, 'rb').read()
+    return RANK_CSV_SAMPLE.encode()
 
 
 def handle_cdn(flow: http.HTTPFlow):
