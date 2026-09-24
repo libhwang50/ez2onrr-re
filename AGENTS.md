@@ -995,3 +995,8 @@ server's. In-game validation of the server itself is in progress.
    server by `curl`, and the full path (`_fake_client` → relay:8082 → app:8081 →
    leaderboard), in open and token mode.  The addon path (`mitmdump -s
    server/_pserver.py`, the local single-machine setup) still works unchanged.
+   Containerised for a homeserver (`Dockerfile`, `docker-compose.yml`, an
+   optional Caddy profile): only `server/data` (rw: RSA key, templates,
+   `store.db`, `auth.json`) and `extracted_charts` (ro) are mounted;
+   `EZ2_LOG`/`EZ2_DATA` relocate those roots; `server/requirements.txt` is just
+   `cryptography`.  Run one replica only — session keys are in memory.

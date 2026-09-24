@@ -1,0 +1,11 @@
+# TLS front end for the standalone EZ2ON server (optional caddy profile).
+#
+#   1. set your hostname below (and point DNS at the homeserver)
+#   2. docker compose --profile caddy up -d
+#
+# Caddy forwards the relay's X-EZ2-Host header untouched, which is what the app
+# routes on, and obtains a Let's Encrypt certificate automatically.
+ez2.example.com {
+	encode gzip
+	reverse_proxy ez2-pserver:8081
+}

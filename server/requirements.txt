@@ -1,0 +1,3 @@
+# Runtime deps for the standalone server (server/app.py).
+# mitmproxy is NOT required — _flowshim makes it optional.
+cryptography>=42

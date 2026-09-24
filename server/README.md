@@ -199,6 +199,54 @@ relay is the only place the token lives, and the server just reads `X-EZ2-Token`
 
 The engine and content layers are unchanged; only the transport is swappable.
 
+## Docker (homeserver)
+
+The standalone server ships as an image; only personal/served data is mounted:
+
+```bash
+docker compose up -d --build
+docker compose logs -f ez2-pserver
+curl http://127.0.0.1:8081/healthz
+```
+
+| mount | mode | why |
+|---|---|---|
+| `./server/data` → `/app/server/data` | rw | RSA private key, API templates, `store.db`, `auth.json` |
+| `./extracted_charts` → `/app/extracted_charts` | ro | chart/keysound ciphertext served by the CDN host |
+
+`EZ2_LOG` is set to `…/server/data/pserver.log` so the log persists with the data;
+`EZ2_DATA` / `EZ2_ARCHIVE` move those roots if you mount elsewhere.  `mitmproxy`
+is not installed in the image — it is only needed on the *client* for `_relay.py`.
+
+TLS: put any reverse proxy in front (the app speaks plain HTTP on `:8081`).  A
+Caddy profile is included:
+
+```bash
+# edit deploy/Caddyfile (set your hostname), then
+docker compose --profile caddy up -d
+```
+
+Point each client's relay at the public URL:
+
+```bash
+EZ2_REMOTE=https://ez2.example.com EZ2_TOKEN_FILE=/path/token.txt \
+  mitmdump -s server/_relay.py
+```
+
+Notes:
+
+* **One replica only** — session keys live in memory (`_sessions.py`), so
+  horizontal scaling would not share them and logins would bounce between
+  containers.
+* The container runs as `${EZ2_UID:-1000}:${EZ2_GID:-1000}` so the bind mount
+  stays writable; set those if your host uid differs.
+* `auth.json` in the mounted data dir controls `open`/`token` mode and the guest
+  tier, exactly as above — no restart needed (re-read per request).
+* The RSA private key in `server/data/` must match the public key baked into the
+  client `version.dll` (`client/patcher/build.sh`).
+* A few songs' CDN paths were recorded from mitm captures under `mitm_parsed/`;
+  mount `./mitm_parsed:/app/mitm_parsed:ro` if you serve them.
+
 ## Identity & accounts (for a public server)
 
 The **SteamID is not a credential**.  A third party cannot verify the Steam auth

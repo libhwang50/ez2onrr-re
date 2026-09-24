@@ -40,7 +40,7 @@ import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(HERE, 'data')
+DATA = os.environ.get('EZ2_DATA') or os.path.join(HERE, 'data')
 CONFIG = os.path.join(DATA, 'auth.json')
 
 DEFAULTS = {

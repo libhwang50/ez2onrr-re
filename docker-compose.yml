@@ -1,0 +1,54 @@
+# Standalone EZ2ON private server for a homeserver.
+#
+#   docker compose up -d --build
+#   docker compose logs -f ez2-pserver
+#   curl http://127.0.0.1:8081/healthz
+#
+# Put TLS in front (Caddy/Traefik/nginx or a Cloudflare Tunnel) and point the
+# client's relay at it:  EZ2_REMOTE=https://ez2.example.com mitmdump -s server/_relay.py
+#
+# ONE replica only: session keys are held in memory (server/_sessions.py), so two
+# containers would not share them and logins would bounce between them.
+services:
+  ez2-pserver:
+    build: .
+    image: ez2-pserver:latest
+    container_name: ez2-pserver
+    restart: unless-stopped
+    # Run as the host owner of ./server/data so the mount stays writable.
+    # Override with EZ2_UID / EZ2_GID if your uid is not 1000.
+    user: "${EZ2_UID:-1000}:${EZ2_GID:-1000}"
+    environment:
+      # persist the log next to the mounted data;
+      # EZ2_DATA / EZ2_ARCHIVE already default to the paths below.
+      EZ2_LOG: /app/server/data/pserver.log
+      # EZ2_DATA: /app/server/data
+      # EZ2_ARCHIVE: /app/extracted_charts
+    ports:
+      - "${EZ2_PORT:-8081}:8081"
+    volumes:
+      - ./server/data:/app/server/data              # rw: RSA key, templates, store.db
+      - ./extracted_charts:/app/extracted_charts:ro # ro: chart/keysound ciphertext
+      # A few CDN paths were recorded from mitm captures; mount them if the
+      # songs you serve reference them (see server/data/cdn_paths.json):
+      # - ./mitm_parsed:/app/mitm_parsed:ro
+
+  # Optional TLS front end.  Enable with:  docker compose --profile caddy up -d
+  # Edit deploy/Caddyfile first (set your hostname).
+  caddy:
+    image: caddy:2
+    profiles: ["caddy"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - ez2-pserver
+
+volumes:
+  caddy_data:
+  caddy_config:

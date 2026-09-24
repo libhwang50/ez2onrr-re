@@ -68,15 +68,21 @@ import _store  # noqa: E402
 import _auth  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA = os.path.join(ROOT, 'server', 'data')
-KEYFILE = os.path.join(ROOT, 'server', 'session_key.json')
+# data/ holds the RSA key, the templates and store.db; overridable so a container
+# can mount it anywhere (server/README.md, docker-compose.yml).
+DATA = os.environ.get('EZ2_DATA') or os.path.join(ROOT, 'server', 'data')
+KEYFILE = os.environ.get('EZ2_KEYFILE') or os.path.join(ROOT, 'server', 'session_key.json')
 # multi-user: steamid -> Session (key/iv), plus an addr cache; see _sessions.py
 SESSIONS = _sessions.Registry()
 # per-user progression (memberinfo + clearlist); lives under git-ignored data/
 STORE = _store.Store(os.path.join(DATA, 'store.db'))
 # the account whose captured progression seeds a fresh store (data/owner.txt)
 OWNER = '76561199429391557'
-LOG = open(os.path.join(ROOT, 'server', 'pserver.log'), 'a', buffering=1)
+try:
+    LOG = open(os.environ.get('EZ2_LOG')
+               or os.path.join(ROOT, 'server', 'pserver.log'), 'a', buffering=1)
+except OSError:
+    LOG = sys.stdout
 
 API_HOST = 'game1-play.ez2game.co.kr'
 RANK_HOST = 'game1-rank.ez2game.co.kr'

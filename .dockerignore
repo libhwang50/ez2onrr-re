@@ -1,0 +1,26 @@
+# Build context excludes: personal data, captured assets, dev tooling and VCS.
+# The runtime data is bind-mounted instead (see docker-compose.yml).
+.git
+.gitignore
+.venv
+__pycache__/
+*.pyc
+*.log
+*.out
+
+# personal / generated (never bake into an image)
+server/data/
+server/session_key.json
+server/shots/
+server/anchors/
+extracted_charts/
+extracted_assets/
+mitm_parsed/
+decrypted_bundles/
+
+# game install (huge) and dev-only trees
+EZ2ON REBOOT R/
+client/
+tools/
+*.mp4
+*.flac
