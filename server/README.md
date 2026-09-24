@@ -36,10 +36,14 @@ Wire format (verified byte-for-byte against captures):
 * API **response** = b64( AES-CBC-PKCS7(json) )
 * key/IV = the ASCII bytes of `zf.aes_key` / `zf.aes_iv` — generated
   **client-side** per session (`zf.gnf`: `RNGCryptoServiceProvider` →
-  `BitConverter.ToString` → strip `-`) and never sent over HTTPS. The client
-  keeps them in a small in-memory JSON (`{"key":"<32hex>","iv":"<16hex>"}`),
-  which **`_harvest_mem.py` reads with a plain memory scan — Frida-free, no
-  client patch** (the Frida bridge `_harvest_session.py` remains as a fallback).
+  `BitConverter.ToString` → strip `-`). They never appear on the HTTPS wire in the
+  clear, but the login block is **RSA under the client's baked-in `zf.publicKey`** and
+  its plaintext is the client's login JSON
+  `{"steamid","appid","version","key","iv"}` — so a client carrying the drop-in
+  `version.dll` (`client/patcher/`) hands the server the key, the IV **and the
+  SteamID** with no harvester. See "The Frida-free login hand-off" below. The memory
+  scanner `_harvest_mem.py` remains as a fallback for an unpatched client, and the
+  Frida bridge `_harvest_session.py` after that.
 
 **No upstream leakage.** An unhandled exception inside a mitmproxy addon hook
 does not abort the request — mitmproxy forwards it to the real upstream. The
@@ -60,7 +64,9 @@ exit; tune `data/userinfo_entry.json` if that appears.
 | file | purpose |
 |---|---|
 | `_pserver.py` | the mitmproxy addon (the server itself); logs to `pserver.log`; never forwards game-host traffic upstream |
-| `_harvest_mem.py` | **Frida-free session key**: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds at login → `session_key.json`. Handles relaunches/rotations; keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/sudo, Windows is same-user |
+| `_rsa.py` | server keypair + **strict** RSA decode of the login block (`init`/`show`/`decrypt`/`selftest`). The old `cryptography` PKCS#1 v1.5 call was not a validity oracle (82% of random blocks "decrypted"); this is |
+| `_login_probe.py` | standalone probe: captures `c2s_login`, strict-decodes `data`, reports the payload shape. The experiment that pinned the login JSON |
+| `_harvest_mem.py` | **fallback** session key: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds at login → `session_key.json`. Handles relaunches/rotations; keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/sudo, Windows is same-user |
 | `_harvest_session.py` | Frida bridge (fallback): polls `zf.aes_key`/`aes_iv` at 1 Hz → `session_key.json`; **auto-re-attaches when the game restarts** |
 | `_build_data.py` | (re)builds `data/` from the captured artefacts in the repo |
 | `data/login.json` | `c2s_login` response template (real, captured) |
@@ -96,28 +102,35 @@ export EZ2_API_SESSION_IV=<16-char ASCII zf.aes_iv of that session>
 
 ## Running
 
-```bash
-# terminal 1 — Frida-free session-key harvester (start once, leave running)
-#   Linux: one-time `sudo sysctl -w kernel.yama.ptrace_scope=0` (ptrace access)
-#   Windows: same-user, nothing to enable
-/usr/bin/python server/_harvest_mem.py
+**Default (Frida-free, patched client) — no harvester, no memory scan.**
 
-# terminal 2 — the server
-mitmdump -s server/_pserver.py
+```bash
+bash client/patcher/install.sh patcher     # install the DLL into the game dir (once)
+# Proton only, in the Steam launch options:  WINEDLLOVERRIDES=version=n,b
+mitmdump -s server/_pserver.py             # the server
 ```
 
-Then start the game normally. Watch `server/pserver.log`.
+Then start the game normally. `server/pserver.log` should show
+`session key <- RSA login: … (steamid …)` — the login block is decrypted server-side
+and that is the entire hand-off.
 
-**Ordering no longer matters** — the harvester tracks game relaunches and key
-rotations, and the login handler waits up to 15 s for the key. Start the
-harvester once and forget it. (`_harvest_session.py`, the Frida bridge, still
-works as a fallback.) (The game generates its session key before the
-login request; without a key the login can only fail — the client pops
-"Object reference not set…" and OK quits the game, because a response
-cannot be encrypted without the key.)
+**Fallback (unpatched client) — memory harvester.**
 
-⚠ The harvester never attaches while the game is starting up: an attach during
-the early startup window kills the process instantly (no crash handler). It
+```bash
+# Linux: one-time `sudo sysctl -w kernel.yama.ptrace_scope=0` (ptrace access)
+# Windows: same-user, nothing to enable
+/usr/bin/python server/_harvest_mem.py
+```
+
+**Ordering no longer matters** in either mode: the login handler waits up to 15–20 s
+for a key, and the RSA path adopts a fresh block on every `c2s_login` (so relaunches
+and the within-launch key rotation are tracked automatically).
+(`_harvest_session.py`, the Frida bridge, still works after that.) Without any key
+the login can only fail — the client pops "Object reference not set…" and OK quits
+the game, because a response cannot be encrypted without the key.
+
+⚠ The **Frida** bridge never attaches while the game is starting up: an attach
+during the early startup window kills the process instantly (no crash handler). It
 watches the Gadget's TCP port and attaches only after it has been listening
 continuously for `EZ2_HARVEST_GRACE` seconds (default 15; raise it if you ever
 see a launch die silently, lower it if the private-server login ever times out
@@ -498,13 +511,17 @@ battle server's copy. See AGENTS.md §3.1 and §7.6.
 * `c2s_get_userinfo` serves a **guessed list shape** (`data/userinfo_entry.json`
   cloned per requested SteamID); a wrong shape makes the client pop its JSON
   parse error — screenshot it if you see it, it names the expected type.
-* **The session key is now Frida-free.** `_harvest_mem.py` scans the game's memory
-  for the transient `{"key":"<32hex>","iv":"<16hex>"}` JSON and writes
-  `session_key.json`; `ensure_key()` makes login wait for it. Verified end-to-end.
-  The RSA `zf.publicKey`-swap route is **not** needed for a local server (the client
-  caches the provider at `zf` static-init, before a host-side patch lands). For a
-  remote/public server the scan must run on the client, so ship a small local helper
-  that forwards the key; the raw-channel `sendaes,` hand-off is the alternative.
+* **The session key is Frida-free, and the login hand-off is solved.** The
+  `version.dll` patcher rewrites `zf.publicKey` in-process, so the login block's RSA
+  plaintext is the client's `{steamid,appid,version,key,iv}` JSON; `_pserver.py`
+  decodes it (key, IV **and** SteamID) on every `c2s_login`. No harvester, no scan.
+  The memory scanner `_harvest_mem.py` remains for an unpatched client. (The earlier
+  "the RSA swap is not needed / cannot work" reading was wrong twice over: a
+  *host-side* patch is too late because the provider is cached at `zf` static-init,
+  but the in-process DLL beats it; and `cryptography`'s PKCS#1 v1.5 `decrypt` was not
+  a valid oracle, so past "successes" were noise.) For a public server, distribute a
+  DLL built against that server's public key; the raw-channel `sendaes,` hand-off is
+  the alternative but is moot for the API.
 * Rank endpoints accept any signature; nothing is verified or persisted.
 * Songs without a captured chart fail at chart load (`result:0`) — extend
   coverage with `dump_song.py` and re-run `_build_data.py`.

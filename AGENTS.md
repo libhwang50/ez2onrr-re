@@ -107,13 +107,43 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
   `zf` = `WebManager`), with `zf.RSAEncrypt`/`RSADecrypt`/`CreateRSAKey` present. The
   protocol forces the server to already know the key when it replies (**the login
   *response* is b64 AES-CBC, and our fully-offline server — which never runs a battle
-  handshake — encrypts it under the harvested key and is accepted**), so the working
-  hypothesis is **`data` = RSA(session key/IV) under `zf.publicKey`**, the official
+  handshake — encrypts it under the harvested key and is accepted**), and the carrier
+  is **`data` = RSA(login JSON) under `zf.publicKey`**, the official server holding the
+  private half — **SOLVED 2026-09-24** (the JSON carries `key`/`iv`/`steamid`; see the
+  RSA-hand-off bullet below). A second hand-off exists for the battle/multiplayer
   server holding the private half. A second hand-off exists for the battle/multiplayer
   server: the `sendaes,` packet (literals `[9903]sendKeyDataStr:`, `[AES 키 전송
   완료]`, acked by `s2c_aes_connect_completed`) on the raw packet channel
   (`aes,<command>[,<args>]` framing, addressed by `get_battle_server_ip` →
-  `3.37.247.33:9902`). Neither is confirmed by decryption.
+  `3.37.247.33:9902`). Its necessity is now moot for the API (§3.1 below).
+* **RSA hand-off — SOLVED (2026-09-24).** Strict raw-RSA decode of `c2s_login.data`
+  yields the **141-byte login JSON**
+  `{"steamid":"…","appid":"1477590","version":"2026.09.04.001","key":"<32
+  hex>","iv":"<16 hex>"}`, whose `key`/`iv` match `_harvest_mem.py`'s independent
+  read byte-for-byte. Nothing is borrowed from an official server: the drop-in
+  `version.dll` (`client/patcher/`) rewrites the live `zf.publicKey` literal to the
+  private server's key, and `server/_rsa.py` decrypts the block. Two things had hidden
+  this:
+  * **The patch must land before `zf`'s static ctor.** The DLL is loaded in-process at
+    startup (and the patcher thread polls from then on), which beats the cached
+    `RSACryptoServiceProvider`; a *host-side* patch after launch is too late — that is
+    why an earlier attempt concluded the swap "is not needed". Under Proton the
+    app-dir `version.dll` is ignored (Wine loads its own builtin) unless
+    `WINEDLLOVERRIDES=version=n,b` is in the Steam launch options; on Windows it loads
+    without it.
+  * **`_rsa.decrypt` was not a real oracle.** `cryptography` 48's PKCS#1 v1.5
+    `decrypt` strips at the first `0x00` **without checking the mandatory `00 02`
+    prefix**, so it accepted ~82% of *random* blocks (measured 2459/3000) and every
+    earlier "login RSA decrypted" line was noise. `_rsa.py` now does a strict
+    raw-RSA decode (`_strict_pkcs1v15`, guarded by `_rsa.py selftest`); a foreign block
+    is rejected with no false positives. `server/_login_probe.py` is the standalone
+    experiment.
+
+  Consequence: a patched client needs **no harvester and no memory scan**.
+  `_pserver.try_login_rsa` parses the JSON on every login and gets key, IV **and the
+  SteamID** — the identity with which a multi-user session registry can key the
+  request — and adopting the login block on each login also tracks the within-launch
+  key rotation.
 * **Frida-free key acquisition — SOLVED (2026-09-24).** The client serialises a
   small JSON while building the login request and keeps it readable in memory:
   `{…,"version":"<client version>","key":"<32 uppercase hex>","iv":"<16 uppercase
@@ -127,14 +157,13 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
   session's key instead of serving the old one (a stale key gives the client the
   “Object reference not set…” NRE, indistinguishable from having no key).
   Verified end-to-end in-game (login → `c2s_get_gameinfo` → `c2s_get_myinfo`).
-  An earlier attempt to instead swap `zf.publicKey` and RSA-decrypt the login
-  block is **not needed** for a local server: the client caches its
-  `RSACryptoServiceProvider` from the baked key at `zf` static-init, before any
-  host-side patch can land (a full-scan patch of the literal, the managed string
-  and the raw cached modulus left the login block still encrypted to the original
-  key). A *remote* server would still need a small client-side helper to run the
-  memory scan where the game runs and send the key, since `zf.aes_key`/`aes_iv`
-  never appear on the HTTPS wire.
+  This is now the **fallback for an unpatched client** (and for investigation
+  tooling) rather than the deployment path: the in-process drop-in DLL above needs no
+  scan. A *host-side* patch after launch cannot work — the client caches its
+  `RSACryptoServiceProvider` from the baked key at `zf` static-init, before the patch
+  lands (a full-scan patch of the literal, the managed string and the raw cached
+  modulus left the login block encrypted to the original key). Either way
+  `zf.aes_key`/`aes_iv` never appear on the HTTPS wire in the clear.
 * Request bodies = b64( **magic `d3ad76d3adb8` (6 B)** ‖ AES-CBC-PKCS7(json) )
   *(supersedes the “fixed 16-byte prefix” reading — that was the magic plus the first
   ciphertext block, shared across requests only because those requests shared their
@@ -795,7 +824,9 @@ Private server (see **`server/README.md`** for the full guide):
 | Tool | Purpose |
 |---|---|
 | `server/_pserver.py` | **the private server** — a mitmproxy addon that stubs `game1-play` / `game1-rank` / `game1-cdn` server-side; no extra certs, no hosts edits (the Wine prefix already proxies through mitmproxy and trusts its CA) |
-| `server/_harvest_mem.py` | **Frida-free session key**: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds for login → `server/session_key.json`. Tracks relaunches/rotations, keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/root; Windows is same-user |
+| `server/_rsa.py` | **the RSA hand-off** — server keypair (`init`/`show`) and a **strict** raw-RSA decode of `c2s_login.data` (the earlier `cryptography` PKCS#1 v1.5 call was not a validity oracle — 82% of random blocks "decrypted"). `selftest` guards the oracle; `decrypt <block>` decodes one |
+| `server/_login_probe.py` | **the decisive experiment**: a mitmproxy addon that captures every `c2s_login`, strict-decodes its `data` block and reports whether the patcher is active. This is how the login JSON was pinned |
+| `server/_harvest_mem.py` | **Frida-free session key (fallback)**: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds for login → `server/session_key.json`. Tracks relaunches/rotations, keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/root; Windows is same-user |
 | `server/_harvest_session.py` | Frida bridge: polls `zf.aes_key`/`aes_iv` at 1 Hz → `server/session_key.json` (the client generates the API session key locally; it is absent from the HTTPS wire, though it may be handed over on the raw packet channel — §3.1). Also owns the **one-session command channel**: it polls `server/cmd.json` and answers in `server/cmd_result.json`, so memory probes never need a second Frida session (which crashes the game). Restores the default SIGINT handler while an RPC runs, so Ctrl-C aborts a slow scan and detaches cleanly |
 | `server/_sweep.py` | **drive the game to capture charts** (a capture counts only once the CDN body arrives; captures are filed into `extracted_charts/` by the addon) — blind (the server log is the sensor), guarded by a focused-window check, with `--probe`-style `--calibrate` that deduces the difficulty/keymode keys from the request JSON |
 | `server/_coverage.py` | **audit chart coverage** — songs covered vs the 601-song music list (coverage is per *song*: one capture serves every variant), writes a capture queue, and parses `pserver.log` to verify what a capture run actually asked for |
@@ -866,14 +897,17 @@ server's. In-game validation of the server itself is in progress.
    pins the constant `plf` fields (§3.7). The same session settles §3.1: RSA-decrypt
    `c2s_login.data` with the (swapped-in) private key, or at minimum pair a harvested
    key with its own login blob so the login can be tested directly.
-6. **Make the server Frida-free — SOLVED locally (§3.1).** `server/_harvest_mem.py`
-   scans the running game's memory for the transient
-   `{"key":"<32hex>","iv":"<16hex>"}` JSON and writes `session_key.json`; no
-   Frida, no client patch, verified end-to-end. The RSA-swap route is not needed
-   for a local server (the provider is cached at `zf` static-init). Remaining for
-   a **remote/public** server: ship a small client-side helper that runs that scan
-   where the game runs and forwards the key (it must be read where the game is).
-   The raw-channel `sendaes,` hand-off is the second candidate key source.
+6. **Make the server Frida-free — SOLVED, two ways (§3.1).** (a) The deployment
+   path: the drop-in `version.dll` rewrites `zf.publicKey` in-process, and the login
+   block's RSA plaintext is the client's `{steamid,appid,version,key,iv}` JSON — no
+   harvester, no scan, and it also yields the identity. Under Proton the app-dir DLL
+   needs `WINEDLLOVERRIDES=version=n,b`; on Windows it loads as-is. (b) The fallback:
+   `server/_harvest_mem.py` scans the running game's memory for the transient
+   `{"key":"<32hex>","iv":"<16hex>"}` JSON and writes `session_key.json`; no Frida,
+   verified end-to-end. Remaining for a **remote/public** server: distribute a DLL
+   built against that server's public key (per-server artifact), or keep the memory
+   scan as a helper where the game runs. The raw-channel `sendaes,` hand-off is the
+   second candidate key source but is now moot for the API.
 7. Broaden chart coverage in `server/data/`. Measured: **158 of 601 songs** at the time
    of writing (the
    music list's 1,201 entries are two `GAME_MODE`s of the same songs, and gamemode is

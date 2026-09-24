@@ -34,11 +34,24 @@ bash client/patcher/build.sh               # -> client/patcher/version.dll
 Install for local testing:
 
 ```bash
-cd "EZ2ON REBOOT R"
-cp version.dll version.dll.bak             # keep the Gadget; or move version.config aside
-cp /path/to/client/patcher/version.dll .
-# optional: rm version.config               # the patcher does not need it
+bash client/patcher/install.sh patcher   # install (keeps the Gadget as version.dll.gadget)
+bash client/patcher/install.sh status     # what is live now
+bash client/patcher/install.sh gadget     # restore the Frida Gadget
 ```
+
+**Under Proton/Wine the app-dir `version.dll` is ignored unless you force it** —
+Wine resolves `version.dll` to its own builtin, so the file in the game folder is
+never loaded. Add this to the game's Steam launch options (Proton *appends* its own
+overrides, so this merges):
+
+```
+WINEDLLOVERRIDES=version=n,b %command%
+```
+
+On real Windows no override is needed (the app directory is searched first and
+`version.dll` is not a KnownDLL). Confirm it loaded by watching for a fresh
+`[pid …] version.dll proxy attached` line in `ez2on_patch.log` — its mtime alone
+tells you whether the DLL ever ran.
 
 On launch the patcher writes `ez2on_patch.log` next to the exe and rewrites the
 key within a second or two of the IL2CPP runtime starting.
@@ -60,8 +73,26 @@ nothing). On Windows it works same-user, no admin.
 
 ## Why the RSA block is the key
 
-`c2s_login.data` is exactly 256 B (2048-bit) on every capture — see
-`server/_rsa.py` and AGENTS.md §3.1/§7.6. Once the client encrypts to our key,
-`_pserver.py`'s login handler decrypts `key(32)||iv(16)`, writes
-`server/session_key.json`, and every later endpoint is served under it. The
-harvester becomes optional.
+`c2s_login.data` is exactly 256 B (2048-bit) on every capture — see `server/_rsa.py`
+and AGENTS.md §3.1. Once the client encrypts to our key, the plaintext is **not** a bare
+`key||iv` blob but the client's **141-byte login JSON**:
+
+```json
+{"steamid":"76561199429391557","appid":"1477590",
+ "version":"2026.09.04.001","key":"<32 uppercase hex>","iv":"<16 uppercase hex>"}
+```
+
+`_pserver.py`'s login handler parses it, writes `server/session_key.json`, and every
+later endpoint is served under it — and the `steamid` is handed to us for free, which is
+what a multi-user session registry keys on. The harvester becomes optional
+(or unnecessary entirely).
+
+Confirm the swap is really active with the standalone probe, independent of the server:
+
+```bash
+mitmdump -s server/_login_probe.py      # then launch the game
+cat server/login_probe.log              # KEY_IV_HEX == hypothesis confirmed
+```
+
+A block that is **rejected** means the DLL is not loaded; a block that decodes but is
+**not** the key/iv JSON means the client build changed shape.

@@ -23,6 +23,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
 #include <stdio.h>
@@ -77,15 +78,19 @@ static int find_tag(unsigned char* s, size_t nbytes, int wide,
     return 0;
 }
 
-/* Patch one <RSAKeyValue> blob.  `wide` = UTF-16LE.  `base` points at the
- * '<'; returns 1 if a value was changed. */
-static int patch_at(unsigned char* base, size_t avail, int wide) {
+/* Patch one <RSAKeyValue> blob found in the *snapshot* buffer `buf`; `live`
+ * points at the same bytes in the real mapping.  `wide` = UTF-16LE.  Returns 1
+ * if a value was written.  Reads come from the snapshot and writes go through
+ * WriteProcessMemory, so a region that is unmapped under us between the
+ * VirtualQuery and the scan can no longer fault the process (that TOCTOU was a
+ * real crash: `VERSION.dll+0x194d`, the UTF-16 `cmpb $0x3c,(%rbx)` below). */
+static int patch_at(unsigned char* live, unsigned char* buf, size_t avail, int wide) {
     size_t unit = wide ? 2 : 1;
     size_t window = 4096 * unit;                 /* bound false-positive walks */
     if (avail > window) avail = window;
 
     size_t off, len;
-    if (!find_tag(base, avail, wide, "</RSAKeyValue>", &off, &len))
+    if (!find_tag(buf, avail, wide, "</RSAKeyValue>", &off, &len))
         return 0;
     size_t n = off + len * unit;                 /* length through close tag */
 
@@ -98,22 +103,25 @@ static int patch_at(unsigned char* base, size_t avail, int wide) {
     int changed = 0;
     for (int t = 0; t < 2; t++) {
         size_t oo, ol, co, cl;
-        if (!find_tag(base, n, wide, opens[t], &oo, &ol)) continue;
+        if (!find_tag(buf, n, wide, opens[t], &oo, &ol)) continue;
         size_t voff = oo + ol * unit;
-        if (!find_tag(base + voff, n - voff, wide, closes[t], &co, &cl)) continue;
+        if (!find_tag(buf + voff, n - voff, wide, closes[t], &co, &cl)) continue;
         size_t oldlen = co / unit;               /* characters */
         size_t newlen = wide ? wcslen((const WCHAR*)vals[t])
                              : strlen((const char*)vals[t]);
         if (oldlen != newlen) continue;
         size_t bytes = newlen * unit;
-        if (memcmp(base + voff, vals[t], bytes) == 0) continue;   /* already ours */
-        memcpy(base + voff, vals[t], bytes);
-        changed = 1;
+        if (memcmp(buf + voff, vals[t], bytes) == 0) continue;   /* already ours */
+        SIZE_T wrote = 0;
+        if (WriteProcessMemory(GetCurrentProcess(), live + voff, vals[t], bytes, &wrote)
+                && wrote == bytes)
+            changed = 1;
     }
     return changed;
 }
 
-static int scan_region(unsigned char* base, SIZE_T size) {
+/* Scan one snapshot `buf` (matching the live mapping at `live`). */
+static int scan_buffer(unsigned char* live, unsigned char* buf, size_t size) {
     static const char NEED_A[] = "<RSAKeyValue>";
     static const WCHAR NEED_W[] = L"<RSAKeyValue>";
     const size_t nl = sizeof(NEED_A) - 1;   /* 13 chars, no NUL */
@@ -121,34 +129,53 @@ static int scan_region(unsigned char* base, SIZE_T size) {
 
     /* ASCII literal (any alignment) */
     for (size_t i = 0; i + nl <= size; ) {
-        const unsigned char* p = (const unsigned char*)memchr(base + i, '<', size - i - nl + 1);
+        const unsigned char* p = (const unsigned char*)memchr(buf + i, '<', size - i - nl + 1);
         if (!p) break;
-        size_t at = (size_t)(p - base);
-        if (memcmp(base + at, NEED_A, nl) == 0 && patch_at(base + at, size - at, 0))
+        size_t at = (size_t)(p - buf);
+        if (memcmp(buf + at, NEED_A, nl) == 0 && patch_at(live + at, buf + at, size - at, 0))
             changed = 1;
         i = at + 1;
     }
     /* UTF-16LE managed string (2-byte aligned) */
     for (size_t i = 0; i + nl * 2 <= size; i += 2) {
-        if (base[i] != '<' || base[i + 1] != 0) continue;
-        if (memcmp(base + i, NEED_W, nl * 2) == 0 && patch_at(base + i, size - i, 1))
+        if (buf[i] != '<' || buf[i + 1] != 0) continue;
+        if (memcmp(buf + i, NEED_W, nl * 2) == 0 && patch_at(live + i, buf + i, size - i, 1))
             changed = 1;
     }
     return changed;
 }
 
+#define SCAN_CHUNK   (8u * 1024 * 1024)
+#define SCAN_OVERLAP 16384u
+
 static int patch_once(void) {
+    static unsigned char* chunk = NULL;
     MEMORY_BASIC_INFORMATION mbi;
     unsigned char* addr = NULL;
     int found = 0;
+    if (!chunk) chunk = (unsigned char*)malloc(SCAN_CHUNK);
+    if (!chunk) return 0;
+
     while (VirtualQuery(addr, &mbi, sizeof(mbi)) == sizeof(mbi)) {
         int writable = (mbi.State == MEM_COMMIT) &&
                        (mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY |
                                        PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) &&
                        !(mbi.Protect & PAGE_GUARD) && !(mbi.Protect & PAGE_NOACCESS);
         if (writable && mbi.RegionSize > 0) {
-            if (scan_region((unsigned char*)mbi.BaseAddress, (SIZE_T)mbi.RegionSize))
-                found = 1;
+            unsigned char* base = (unsigned char*)mbi.BaseAddress;
+            size_t reg = (size_t)mbi.RegionSize, off = 0;
+            while (off < reg) {
+                size_t want = reg - off;
+                size_t copy = want > SCAN_CHUNK ? SCAN_CHUNK : want;
+                SIZE_T got = 0;
+                if (ReadProcessMemory(GetCurrentProcess(), base + off, chunk, copy, &got)
+                        && got > 0) {
+                    if (scan_buffer(base + off, chunk, (size_t)got))
+                        found = 1;
+                }
+                if (copy <= SCAN_OVERLAP) break;
+                off += copy - SCAN_OVERLAP;
+            }
         }
         unsigned char* next = (unsigned char*)mbi.BaseAddress + mbi.RegionSize;
         if (next <= addr) break;
@@ -160,21 +187,25 @@ static int patch_once(void) {
 static DWORD WINAPI patch_thread(LPVOID arg) {
     (void)arg;
     dlog("patcher thread started");
-    /* The literal appears once GameAssembly's metadata is mapped, which is
-     * before zf's static ctor.  Poll fast so the literal is rewritten before
-     * the provider is built; keep going for a while to catch late copies. */
+    /* The literal appears once GameAssembly's metadata is mapped, before zf's
+     * static ctor builds the RSACryptoServiceProvider, so poll early.  Reads
+     * are snapshot-based, so a region being unmapped under us cannot fault the
+     * process - the old in-place scan could.  Stop 3 s after the last patch. */
     int patched = 0;
+    DWORD start = GetTickCount(), last = start;
     dlog(patch_once() ? "first pass: patched" : "first pass: nothing yet");
-    for (int i = 0; i < 2400; i++) {   /* ~60 s at 25 ms */
+    while (GetTickCount() - start < 60000) {
         if (patch_once()) {
             patched++;
+            last = GetTickCount();
             if (patched <= 4) {
                 char b[64];
                 _snprintf(b, sizeof(b), "patched key copy #%d", patched);
                 dlog(b);
             }
         }
-        Sleep(25);
+        if (patched && GetTickCount() - last > 3000) break;
+        Sleep(250);
     }
     dlog(patched ? "poller exiting (key rewritten)"
                  : "gave up: no <RSAKeyValue> found");

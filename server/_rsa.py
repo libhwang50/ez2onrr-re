@@ -19,6 +19,7 @@ The public half is published as the same `<RSAKeyValue>` XML .NET's
 for the string the client holds.
 """
 import base64
+import json
 import os
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -29,16 +30,16 @@ DATA = os.path.join(ROOT, 'server', 'data')
 PRIV = os.path.join(DATA, 'server_rsa_private.pem')
 PUB_XML = os.path.join(DATA, 'server_rsa_public.xml')
 
-# the client pads with PKCS#1 v1.5 by default (RSACryptoServiceProvider.Encrypt
-# with fOAEP=false); try it first, then every common OAEP variant — the
-# padding is not observable from the wire, so accept any that unpads to a
-# plausible key length.
+# The client pads with PKCS#1 v1.5 by default (RSACryptoServiceProvider.Encrypt
+# with fOAEP=false); every common OAEP variant is tried as a fallback — the
+# padding is not observable from the wire.  PKCS#1 v1.5 is **not** in this tuple
+# because `cryptography`'s high-level decrypt is not a validity oracle for it
+# (see `_strict_pkcs1v15`); it is handled by a raw, strict decode instead.
 def _oaep(h):
     return padding.OAEP(mgf=padding.MGF1(h), algorithm=h, label=None)
 
 
 _PADDINGS = (
-    ('pkcs1v15', padding.PKCS1v15()),
     ('oaep-sha1', _oaep(hashes.SHA1())),
     ('oaep-sha256', _oaep(hashes.SHA256())),
     ('oaep-sha384', _oaep(hashes.SHA384())),
@@ -97,21 +98,51 @@ def ensure_public_xml():
     return xml
 
 
+def _strict_pkcs1v15(blob: bytes):
+    """Raw RSA decode + strict PKCS#1 v1.5 unpad, or None.
+
+    Do **not** use `cryptography`'s `RSAPrivateKey.decrypt(..., PKCS1v15())` as a
+    validity oracle.  As of cryptography 48 it strips at the first 0x00 without
+    verifying the mandatory `00 02` prefix, so it "succeeds" on ~82% of random
+    blocks (measured 2459/3000) — which made every earlier "login RSA decrypted"
+    log line meaningless and hid the fact that the swap was often not active.
+    Here the RSA operation runs on the private numbers directly and the block is
+    checked by the letter of RFC 8017 §7.2.2.
+    """
+    key = load_private()
+    nums = key.private_numbers()
+    n = nums.public_numbers.n
+    k = (n.bit_length() + 7) // 8
+    if len(blob) != k:
+        return None
+    c = int.from_bytes(blob, 'big')
+    if c >= n:
+        return None
+    em = pow(c, nums.d, n).to_bytes(k, 'big')
+    if em[0] != 0 or em[1] != 2:
+        return None
+    i = em.find(b'\x00', 2)
+    if i < 10:                       # >= 8 non-zero padding bytes (PS length)
+        return None
+    return em[i + 1:]
+
+
 def decrypt(blob: bytes):
     """RSA-decrypt one login block -> (label, plaintext) or (None, None).
 
-    Tries every padding scheme; returns the first that yields a plausible
-    session key (len 16/32/48) — the alternative is an unpad failure.
+    PKCS#1 v1.5 first, strictly validated; then the OAEP variants (whose
+    internal hash check `cryptography` *does* enforce, so they are genuine
+    oracles).  Returns the first scheme whose unpad succeeds.
     """
+    pt = _strict_pkcs1v15(blob)
+    if pt is not None:
+        return 'pkcs1v15', pt
     key = load_private()
     for label, pad in _PADDINGS:
         try:
             pt = key.decrypt(blob, pad)
         except Exception:
             continue
-        # accept ANY unpadding success: the payload layout is a hypothesis, so
-        # a valid unpad of unexpected length still proves the client used our
-        # key and is worth logging/reporting
         return label, pt
     return None, None
 
@@ -119,10 +150,26 @@ def decrypt(blob: bytes):
 def split_key_iv(pt: bytes):
     """Interpret the decrypted login payload as the session key/IV.
 
-    48 B = key(32) || iv(16) is the expected shape.  32 B = key only.  16 B is
-    ambiguous; the login experiment records the raw bytes so the true layout can
-    be pinned without guessing here.
+    **Confirmed live 2026-09-24** (server/_login_probe.py, with the patcher
+    `version.dll` active): `c2s_login.data` is RSA of a 141-byte JSON
+
+        {"steamid":"…","appid":"…","version":"2026.09.04.001",
+         "key":"<32 uppercase hex>","iv":"<16 uppercase hex>"}
+
+    and its `key`/`iv` match the memory harvester's independent read of the
+    client's live `zf.aes_key`/`zf.aes_iv` byte-for-byte.  So the hand-off is
+    *not* a bare `key||iv` blob — the earlier 48-byte reading was a hypothesis.
+    The fixed-length fallbacks are kept for other builds.
     """
+    try:
+        d = json.loads(pt.decode('utf-8'))
+        if isinstance(d, dict) and d.get('key') and d.get('iv'):
+            k = str(d['key']).encode('ascii', 'replace')
+            v = str(d['iv']).encode('ascii', 'replace')
+            if len(k) == 32 and len(v) == 16:
+                return k, v
+    except Exception:
+        pass
     if len(pt) == 48:
         return pt[:32], pt[32:48]
     if len(pt) == 32:
@@ -130,6 +177,22 @@ def split_key_iv(pt: bytes):
     if len(pt) == 16:
         return None, pt
     return None, None
+
+
+def login_steamid(pt: bytes):
+    """The SteamID carried in the RSA login JSON, or None.
+
+    The login block is also the only place the server can learn *whose*
+    session key this is, so the multi-user server keys its session registry on
+    it (rather than trusting the separate, unauthenticated `identity=` field).
+    """
+    try:
+        d = json.loads(pt.decode('utf-8'))
+        if isinstance(d, dict) and d.get('steamid'):
+            return str(d['steamid'])
+    except Exception:
+        pass
+    return None
 
 
 def _main():
@@ -144,6 +207,19 @@ def _main():
     if len(sys.argv) > 1 and sys.argv[1] == 'show':
         ensure_public_xml()
         print(public_xml())
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == 'selftest':
+        # guard the oracle: a valid encryption must round-trip, random blocks
+        # must be rejected outright (the whole point of the strict decode).
+        import os as _os
+        from cryptography.hazmat.primitives.asymmetric import padding as _p
+        priv = load_private()
+        good = priv.public_key().encrypt(b'sessionkey-test-1234567890', _p.PKCS1v15())
+        lbl, pt = decrypt(good)
+        assert lbl == 'pkcs1v15' and pt == b'sessionkey-test-1234567890', (lbl, pt)
+        false_pos = sum(1 for _ in range(5000) if _strict_pkcs1v15(_os.urandom(256)))
+        print(f'roundtrip ok; strict random false-positives: {false_pos}/5000')
+        assert false_pos == 0, 'PKCS#1 v1.5 oracle is not strict!'
         return
     if len(sys.argv) > 2 and sys.argv[1] == 'decrypt':
         blob = open(sys.argv[2], 'rb').read()
