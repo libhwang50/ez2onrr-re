@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Send a probe to the running harvester (which owns the one safe Frida session).
 
-    python server/_mem.py findhex <hex bytes>          # locate a value in memory
-    python server/_mem.py readbytes <addr> [len]       # hex+ascii dump
-    python server/_mem.py bck                          # current session bCK + scan for it
-    python server/_mem.py hunt                         # error-site hunt stages (needs EZ2_HUNT=1)
+    python server/re/_mem.py findhex <hex bytes>          # locate a value in memory
+    python server/re/_mem.py readbytes <addr> [len]       # hex+ascii dump
+    python server/re/_mem.py bck                          # current session bCK + scan for it
+    python server/re/_mem.py hunt                         # error-site hunt stages (needs EZ2_HUNT=1)
 
 The harvester must be running and attached; it polls server/cmd.json once a
 second and answers in server/cmd_result.json.
@@ -14,7 +14,7 @@ import json
 import os
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 CMD = os.path.join(ROOT, 'server', 'cmd.json')
 RES = os.path.join(ROOT, 'server', 'cmd_result.json')
 FULL = os.path.join(ROOT, 'server', 'data',

@@ -7,7 +7,7 @@ cipher turned out to be `mask ∘ AES-256-CBC/PKCS7` with a **static** key
 searched `rjn`/`bundleCryptKey` derivations and — critically — tried AES directly on
 the ciphertext, without the stage-1 mask, which no key can ever undo.
 
-The canonical implementation now lives in the repo root as `decrypt_chart.py`; this
+The canonical implementation now lives at `ripper/decrypt_chart.py`; this
 module just imports it so there is exactly one copy of the algorithm.
 
 Usage:
@@ -18,7 +18,7 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, 'ripper'))
 
 from decrypt_chart import (  # noqa: E402
     SVQ, SVR, SVO, SVP, _SBOX, mask_byte, unmask, decrypt, looks_like_ezi, summarize,

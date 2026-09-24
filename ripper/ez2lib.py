@@ -17,7 +17,7 @@ import json
 import os
 import sys
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (this file lives in ripper/)
 
 GAME_DIR = os.path.join(ROOT, "EZ2ON REBOOT R")
 BUNDLE_OUT = os.path.join(GAME_DIR, "decrypted_bundles")
@@ -51,7 +51,7 @@ def load_bundle_key() -> bytes:
     path = bundle_key_path()
     if not os.path.exists(path):
         sys.exit("[!] Master XOR key missing: expected %s (derive it once with "
-                 "harvest_key.py, with the game running)" % path)
+                 "ripper/harvest_key.py, with the game running)" % path)
     with open(path, "rb") as f:
         key = f.read(1024)
     if len(key) < 1024:
@@ -67,7 +67,7 @@ def decrypt_bundle_head(head: bytes, key: bytes) -> bytes:
 
 
 def chart_label(song_dir: str) -> dict:
-    """The label dict ``dump_song.py`` wrote next to a capture, if present.
+    """The label dict ``ripper/dump_song.py`` wrote next to a capture, if present.
 
     Returns ``{}`` when ``ident.json`` is missing or malformed, so callers can treat
     "no label" and "bad label" the same way.

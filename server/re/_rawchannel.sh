@@ -7,20 +7,20 @@
 # and song entry). No amount of HTTP-level stubbing can touch them.
 #
 # This redirects both the hostname and the raw IP to a small loop-proof stub
-# (server/_stub443.py) that terminates TLS with a certificate signed by *your*
+# (server/re/_stub443.py) that terminates TLS with a certificate signed by *your*
 # mitmproxy CA, logs every request byte-for-byte, and never connects upstream.
 #
-#   sudo server/_rawchannel.sh on      # redirect + start the stub on 443
-#   sudo server/_rawchannel.sh test    # prove the stub answers (prints the IP:port)
-#   sudo server/_rawchannel.sh status  # redirect state + how many packets hit it
-#   sudo server/_rawchannel.sh off     # stop stub, restore hosts + iptables
+#   sudo server/re/_rawchannel.sh on      # redirect + start the stub on 443
+#   sudo server/re/_rawchannel.sh test    # prove the stub answers (prints the IP:port)
+#   sudo server/re/_rawchannel.sh status  # redirect state + how many packets hit it
+#   sudo server/re/_rawchannel.sh off     # stop stub, restore hosts + iptables
 #
 # Note: mitmproxy in reverse mode must NOT be used here — with the hostname
 # redirected to 127.0.0.1 its "upstream" resolves to itself, so every request it
 # does not intercept loops until it runs out of file descriptors.
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOST='game1-rank.ez2game.co.kr'
 IP='3.37.247.33'
 HOSTS_BAK='/tmp/ez2_hosts.bak'
@@ -41,7 +41,7 @@ on)
   if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
     kill "$(cat "$PIDFILE")" 2>/dev/null; sleep 1
   fi
-  PYTHONUNBUFFERED=1 nohup /usr/bin/python3 "$ROOT/server/_stub443.py" 443 \
+  PYTHONUNBUFFERED=1 nohup /usr/bin/python3 "$ROOT/server/re/_stub443.py" 443 \
     >"$LOG" 2>&1 &
   echo $! >"$PIDFILE"
   sleep 3
@@ -51,9 +51,9 @@ on)
   echo "iptables: redirect for $IP:443 -> local :443"
   echo
   echo "self-test (should print $IP:9902):"
-  echo "    sudo server/_rawchannel.sh test"
+  echo "    sudo server/re/_rawchannel.sh test"
   echo "then relaunch the game, log in, load a song, and check:"
-  echo "    sudo server/_rawchannel.sh status"
+  echo "    sudo server/re/_rawchannel.sh status"
   echo "    tail -40 $STUBLOG"
   ;;
 test)

@@ -118,7 +118,7 @@ Caveats:
 ## Why the RSA block is the key
 
 `c2s_login.data` is exactly 256 B (2048-bit) on every capture — see `server/_rsa.py`
-and AGENTS.md §3.1. Once the client encrypts to our key, the plaintext is **not** a bare
+and §3.1. Once the client encrypts to our key, the plaintext is **not** a bare
 `key||iv` blob but the client's **141-byte login JSON**:
 
 ```json
@@ -134,7 +134,7 @@ what a multi-user session registry keys on. The harvester becomes optional
 Confirm the swap is really active with the standalone probe, independent of the server:
 
 ```bash
-mitmdump -s server/_login_probe.py      # then launch the game
+mitmdump -s server/re/_login_probe.py      # then launch the game
 cat server/login_probe.log              # KEY_IV_HEX == hypothesis confirmed
 ```
 

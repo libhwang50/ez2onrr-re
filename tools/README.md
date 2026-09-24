@@ -1,14 +1,14 @@
 # `tools/` — reverse-engineering & analysis tooling
 
 Everything here is investigation tooling, kept separate from the user-facing
-ripper scripts at the repository root (`extract_assets.py`, `find_bundle.py`,
-`dump_song.py`, `harvest_key.py`).
+ripper scripts at the repository root (`ripper/extract_assets.py`, `ripper/find_bundle.py`,
+`ripper/dump_song.py`, `ripper/harvest_key.py`).
 
 The directory was pruned on 2026-09-23: the one-off probe campaigns, failed
 crypto sweeps and first-generation scripts were removed. What remains is the
 canonical set that the root tools, the private server and the current open work
 actually use. Deleted work is recoverable from git history; the important
-*findings* from it are kept as prose below and in `AGENTS.md`.
+*findings* from it are kept as prose below and in `docs/`.
 
 ## Layout
 
@@ -17,14 +17,14 @@ actually use. Deleted work is recoverable from git history; the important
 | `il2cpp/` | `frida-il2cpp-bridge` (`_il2cpp_bridge.js`) plus the IL2CPP drivers: symbolication (`_sym.js`, `_namemap.js`, `_methods.js`), **call-site scanning and enclosing-method attribution (`_callers.js` — the workhorse)**, **klass/vtable inspection (`_slotfind.js`, `_probe_cls.js`, `_vt.js`)**, **static-field extraction (`_statics.js`, `_mem.js`, `_staticscan.js`, `_clsstr.js` — static string values)**, string hunting (`_findstr.js` — the `patternjson` scanner), the per-song dump driver (`_dumpsong.js`) and the music-table dumper (`_musicdic.js`), and the private server's session-key reader **and memory-probe toolkit** (`_sesskey.js`). |
 | `probes/` | `_poll_da.py` — the safe 4 Hz host-side poll loop, the pattern for any new passive watcher. (The hook/guard-page experiments were deleted; never re-add them, see the crash notes below.) |
 | `mitm/` | mitmproxy addons (`_cdn_rewrite.py` rewrite oracle, `_capture_all.py` full-corpus capture), flow parsing (`_replay_extract.py` — native `-w` dump → per-flow JSONL + bodies), API decryption (`_decrypt_api.py`, `_decrypt_api_all.py`). |
-| `crypto/` | Cipher analysis. `_chart_cipher.py` is the **reference implementation of the solved CDN chart cipher** — mask + AES-256-CBC; the production CLI lives at the repo root as `decrypt_chart.py`. `_rijndael256.py` is the verified parameterised Rijndael (Nb=8). |
+| `crypto/` | Cipher analysis. `_chart_cipher.py` is the **reference implementation of the solved CDN chart cipher** — mask + AES-256-CBC; the production CLI lives at the repo root as `ripper/decrypt_chart.py`. `_rijndael256.py` is the verified parameterised Rijndael (Nb=8). |
 | `build/` | **Generated** runnable drivers (git-ignored) — one flat directory, so the source dirs stay clean. |
 | `../data/` | Derived analysis artefacts (JSON: symbol maps, key-candidate tables, scan results). |
 | `../logs/` | Captured run logs from the probe campaigns. |
 
 Drivers used by shipped tools, do not rename: `_sesskey.js` (the harvester),
-`_dumpsong.js` (`dump_song.py`), `_musicdic.js` (`harvest_metadata.py`),
-`_statics.js` (`chart_labels.py`), `_findstr.js` (`AGENTS.md` §3.2), `_poll_da.js`
+`_dumpsong.js` (`ripper/dump_song.py`), `_musicdic.js` (`ripper/harvest_metadata.py`),
+`_statics.js` (`ripper/chart_labels.py`), `_findstr.js` (§3.2), `_poll_da.js`
 (`tools/probes/_poll_da.py`).
 
 ## Running a driver
@@ -55,22 +55,22 @@ capstone, so it needs no local copy of `GameAssembly.dll`.
 ### `_sesskey.js` — the one-session memory-probe toolkit
 
 Because a second Frida session crashes the game, all live probing goes through the
-harvester's session. `server/_harvest_session.py` polls `server/cmd.json` once a
+harvester's session. `server/re/_harvest_session.py` polls `server/cmd.json` once a
 second, calls the matching export and writes `server/cmd_result.json`;
-`server/_mem.py` is the client for it:
+`server/re/_mem.py` is the client for it:
 
 ```bash
-python server/_mem.py findhex "38 43 4e 32 36"     # byte pattern (code ranges first)
-python server/_mem.py findhex <addr-pattern> 16384  # with an explicit MB budget
-python server/_mem.py findlea 0x71616d97            # rip-relative lea to an address
-python server/_mem.py findlit 17 0x71616d9c         # `mov r8d,<len>` sites (base-free)
-python server/_mem.py findthunk 0x71616d97          # mov edx,<off> + call, all bases
-python server/_mem.py readbytes 0x137365560 256     # hex + ascii dump
-python server/_mem.py bck                           # locate the session token in memory
-python server/_mem.py whowrites 0x798               # sites referencing [reg+disp]
-python server/_mem.py callers 0x6ffff2e87ec0        # chunked E8/E9 sweep + attribution
-python server/_mem.py method 0x6ffff2fa7327         # name the method containing an address
-python server/_mem.py zfstatics zf                  # every static field of a class + values
+python server/re/_mem.py findhex "38 43 4e 32 36"     # byte pattern (code ranges first)
+python server/re/_mem.py findhex <addr-pattern> 16384  # with an explicit MB budget
+python server/re/_mem.py findlea 0x71616d97            # rip-relative lea to an address
+python server/re/_mem.py findlit 17 0x71616d9c         # `mov r8d,<len>` sites (base-free)
+python server/re/_mem.py findthunk 0x71616d97          # mov edx,<off> + call, all bases
+python server/re/_mem.py readbytes 0x137365560 256     # hex + ascii dump
+python server/re/_mem.py bck                           # locate the session token in memory
+python server/re/_mem.py whowrites 0x798               # sites referencing [reg+disp]
+python server/re/_mem.py callers 0x6ffff2e87ec0        # chunked E8/E9 sweep + attribution
+python server/re/_mem.py method 0x6ffff2fa7327         # name the method containing an address
+python server/re/_mem.py zfstatics zf                  # every static field of a class + values
 ```
 
 `whowrites`/`callers`/`method` are chunked internally, so Ctrl-C between chunks is
@@ -111,13 +111,13 @@ the lesson stays:
   handler. This bit the private server's auto-re-attaching key harvester, which
   now waits for the Gadget's TCP port to be listening continuously for a grace
   period (`EZ2_HARVEST_GRACE`, 15 s default) before attaching
-  (`server/_harvest_session.py`).
+  (`server/re/_harvest_session.py`).
 
 Two further hazards, learned later, that are **not** about hooking:
 
 * **Killing a watcher without detaching.** SIGTERM does not run Python `finally`
-  blocks, so `timeout 30 python3 dump_song.py` leaves the Frida agent resident and
-  wedges the gadget's message loop. `dump_song.py` installs
+  blocks, so `timeout 30 python3 ripper/dump_song.py` leaves the Frida agent resident and
+  wedges the gadget's message loop. `ripper/dump_song.py` installs
   SIGTERM/SIGINT/SIGHUP handlers that detach before exiting — keep that guard when
   writing new watchers, and prefer a clean Ctrl-C over `kill`.
 * **Invoking list methods while the game is still building the list.** `normalLanes`

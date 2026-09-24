@@ -7,12 +7,12 @@ raw-TCP channels (battle/control, raw IPs) pointed at the real servers.
 **Chart loads work fully offline by default** (no official login, no
 CloudFront, no borrowed token): the URL signature is never verified and
 `bundleCryptKey` is minted here — it is AES-256-CBC/PKCS7 of a **client-side
-constant** under the client's live session key. No `_exp.py` setup step is
+constant** under the client's live session key. No `re/_exp.py` setup step is
 needed; the offline recipe *is* the default. See "Fully offline chart loads"
 below.
 
 
-Everything cryptographic is already solved (see AGENTS.md §3.1/§3.3); this is
+Everything cryptographic is already solved (see §3.1/§3.3); this is
 "just" the serving layer.
 
 ## How it works
@@ -42,8 +42,8 @@ Wire format (verified byte-for-byte against captures):
   `{"steamid","appid","version","key","iv"}` — so a client carrying the drop-in
   `version.dll` (`client/patcher/`) hands the server the key, the IV **and the
   SteamID** with no harvester. See "The Frida-free login hand-off" below. The memory
-  scanner `_harvest_mem.py` remains as a fallback for an unpatched client, and the
-  Frida bridge `_harvest_session.py` after that.
+  scanner `re/_harvest_mem.py` remains as a fallback for an unpatched client, and the
+  Frida bridge `re/_harvest_session.py` after that.
 
 **No upstream leakage.** An unhandled exception inside a mitmproxy addon hook
 does not abort the request — mitmproxy forwards it to the real upstream. The
@@ -58,9 +58,14 @@ chart + `.ezi` served from cache → played → score upload logged. The leaderb
 profile fetch (`c2s_get_userinfo`) serves `{memberinfo:[{STEAM_ID,LEVEL,RATING}],
 result}` — the DTO field set was recovered from `global-metadata.dat` when the
 account was lost and the official capture could no longer be decrypted (the
-session key had rotated away); see AGENTS.md §3.2.
+session key had rotated away); see §3.2.
 
 ## Files
+
+The server itself is the four transport/identity modules plus `app.py`; everything
+under **`re/`** is investigation/diagnostic tooling that is **not** used by the server
+at runtime (kept because the game updates and the Frida harness is still needed for
+captures).
 
 | file | purpose |
 |---|---|
@@ -72,12 +77,12 @@ session key had rotated away); see AGENTS.md §3.2.
 | `_sessions.py` | per-user API session registry: `steamid -> {key, iv}`, with an address cache and trial decryption for the SteamID-less requests |
 | `_store.py` | per-user progression store (SQLite, `data/store.db`): `memberinfo` + the 16-wide `clearlist` arrays, normalised to one row per cleared variant; seeds the owner from the captured `myinfo.json` |
 | `_rsa.py` | server keypair + **strict** RSA decode of the login block (`init`/`show`/`decrypt`/`selftest`). The old `cryptography` PKCS#1 v1.5 call was not a validity oracle (82% of random blocks "decrypted"); this is |
-| `_login_probe.py` | standalone probe: captures `c2s_login`, strict-decodes `data`, reports the payload shape. The experiment that pinned the login JSON |
+| `re/_login_probe.py` | standalone probe: captures `c2s_login`, strict-decodes `data`, reports the payload shape. The experiment that pinned the login JSON |
 | `_auth.py` | identity & access policy: `auth.json` (`open`/`token` mode, guest tier), token hashing, account resolution, optional Discord OAuth |
 | `_accounts.py` | admin CLI: `issue` / `list` / `ban` / `unban` server accounts + bearer tokens (no external service needed) |
 | `_fake_client.py` | **synthetic second client** for multi-user testing — logs in as any SteamID (RSA-wrapped key), then drives `c2s_get_myinfo` / `c2s_set_game_clear` / `c2s_get_userinfo` and the rank leaderboard. Creates a fresh account and a competing score with **no second game install** |
-| `_harvest_mem.py` | **fallback** session key: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds at login → `session_key.json`. Handles relaunches/rotations; keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/sudo, Windows is same-user |
-| `_harvest_session.py` | Frida bridge (fallback): polls `zf.aes_key`/`aes_iv` at 1 Hz → `session_key.json`; **auto-re-attaches when the game restarts** |
+| `re/_harvest_mem.py` | **fallback** session key: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds at login → `session_key.json`. Handles relaunches/rotations; keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/sudo, Windows is same-user |
+| `re/_harvest_session.py` | Frida bridge (fallback): polls `zf.aes_key`/`aes_iv` at 1 Hz → `session_key.json`; **auto-re-attaches when the game restarts** |
 | `_build_data.py` | (re)builds `data/` from the captured artefacts in the repo |
 | `data/login.json` | `c2s_login` response template (real, captured) |
 | `data/myinfo.json` | `c2s_get_myinfo` template — `clearlist`, `memberinfo`, … |
@@ -89,17 +94,17 @@ session key had rotated away); see AGENTS.md §3.2.
 | `data/cdn_paths.json` | CDN path → local ciphertext file (126 paths) |
 | `data/rank_sample.csv` | fallback leaderboard body when no exact capture matches |
 | `data/rank_csv/` | real leaderboard CSVs per query (Top100 / MyRange of captured songs), served exactly |
-| `data/userinfo_entry.json` | optional override of one `c2s_get_userinfo` entry; the shape is **solved** — `{STEAM_ID, LEVEL, RATING}` (AGENTS.md §3.2), there is no nickname field |
+| `data/userinfo_entry.json` | optional override of one `c2s_get_userinfo` entry; the shape is **solved** — `{STEAM_ID, LEVEL, RATING}` (§3.2), there is no nickname field |
 | `data/bundleCryptKey.txt` | value served as `bundleCryptKey` when no knob overrides it |
 | `data/set_game_clear.json` | optional override for `c2s_set_game_clear` (real shape `{level, exp, nextExp, result}`; the built-in fallback uses `profile.json`) |
-| `data/mutate_urls.txt` / `data/mutate_bck.txt` | the experiment knobs written by `_exp.py` (read per request) |
+| `data/mutate_urls.txt` / `data/mutate_bck.txt` | the experiment knobs written by `re/_exp.py` (read per request) |
 | `data/passthrough_endpoints.txt` | endpoints forwarded upstream (hybrid mode), read per request |
 | `data/last_upstream_*.json` / `…​.full.json` | the last decrypted upstream response (shortened / with real URLs+key) |
-| `_exp.py` | control the experiment knobs from the shell (`hybrid`, `urls`, `bck`, `off`, `reset`) |
-| `_mem.py` | drive the harvester's command channel: `findhex`, `findlea`, `findlit`, `findthunk`, `readbytes`, `bck` |
-| `_stub443.py` | loop-proof TLS stub for the game's un-proxied 443 channel (mitmproxy-CA-signed cert) |
-| `_stub9902.py` | capturing TCP relay for the raw packet/battle channel; address comes from `data/battle_server.txt`. This is where the client's `sendaes,` AES-key hand-off is expected to land (AGENTS.md §3.1) |
-| `_rawchannel.sh` | `on`/`test`/`status`/`off` — redirects the un-proxied channel into `_stub443.py` |
+| `re/_exp.py` | control the experiment knobs from the shell (`hybrid`, `urls`, `bck`, `off`, `reset`) |
+| `re/_mem.py` | drive the harvester's command channel: `findhex`, `findlea`, `findlit`, `findthunk`, `readbytes`, `bck` |
+| `re/_stub443.py` | loop-proof TLS stub for the game's un-proxied 443 channel (mitmproxy-CA-signed cert) |
+| `re/_stub9902.py` | capturing TCP relay for the raw packet/battle channel; address comes from `data/battle_server.txt`. This is where the client's `sendaes,` AES-key hand-off is expected to land (§3.1) |
+| `re/_rawchannel.sh` | `on`/`test`/`status`/`off` — redirects the un-proxied channel into `re/_stub443.py` |
 
 All of `data/` is generated locally and git-ignored (it contains your profile, play
 history, the music DB and captured key material). Rebuilding needs the session key of
@@ -131,13 +136,13 @@ and that is the entire hand-off.
 ```bash
 # Linux: one-time `sudo sysctl -w kernel.yama.ptrace_scope=0` (ptrace access)
 # Windows: same-user, nothing to enable
-/usr/bin/python server/_harvest_mem.py
+/usr/bin/python server/re/_harvest_mem.py
 ```
 
 **Ordering no longer matters** in either mode: the login handler waits up to 15–20 s
 for a key, and the RSA path adopts a fresh block on every `c2s_login` (so relaunches
 and the within-launch key rotation are tracked automatically).
-(`_harvest_session.py`, the Frida bridge, still works after that.) Without any key
+(`re/_harvest_session.py`, the Frida bridge, still works after that.) Without any key
 the login can only fail — the client pops "Object reference not set…" and OK quits
 the game, because a response cannot be encrypted without the key.
 
@@ -156,7 +161,7 @@ Notes:
   different difficulty's chart would load wrong notes. Uncaptured songs fail
   with `result:0`; the client retries 5× then boots to the main screen.
 * Only songs with a captured chart are playable (see `charts.json`); add more by
-  running `dump_song.py`/captures and re-running `_build_data.py`.
+  running `ripper/dump_song.py`/captures and re-running `_build_data.py`.
 * Score uploads (`plf…`) are logged but not persisted directly (the `plf` fields do not cleanly carry `levelmode`); the authoritative per-play write is `c2s_set_game_clear`, which feeds the store. Leaderboards are **computed from the store** (Top100 / MyRange) and fall back to the real captured CSVs (`data/rank_csv/`) only for a variant nobody here has played.
 
 ## Standalone / public deployment
@@ -384,7 +389,7 @@ An unrecoverable error has occurred.
 ```
 
 i.e. **8CN26 = "Song Load timeout"** (that string pair sits in the game's literal
-pool; see `AGENTS.md` §3.7).
+pool; see §3.7).
 
 ### What the bCK actually is (solved)
 
@@ -424,18 +429,18 @@ a deliberate override because a chart's note assignment is per
 keymode/difficulty.
 
 ```bash
-python server/_exp.py                 # show state (and the effective defaults)
-python server/_exp.py chart any       # serve any captured variant of the song (opt-in; wrong lanes)
-python server/_exp.py chart exact     # only the exact keymode/difficulty (the default)
-python server/_exp.py hybrid off      # no passthrough (the default)
-python server/_exp.py urls now        # mint our own Expires = now+150 (the default)
-python server/_exp.py bck mint        # mint the token (the default)
-python server/_exp.py bck mint:zero   # ... with a zero payload (diagnostic)
-python server/_exp.py bck harvested   # or reuse the token from a captured response
-python server/_exp.py urls off        # raw replay, no URL rewrite
-python server/_exp.py bck off         # raw replay, no token mint
-python server/_exp.py off             # clear the url/bck/chart mutations -> offline defaults
-python server/_exp.py reset           # clear everything -> offline defaults
+python server/re/_exp.py                 # show state (and the effective defaults)
+python server/re/_exp.py chart any       # serve any captured variant of the song (opt-in; wrong lanes)
+python server/re/_exp.py chart exact     # only the exact keymode/difficulty (the default)
+python server/re/_exp.py hybrid off      # no passthrough (the default)
+python server/re/_exp.py urls now        # mint our own Expires = now+150 (the default)
+python server/re/_exp.py bck mint        # mint the token (the default)
+python server/re/_exp.py bck mint:zero   # ... with a zero payload (diagnostic)
+python server/re/_exp.py bck harvested   # or reuse the token from a captured response
+python server/re/_exp.py urls off        # raw replay, no URL rewrite
+python server/re/_exp.py bck off         # raw replay, no token mint
+python server/re/_exp.py off             # clear the url/bck/chart mutations -> offline defaults
+python server/re/_exp.py reset           # clear everything -> offline defaults
 ```
 
 | run | knob | result | conclusion |
@@ -454,18 +459,18 @@ protocol-level token is minted from the client's hardcoded build constant and th
 live session key:
 
 ```bash
-/usr/bin/python server/_harvest_mem.py        # terminal 1: keeps session_key.json live
+/usr/bin/python server/re/_harvest_mem.py        # terminal 1: keeps session_key.json live
 mitmdump -s server/_pserver.py                # terminal 2: the server
 ```
 
-The three `_exp.py` commands that used to be required are now the built-in
+The three `re/_exp.py` commands that used to be required are now the built-in
 defaults (`urls now`, `bck mint`, no passthrough). Running them is
 harmless and remains useful to re-assert the state after experiments:
 
 ```bash
-python server/_exp.py hybrid off              # no passthrough
-python server/_exp.py urls now                # our own CDN URLs
-python server/_exp.py bck mint                # mint the token from the live key
+python server/re/_exp.py hybrid off              # no passthrough
+python server/re/_exp.py urls now                # our own CDN URLs
+python server/re/_exp.py bck mint                # mint the token from the live key
 ```
 
 Then every captured song entry loads with our login, our music list, our profile,
@@ -480,59 +485,59 @@ own single `byte[32]` copy of the constant in memory next to its live session ke
 Coverage is **per song, not per variant**: the client never picks the CDN path
 (it downloads whatever URL the server returns), so one capture of a song serves
 every keymode/difficulty of it, and the `.ezi` is already identical across a
-song's variants. `_exp.py chart any` does that mapping; `chart exact` is for
+song's variants. `re/_exp.py chart any` does that mapping; `chart exact` is for
 capturing, because a miss must reach upstream for the body to be recorded.
 
 ```bash
-python server/_coverage.py            # 16/601 songs (2.7%), and which are missing
-python server/_coverage.py --queue    # write the capture queue (music-list order)
-python server/_coverage.py --log      # what the game asked for vs what we could serve
+python server/re/_coverage.py            # 16/601 songs (2.7%), and which are missing
+python server/re/_coverage.py --queue    # write the capture queue (music-list order)
+python server/re/_coverage.py --log      # what the game asked for vs what we could serve
 ```
 
 The loop that adds songs, end to end:
 
-1. **`_exp.py harvest`** — forwards `login,pattern,cdn` upstream. The API
+1. **`re/_exp.py harvest`** — forwards `login,pattern,cdn` upstream. The API
    passthrough is what mints a real session and real signed URLs; **`cdn` is what
    lets a chart we do not hold yet come from the official CDN** (without it a
    missing chart is a local 404 and nothing can ever be captured).
-2. Walk the song list (the game, or `server/_sweep.py`) so it asks for each song.
+2. Walk the song list (the game, or `server/re/_sweep.py`) so it asks for each song.
 3. The addon files every forwarded CDN body straight into
    **`extracted_charts/<song>/<km>/<diff>/`** — `cdn_ez_cap.bin`, `cdn_ezi_cap.bin`
    and an `ident.json` with the URLs and the label — i.e. the same layout
-   `dump_song.py` writes, so the archive stays the single source of truth and no
+   `ripper/dump_song.py` writes, so the archive stays the single source of truth and no
    side pipeline exists. It also decrypts them on the spot into `ez.ez` /
    `ezi.ezi` (naming the key pair in `ident.json`) and derives
    `instrumentDic.json` from the `.ezi`, so a capture ends up a complete dump.
    `capturedBy: "sweep"` marks the ones that came this way, and
-   **`python decrypt_chart.py --archive`** fills in any plaintext that is missing
+   **`python ripper/decrypt_chart.py --archive`** fills in any plaintext that is missing
    (the tool walks the archive and is safe to re-run; `--check` reports only).
 4. **`python server/_build_data.py`** folds the archive into
-   `server/data/charts.json` + `cdn_paths.json`, then `_coverage.py` shows the
+   `server/data/charts.json` + `cdn_paths.json`, then `re/_coverage.py` shows the
    result.
 
 The addon only lets a CDN request out when `cdn` is in the passthrough list — in
 `offline` mode nothing leaves the machine, and an uncached chart is a plain 404.
 
-`server/_sweep.py` automates that walk. The server log is its primary sensor — every
+`server/re/_sweep.py` automates that walk. The server log is its primary sensor — every
 request names the song, keymode, levelmode and gamemode — and a screen-state classifier
-(`server/_screen.py`, below) is the *safety* sensor. It refuses to send keys unless the
+(`server/re/_screen.py`, below) is the *safety* sensor. It refuses to send keys unless the
 focused window really is the game (`niri msg focused-window`), so it cannot type into
 your terminal.
 
 ```bash
-python server/_sweep.py                  # bindings + who has focus right now
-python server/_sweep.py --watch          # just tail the log (no input)
-python server/_sweep.py --state          # classify the current screen and exit
-python server/_sweep.py --calibrate      # learn the difficulty/keymode keys
-python server/_sweep.py --limit 600      # walk the list, one entry per song
-python server/_sweep.py --variant 5K:HD   # capture every song at one variant
-python server/_sweep.py --keymodes 4K,5K --difficulties EZ,HD   # a cross product
-python server/_sweep.py --variants       # every key mode x every difficulty
-python server/_sweep.py --dry-run        # print the plan, send nothing
-python server/_sweep.py --no-screen      # disable the screen classifier entirely
-python server/_sweep.py --no-verify      # do not confirm the song select before advancing
-python server/_sweep.py --no-smart       # do not skip variants already dumped
-python server/_sweep.py --no-stop-on-wrap  # ignore the wrap/end checks
+python server/re/_sweep.py                  # bindings + who has focus right now
+python server/re/_sweep.py --watch          # just tail the log (no input)
+python server/re/_sweep.py --state          # classify the current screen and exit
+python server/re/_sweep.py --calibrate      # learn the difficulty/keymode keys
+python server/re/_sweep.py --limit 600      # walk the list, one entry per song
+python server/re/_sweep.py --variant 5K:HD   # capture every song at one variant
+python server/re/_sweep.py --keymodes 4K,5K --difficulties EZ,HD   # a cross product
+python server/re/_sweep.py --variants       # every key mode x every difficulty
+python server/re/_sweep.py --dry-run        # print the plan, send nothing
+python server/re/_sweep.py --no-screen      # disable the screen classifier entirely
+python server/re/_sweep.py --no-verify      # do not confirm the song select before advancing
+python server/re/_sweep.py --no-smart       # do not skip variants already dumped
+python server/re/_sweep.py --no-stop-on-wrap  # ignore the wrap/end checks
 ```
 
 **Escape is only pressed when it is provably safe.** In the main menu `ESC` means
@@ -541,14 +546,14 @@ The sweep therefore only sends the pause-menu exit when the entry actually start
 song (a pattern request *and* a CDN body arrived, so the next state is loading or
 gameplay — never a menu), or when it knows the previous entry started a song and never
 came back (so we are inside its gameplay). On a missed request it now **classifies the
-screen** (`server/_screen.py`): *gameplay/pause* means the previous song is still
+screen** (`server/re/_screen.py`): *gameplay/pause* means the previous song is still
 running and the pause menu is safe; *main menu* means re-enter the focused card; *song
 select* or *unknown* means `Up` + `Enter`, which is harmless in every state and
 productive in the two that matter. Timings in `server/data/sweep_keys.json`:
 `wait_for_request` 8 s (a request arrives 1–2 s after a real Enter, so a stumble fails
 fast) and `after_start` 8 s (time from the request to gameplay before `Esc`).
 
-### Screen-state classifier — `server/_screen.py`
+### Screen-state classifier — `server/re/_screen.py`
 
 The log says what the game *asked for*, not where the UI is, so the safety decision
 above needs to see the screen. It is deliberately **not** OCR, and not pixel-perfect
@@ -568,10 +573,10 @@ template matching: the song select is semi-transparent UI over an animated BGA.
   while the sweep's terminal held focus.
 
 ```bash
-python server/_screen.py --debug                 # features + annotated ROI map
-python server/_screen.py --collect MAIN_MENU     # save an anchor for a state
-python server/_screen.py --watch                 # classify continuously
-python server/_screen.py --list                  # collected anchors
+python server/re/_screen.py --debug                 # features + annotated ROI map
+python server/re/_screen.py --collect MAIN_MENU     # save an anchor for a state
+python server/re/_screen.py --watch                 # classify continuously
+python server/re/_screen.py --list                  # collected anchors
 ```
 
 `classify()` applies a few measured scalar rules first (yellow play disk -> song select;
@@ -621,9 +626,9 @@ without a known start, an unknown key mode presses nothing and lets the next req
 it.
 
 ```bash
-python server/_sweep.py --variant 5K:HD                       # one variant, every song
-python server/_sweep.py --keymodes 4K,5K --difficulties EZ,HD  # 4 variants per song
-python server/_sweep.py --variants                             # all 16 per song
+python server/re/_sweep.py --variant 5K:HD                       # one variant, every song
+python server/re/_sweep.py --keymodes 4K,5K --difficulties EZ,HD  # 4 variants per song
+python server/re/_sweep.py --variants                             # all 16 per song
 ```
 
 `--variants` is 16 entries per song (≈16x slower), and a song's `.ezi` is per-song or
@@ -705,7 +710,7 @@ the latch at `InGameCore+0x798`, which `ft.MoveNext` checks to decide whether to
 abort — so the code is a **timeout inside the coroutine's wait**, not a verdict
 from anywhere else, and the network is not involved (a failing load opens exactly
 one connection: the handshake-only TLS probe to `3.37.247.33:443`). What the wait
-depends on is the `bundleCryptKey` check (AGENTS.md §3.2); the code trail is kept
+depends on is the `bundleCryptKey` check (§3.2); the code trail is kept
 here for anyone chasing the exact step.
 
 ### The token (solved) and the key (open)
@@ -716,17 +721,17 @@ AES-encrypting a fixed 32-byte client constant; the client decrypts and compares
 with its own single `byte[32]` copy. `_pserver.py` mints the token itself, so
 no official response is needed. The full account, including why the earlier
 "the client owns no independent copy / the server audits out-of-band" reading was
-wrong, is in **AGENTS.md §3.2 and §3.7**.
+wrong, is in **§3.2 and §3.7**.
 
 The one genuinely open item is how the *official* server learns the session key:
 the working hypothesis is RSA in `c2s_login.data` (the login response is AES and
 must be decryptable by the server, and our offline server — which runs no battle
 handshake — is accepted), with the raw packet channel's `sendaes,` packet as the
-battle server's copy. See AGENTS.md §3.1 and §7.6.
+battle server's copy. See §3.1 and §7.6.
 
 ## Known simplifications / next steps
 
-* `c2s_set_game_clear` and `c2s_get_userinfo` **shapes are known now** (AGENTS.md
+* `c2s_set_game_clear` and `c2s_get_userinfo` **shapes are known now** (
   §3.2): the former is `{level, exp, nextExp, result}` (which is exactly the 48-byte
   / 64-char captured body), the latter `{memberinfo:[{STEAM_ID, LEVEL, RATING}],
   result}`. The missing part is *values*, not shape: `LEVEL`/`RATING` are placeholders
@@ -736,7 +741,7 @@ battle server's copy. See AGENTS.md §3.1 and §7.6.
   `version.dll` patcher rewrites `zf.publicKey` in-process, so the login block's RSA
   plaintext is the client's `{steamid,appid,version,key,iv}` JSON; `_pserver.py`
   decodes it (key, IV **and** SteamID) on every `c2s_login`. No harvester, no scan.
-  The memory scanner `_harvest_mem.py` remains for an unpatched client. (The earlier
+  The memory scanner `re/_harvest_mem.py` remains for an unpatched client. (The earlier
   "the RSA swap is not needed / cannot work" reading was wrong twice over: a
   *host-side* patch is too late because the provider is cached at `zf` static-init,
   but the in-process DLL beats it; and `cryptography`'s PKCS#1 v1.5 `decrypt` was not
@@ -745,7 +750,7 @@ battle server's copy. See AGENTS.md §3.1 and §7.6.
   the alternative but is moot for the API.
 * Rank endpoints accept any signature; nothing is verified or persisted.
 * Songs without a captured chart fail at chart load (`result:0`) — extend
-  coverage with `dump_song.py` and re-run `_build_data.py`.
+  coverage with `ripper/dump_song.py` and re-run `_build_data.py`.
 * **Fully offline loads work** with no official contact (see above). The bCK
   constant is a value of a particular client build: after a game update, re-derive
   it by decrypting a captured token (that is `bck_payload()`'s fallback), or just

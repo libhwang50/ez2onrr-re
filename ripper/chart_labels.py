@@ -5,14 +5,14 @@ The game asks for each chart with `c2s_get_pattern_file`, whose request body car
 `musicresourcename`, `keymode`, `levelmode` and `gamemode` — and whose response carries the
 signed CDN URLs. So a mitm capture gives us the labels for any chart we also captured.
 
-`dump_song.py` reads the resulting JSON and matches its current `ezi_url` against it, which
+`ripper/dump_song.py` reads the resulting JSON and matches its current `ezi_url` against it, which
 is how a capture gets a readable name instead of `song_<hash>`.
 
 Usage
 -----
-    python3 chart_labels.py                       # writes chart_labels.json
-    python3 chart_labels.py --mitm mitm_parsed -o chart_labels.json
-    python3 chart_labels.py --key <EZ2_API_SESSION_KEY> --iv <EZ2_API_SESSION_IV>
+    python3 ripper/chart_labels.py                       # writes chart_labels.json
+    python3 ripper/chart_labels.py --mitm mitm_parsed -o chart_labels.json
+    python3 ripper/chart_labels.py --key <EZ2_API_SESSION_KEY> --iv <EZ2_API_SESSION_IV>
 
 Note the session key/IV: they are static fields on `zf`, overwritten at login, so captures
 from a different session need that session's values. Harvest them live with

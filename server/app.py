@@ -25,11 +25,9 @@ the running game is its session key, recovered from the RSA login (§3.1).
 """
 from __future__ import annotations
 
-import json
 import os
 import ssl
 import sys
-import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))

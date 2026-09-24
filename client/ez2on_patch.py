@@ -124,7 +124,6 @@ def windows_backend(pid):
     from ctypes import wintypes
 
     k32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    psapi = ctypes.WinDLL('psapi', use_last_error=True)
 
     PROCESS_VM_READ = 0x0010
     PROCESS_VM_WRITE = 0x0020

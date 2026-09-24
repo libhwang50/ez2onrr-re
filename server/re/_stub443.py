@@ -4,7 +4,7 @@
 The game talks to game1-rank.ez2game.co.kr:443 with its own TLS client that
 ignores the WinHTTP proxy (verified: the addon never dials upstream, yet the
 pcap shows direct TLS handshakes to that host around login and song entry).
-`server/_rawchannel.sh` redirects the hostname and the raw IP here.
+`server/re/_rawchannel.sh` redirects the hostname and the raw IP here.
 
 Why not mitmproxy in reverse mode: with the hostname redirected to 127.0.0.1, a
 reverse proxy resolves its own *upstream* to 127.0.0.1 and opens connections to
@@ -16,7 +16,7 @@ answers with the same bodies the private server uses for the rank host, so the
 first run tells us whether the channel is intercepted at all (and whether the
 client accepts a certificate minted by the user's mitmproxy CA).
 
-    sudo python3 server/_stub443.py [port]        # 443 by default
+    sudo python3 server/re/_stub443.py [port]        # 443 by default
 """
 import json
 import os
@@ -28,7 +28,7 @@ import threading
 import time
 import urllib.parse
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 DATA = os.path.join(ROOT, 'server', 'data')
 LOG = os.path.join(ROOT, 'server', 'stub443.log')
 HOST = 'game1-rank.ez2game.co.kr'

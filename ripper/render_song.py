@@ -5,23 +5,23 @@ The song is not stored anywhere — it is a render of the chart. Every type-1 no
 every track, triggers its keysound at its scheduled time; the player's lanes (tracks 3-6)
 and the auto-played layers (23-63) are equally part of it, and the `MR` keysound on
 track 22 is a supplementary layer for instruments too long or too incidental to sample,
-not the song itself. See AGENTS.md 3.5 / 3.6.
+not the song itself. See §3.5 / 3.6.
 
 Usage
 -----
-    python3 render_song.py <song_dir> --assets auto -o out.flac
-    python3 render_song.py --all -o rendered_songs/
+    python3 ripper/render_song.py <song_dir> --assets auto -o out.flac
+    python3 ripper/render_song.py --all -o rendered_songs/
 
 Output names come from the capture's `ident.json`: the song's title when the metadata table
 resolved one (`Hyper_Magic_4K_SHD.flac`), else its resource codename, plus the key mode and
 difficulty so variants do not collide. An unidentified capture keeps its `song_<hash>` name.
 Without `-o`, a render is written to `rendered_songs/<name>.flac`.
 
-`song_dir` must hold a decrypted `ez.ez` and `ezi.ezi` (what `dump_song.py` writes, or
-`decrypt_chart.py --out` produces); a parent directory is accepted when it contains
+`song_dir` must hold a decrypted `ez.ez` and `ezi.ezi` (what `ripper/dump_song.py` writes, or
+`ripper/decrypt_chart.py --out` produces); a parent directory is accepted when it contains
 exactly one chart. `--assets auto` finds the matching
 `extracted_assets/<song_id>` by comparing keysound filenames, which is necessary because
-`dump_song.py` names its directories `song_<hash>` and never records the song id.
+`ripper/dump_song.py` names its directories `song_<hash>` and never records the song id.
 
 Requires numpy and soundfile (`uv pip install --python .venv/bin/python numpy soundfile`).
 
@@ -55,7 +55,7 @@ def tag_file(path, song, label=None):
     """Write Vorbis comments onto a rendered FLAC. Returns the tags written.
 
     The song's title and composer come from the game's `MUSIC_NAME_DIC` (see
-    `harvest_metadata.py`); the mode/difficulty come from the capture's label. Nothing is
+    `ripper/harvest_metadata.py`); the mode/difficulty come from the capture's label. Nothing is
     written when the song cannot be resolved, so a render never gets wrong credits.
     """
     label = label or {}

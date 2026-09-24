@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""check_charts.py — audit extracted_charts/ for captures that are filed wrong or incomplete.
+"""ripper/check_charts.py — audit extracted_charts/ for captures that are filed wrong or incomplete.
 
 Why this exists
 ---------------
-`dump_song.py` used to name the output directory from the *runtime* label and write the
+`ripper/dump_song.py` used to name the output directory from the *runtime* label and write the
 fetched chart into it eagerly.  The game updates `ez_url`/`ezi_url` in stages, so a snapshot
 taken mid-transition paired one variant's label with another variant's chart — which is how
 Ultimatum's real 5-shd chart was overwritten by a 4K one.  The dumper now decrypts in memory

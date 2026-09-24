@@ -16,7 +16,6 @@ and the rank `plf…` upload carry, and reassembles the arrays when serving.
 
 Single-user today, multi-user by construction: everything is keyed by SteamID.
 """
-import json
 import os
 import sqlite3
 import threading

@@ -1,6 +1,6 @@
 """Server-side RSA for the Frida-free session-key hand-off.
 
-Working hypothesis (AGENTS.md §3.1, §7.6): `c2s_login.data` is one PKCS#1 v1.5
+Working hypothesis (§3.1, §7.6): `c2s_login.data` is one PKCS#1 v1.5
 RSA block (256 B = 2048-bit) carrying the client's freshly generated session
 key/IV, encrypted under the build's baked-in `zf.publicKey`.  We cannot decrypt
 that without the matching private key — which we do not have.
@@ -150,7 +150,7 @@ def decrypt(blob: bytes):
 def split_key_iv(pt: bytes):
     """Interpret the decrypted login payload as the session key/IV.
 
-    **Confirmed live 2026-09-24** (server/_login_probe.py, with the patcher
+    **Confirmed live 2026-09-24** (server/re/_login_probe.py, with the patcher
     `version.dll` active): `c2s_login.data` is RSA of a 141-byte JSON
 
         {"steamid":"…","appid":"…","version":"2026.09.04.001",

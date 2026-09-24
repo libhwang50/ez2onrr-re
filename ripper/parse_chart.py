@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Parse EZ2ON REBOOT: R chart data — the `.ez` note chart and the `.ezi` keysound index.
 
-REBOOT: R reuses the EZ2AC arcade container unchanged (see AGENTS.md 3.5), so this is an
+REBOOT: R reuses the EZ2AC arcade container unchanged (see §3.5), so this is an
 EZ2AC `.ez` v7/v8 reader with the REBOOT specifics handled:
 
   * `.ez` plaintext is PKCS7-padded (trailing bytes are ignored, not parsed);
@@ -13,12 +13,12 @@ Encrypted CDN payloads are accepted directly — they are decrypted first, so a 
 
 Usage
 -----
-    python3 parse_chart.py <file.ez|file.ezi|cdn_*.bin>
-    python3 parse_chart.py --json out.json <file.ez>
-    python3 parse_chart.py --notes <file.ez>          # per-note listing
-    python3 parse_chart.py --ezi <file.ezi>           # keysound listing
-    python3 parse_chart.py --dir extracted_charts     # every chart in a tree
-    python3 parse_chart.py --backing --ezi f.ezi f.ez # just the full-song keysound
+    python3 ripper/parse_chart.py <file.ez|file.ezi|cdn_*.bin>
+    python3 ripper/parse_chart.py --json out.json <file.ez>
+    python3 ripper/parse_chart.py --notes <file.ez>          # per-note listing
+    python3 ripper/parse_chart.py --ezi <file.ezi>           # keysound listing
+    python3 ripper/parse_chart.py --dir extracted_charts     # every chart in a tree
+    python3 ripper/parse_chart.py --backing --ezi f.ezi f.ez # just the full-song keysound
 
 Verified vs. inferred
 ---------------------
@@ -233,7 +233,7 @@ class Chart:
         notes = self.tracks[22].notes_of_type(1)
         return notes[0] if notes else None
 
-    # --- timing (AGENTS.md 3.6) --------------------------------------------- #
+    # --- timing (§3.6) --------------------------------------------- #
 
     def tempo_segments(self):
         """[(startTick, endTick, BPM)] taken from the Control track's type-3 events."""
@@ -255,7 +255,7 @@ class Chart:
         A measure is always 4 beats of 48 ticks and `ticksPerMeasure` is always 192, so
         one measure lasts `4 * 60 / BPM` seconds. A type-4/5 `beatsPerMeasure` event is
         visual/metrical only and deliberately does **not** affect timing — treating it as
-        a real tempo change is off by 21 s on Conflict (AGENTS.md 3.6).
+        a real tempo change is off by 21 s on Conflict (§3.6).
         """
         tpm = self.header['ticksPerMeasure'] or 192
         want, acc = float(tick), 0.0

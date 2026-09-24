@@ -5,29 +5,29 @@ These files are re-read by server/_pserver.py on every request, so changes
 apply live — no mitmdump restart. Only `hybrid on/off` changes the set of
 endpoints forwarded upstream, which is also read per request.
 
-    python server/_exp.py                       # show current state
-    python server/_exp.py offline               # (the default) fully offline serving
-    python server/_exp.py harvest               # capture: forward login+pattern+cdn, no mutations
-    python server/_exp.py hybrid on             # forward login+pattern upstream
-    python server/_exp.py hybrid pattern        # forward only the pattern
-    python server/_exp.py hybrid off            # pure private server (also the default)
-    python server/_exp.py urls now              # Expires = now+150s (offline mint; the default)
-    python server/_exp.py urls skew             # Expires +1s (breaks signature only)
-    python server/_exp.py urls future           # Expires +10y (breaks signature)
-    python server/_exp.py urls expire           # Expires in the past
-    python server/_exp.py urls noparams         # strip the query
-    python server/_exp.py urls host             # swap the CDN host
-    python server/_exp.py bck harvested         # the bCK from the last official response
-    python server/_exp.py bck garbage           # 48 random bytes
-    python server/_exp.py bck mint              # AES(live key, client constant) — the default
-    python server/_exp.py bck mint:zero         # minted with a fixed payload
-    python server/_exp.py bck stale             # the older captured real key
-    python server/_exp.py bck empty
-    python server/_exp.py chart any             # serve the song's chart for any variant
-    python server/_exp.py chart exact           # only exact keymode/difficulty (the default)
-    python server/_exp.py off                   # clear explicit mutations -> back to offline defaults
-    python server/_exp.py hybrid off            # back to a pure private server
-    python server/_exp.py reset                 # clear everything -> offline defaults
+    python server/re/_exp.py                       # show current state
+    python server/re/_exp.py offline               # (the default) fully offline serving
+    python server/re/_exp.py harvest               # capture: forward login+pattern+cdn, no mutations
+    python server/re/_exp.py hybrid on             # forward login+pattern upstream
+    python server/re/_exp.py hybrid pattern        # forward only the pattern
+    python server/re/_exp.py hybrid off            # pure private server (also the default)
+    python server/re/_exp.py urls now              # Expires = now+150s (offline mint; the default)
+    python server/re/_exp.py urls skew             # Expires +1s (breaks signature only)
+    python server/re/_exp.py urls future           # Expires +10y (breaks signature)
+    python server/re/_exp.py urls expire           # Expires in the past
+    python server/re/_exp.py urls noparams         # strip the query
+    python server/re/_exp.py urls host             # swap the CDN host
+    python server/re/_exp.py bck harvested         # the bCK from the last official response
+    python server/re/_exp.py bck garbage           # 48 random bytes
+    python server/re/_exp.py bck mint              # AES(live key, client constant) — the default
+    python server/re/_exp.py bck mint:zero         # minted with a fixed payload
+    python server/re/_exp.py bck stale             # the older captured real key
+    python server/re/_exp.py bck empty
+    python server/re/_exp.py chart any             # serve the song's chart for any variant
+    python server/re/_exp.py chart exact           # only exact keymode/difficulty (the default)
+    python server/re/_exp.py off                   # clear explicit mutations -> back to offline defaults
+    python server/re/_exp.py hybrid off            # back to a pure private server
+    python server/re/_exp.py reset                 # clear everything -> offline defaults
 
 Offline is now the default. With no knob files the addon forwards nothing and
 mints its own CDN `Expires` and `bundleCryptKey` from the client's live session
@@ -43,7 +43,7 @@ Scores/records stay private either way unless you forward those endpoints.
 import os
 import sys
 
-DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
 KNOBS = {
     'endpoints': 'passthrough_endpoints.txt',
     'urls': 'mutate_urls.txt',

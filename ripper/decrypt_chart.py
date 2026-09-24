@@ -14,12 +14,12 @@ Both stages operate in place on the whole buffer, so decryption is
 `AES_CBC_decrypt(unmask(ciphertext))`.
 
 Usage:
-    python3 decrypt_chart.py <file> [more files...]      # -> <file>.dec
-    python3 decrypt_chart.py --out DIR <file> ...
-    python3 decrypt_chart.py --inspect <file>            # header summary only
-    python3 decrypt_chart.py --archive [DIR ...]         # a whole capture archive
+    python3 ripper/decrypt_chart.py <file> [more files...]      # -> <file>.dec
+    python3 ripper/decrypt_chart.py --out DIR <file> ...
+    python3 ripper/decrypt_chart.py --inspect <file>            # header summary only
+    python3 ripper/decrypt_chart.py --archive [DIR ...]         # a whole capture archive
 
-`--archive` walks a tree of `dump_song.py` / sweep captures and fills in the plaintext
+`--archive` walks a tree of `ripper/dump_song.py` / sweep captures and fills in the plaintext
 (`ez.ez`, `ezi.ezi`, `instrumentDic.json`) for every raw CDN capture that is missing it,
 so a sweep capture becomes indistinguishable from a full dump. `--check` audits without
 writing and `--force` redoes existing plaintext; the exit code gates a batch.
@@ -200,7 +200,7 @@ def find_cipher(d, kind):
 
 
 def ezi_mapping(pt: bytes):
-    """[[index, basename], ...] from a decrypted `.ezi`, the shape dump_song.py writes."""
+    """[[index, basename], ...] from a decrypted `.ezi`, the shape ripper/dump_song.py writes."""
     rows = []
     for line in pt.decode('utf-8', 'replace').splitlines():
         parts = line.split()
@@ -253,7 +253,7 @@ def process_dir(d, force=False, check=False):
 
 def archive_targets(dirs):
     """Capture directories under whatever was named (so a song dir works too)."""
-    bases = dirs or [os.path.join(os.path.dirname(os.path.abspath(__file__)), 'extracted_charts')]
+    bases = dirs or [os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'extracted_charts')]
     out = set()
     for base in bases:
         if not os.path.isdir(base):

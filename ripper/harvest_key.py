@@ -15,10 +15,10 @@ game.
 
 Usage
 -----
-    .venv/bin/python harvest_key.py                    # -> true_key_1024.bin
-    .venv/bin/python harvest_key.py --gadget 127.0.0.1:27042
-    .venv/bin/python harvest_key.py --dump-only        # keep the RAM header only
-    .venv/bin/python harvest_key.py --out key.bin --header-out ram_header.bin
+    .venv/bin/python ripper/harvest_key.py                    # -> true_key_1024.bin
+    .venv/bin/python ripper/harvest_key.py --gadget 127.0.0.1:27042
+    .venv/bin/python ripper/harvest_key.py --dump-only        # keep the RAM header only
+    .venv/bin/python ripper/harvest_key.py --out key.bin --header-out ram_header.bin
 
 Run it while a song is loading or in song select. The scan looks for a `UnityFS`
 header at either bundle version this install uses (7 and 8).
@@ -133,7 +133,7 @@ def main():
     try:
         import frida
     except ImportError:
-        sys.exit("[!] 'frida' is not installed; run with .venv/bin/python harvest_key.py")
+        sys.exit("[!] 'frida' is not installed; run with .venv/bin/python ripper/harvest_key.py")
 
     print("[+] Connecting to Frida Gadget at %s..." % args.gadget)
     try:

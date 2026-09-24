@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Render a video visualisation of a song, showing which keysounds are playing.
 
-The song is a render of the chart (see AGENTS.md 3.5), so at any instant the audio is the
+The song is a render of the chart (see §3.5), so at any instant the audio is the
 sum of the keysounds whose notes are firing. This draws that as an overlay on the song's
 BGA — or on a plain background — and muxes it with the rendered audio.
 
-    python3 visualize_song.py extracted_charts/changa2
-    python3 visualize_song.py extracted_charts/ultimatum     # bulk: 4K/5K/6K/8K, EZ/NM/SHD
-    python3 visualize_song.py --all --skip-existing          # every chart under extracted_charts/
-    python3 visualize_song.py <song> --mode keysound --no-bga
-    python3 visualize_song.py <song> --offset 0.03          # nudge the overlay later
+    python3 ripper/visualize_song.py extracted_charts/changa2
+    python3 ripper/visualize_song.py extracted_charts/ultimatum     # bulk: 4K/5K/6K/8K, EZ/NM/SHD
+    python3 ripper/visualize_song.py --all --skip-existing          # every chart under extracted_charts/
+    python3 ripper/visualize_song.py <song> --mode keysound --no-bga
+    python3 ripper/visualize_song.py <song> --offset 0.03          # nudge the overlay later
 
 Bulk rendering
 --------------
@@ -389,7 +389,7 @@ def render_chart(args, song_dir, out):
                 "!! no extracted BGA found for this chart - the background will be blank."
             )
             print("   extract it, then re-run:")
-            print("       python3 extract_assets.py %s --bga" % (hint or "<song_id>"))
+            print("       python3 ripper/extract_assets.py %s --bga" % (hint or "<song_id>"))
             print("   (--no-bga silences this, --bga FILE points at one directly)")
             if os.path.isdir("extracted_assets") and hint:
                 have = [

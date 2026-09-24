@@ -1,7 +1,7 @@
 """Frida session-key bridge for the private server.
 
 Polls zf.aes_key / zf.aes_iv (the API session key the client generates at
-login — zf.gnf: RNGCryptoServiceProvider -> hex, AGENTS.md §3.1) at 1 Hz
+login — zf.gnf: RNGCryptoServiceProvider -> hex, §3.1) at 1 Hz
 through the Gadget and writes every change to server/session_key.json, which
 server/_pserver.py reads per request.
 
@@ -26,7 +26,7 @@ import time
 
 import frida
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 OUT = os.path.join(ROOT, 'server', 'session_key.json')
 DRIVER = os.path.join(ROOT, 'tools', 'build', '_sesskey_run.js')
 HOST = '127.0.0.1'
@@ -47,7 +47,7 @@ CMDRESULT = os.path.join(ROOT, 'server', 'cmd_result.json')
 
 
 def read_cmd():
-    """A tiny command channel: server/_mem.py writes cmd.json, we execute the
+    """A tiny command channel: server/re/_mem.py writes cmd.json, we execute the
     RPC and write cmd_result.json. This keeps ALL probing inside the single
     Frida session the harvester owns (a second session crashes the game)."""
     if not os.path.exists(CMDFILE):

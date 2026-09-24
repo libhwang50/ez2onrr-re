@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
-"""Look up song metadata (title, composer) captured by `harvest_metadata.py`.
+"""Look up song metadata (title, composer) captured by `ripper/harvest_metadata.py`.
 
 The game's `da.MUSIC_NAME_DIC` maps a numeric music id to a `MUSIC_NAME_DATA` record. The
 chart's `musicresourcename` (e.g. "Rebind") matches those records' titles, so a song can be
 resolved by name without needing its id.
 
 `music_names.json` is a cache: regenerate it from a running game with
-`python3 harvest_metadata.py`.
+`python3 ripper/harvest_metadata.py`.
 
-Used by `dump_song.py` (to record metadata next to a capture) and `render_song.py` (to tag
+Used by `ripper/dump_song.py` (to record metadata next to a capture) and `ripper/render_song.py` (to tag
 the rendered FLAC).
 """
 import json
 import os
 import re
 
-DEFAULT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'music_names.json')
+_HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(_HERE)
+DEFAULT_PATH = os.path.join(ROOT, 'music_names.json')
 
 # The API music list (`c2s_get_gameinfo`) keys every song by the exact resource name the
 # chart request carries and gives its numeric MUSIC_ID per game mode. `music_names.json`
 # (`da.MUSIC_NAME_DIC`) is keyed by that id and holds the display title/composer, so the
 # pair resolves a resource name exactly — no fuzzy title matching needed. Built locally by
 # `server/_build_data.py`; when absent we fall back to title matching alone.
-MUSIC_LIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               'server', 'data', 'gameinfo.json')
+MUSIC_LIST_PATH = os.path.join(ROOT, 'server', 'data', 'gameinfo.json')
 
 # Some titles carry TextMeshPro rich-text markup, e.g.
 # 'Change My World <size=80%>(Going Mad Mix)</size>'. Strip it for matching and for tags.

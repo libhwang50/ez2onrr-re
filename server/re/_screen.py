@@ -37,11 +37,11 @@ the sweep's terminal is up.)
 
 Usage
 -----
-    python server/_screen.py --debug                 # features + annotated ROI map
-    python server/_screen.py --json                  # one feature vector
-    python server/_screen.py --collect SONG_SELECT   # save an anchor for a state
-    python server/_screen.py --watch                 # classify continuously
-    python server/_screen.py --list                  # show collected anchors
+    python server/re/_screen.py --debug                 # features + annotated ROI map
+    python server/re/_screen.py --json                  # one feature vector
+    python server/re/_screen.py --collect SONG_SELECT   # save an anchor for a state
+    python server/re/_screen.py --watch                 # classify continuously
+    python server/re/_screen.py --list                  # show collected anchors
 
 The game window is found with `xdotool search --name '^EZ2ON$'`; override with
 `--window-id N` or `EZ2_WINDOW_ID`.
@@ -56,7 +56,7 @@ import time
 import numpy as np
 from PIL import Image, ImageDraw
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 SHOTS = os.path.join(ROOT, 'server', 'shots')
 ANCHORS = os.path.join(ROOT, 'server', 'anchors')
 GAME_TITLE = os.environ.get('EZ2_GAME_TITLE', '^EZ2ON$')

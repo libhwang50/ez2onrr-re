@@ -10,18 +10,19 @@ the localised titles and the composer:
     MaxEye / HiddenBga            flags
 
 It regenerates in a few seconds from a running game, so it is not worth committing; the
-file is a cache that `dump_song.py` and `render_song.py` read.
+file is a cache that `ripper/dump_song.py` and `ripper/render_song.py` read.
 
 Usage
 -----
-    python3 harvest_metadata.py [--out music_names.json] [--gadget 127.0.0.1:27042]
+    python3 ripper/harvest_metadata.py [--out music_names.json] [--gadget 127.0.0.1:27042]
 """
 import argparse
 import json
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools'))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, 'tools'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -34,7 +35,7 @@ def main():
 
     import frida  # imported late so --help works without it
 
-    root = os.path.dirname(os.path.abspath(__file__))
+    root = ROOT
     driver = os.path.join(root, 'tools', 'build', '_musicdic_run.js')
     if not os.path.exists(driver):
         sys.exit('missing %s — run: bash tools/il2cpp/build_run.sh' % driver)

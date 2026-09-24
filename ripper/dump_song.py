@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-dump_song.py — snapshot every song you enter, automatically.
+ripper/dump_song.py — snapshot every song you enter, automatically.
 
 Attaches to the running game's Frida Gadget and watches `InGameCore.instance`.
 Each time a new chart is fetched it immediately (a) downloads the signed CDN
@@ -9,10 +9,10 @@ the keysound dictionary and the parsed note data.
 
 Usage
 -----
-    python3 dump_song.py                # watch, ~1 Hz, output under extracted_charts/
-    python3 dump_song.py --out dir --interval 0.4
-    python3 dump_song.py --read-instrument-dic   # opt into the risky cross-check read
-    python3 dump_song.py --no-patternjson        # skip the in-memory label sweep (diagnostic)
+    python3 ripper/dump_song.py                # watch, ~1 Hz, output under extracted_charts/
+    python3 ripper/dump_song.py --out dir --interval 0.4
+    python3 ripper/dump_song.py --read-instrument-dic   # opt into the risky cross-check read
+    python3 ripper/dump_song.py --no-patternjson        # skip the in-memory label sweep (diagnostic)
 
 Then just play songs; each one is captured on entry.  Read-only memory reads
 plus one HTTP GET per chart — no hooks, no guard pages.
@@ -277,7 +277,7 @@ def rpc(sc, name, *args, timeout=RPC_TIMEOUT):
 def label_for(ezi_url, root='.'):
     """Look up (song, keymode, levelmode, gamemode) for a chart by its .ezi URL.
 
-    Populated from the API traffic by `chart_labels.py`; the game's own
+    Populated from the API traffic by `ripper/chart_labels.py`; the game's own
     `patternFileInfo` is empty by the time a capture runs, so this is where the song name
     and difficulty come from.
     """
@@ -424,7 +424,7 @@ def label_cache_as_runtime(snap):
 
     Used by `--no-patternjson`, which skips the `rw-` range sweep that normally reads the
     game's `c2s_get_pattern_file` request JSON out of memory.  The cache is filled in from
-    mitmproxy captures by `chart_labels.py`, so it only covers songs already seen — when it
+    mitmproxy captures by `ripper/chart_labels.py`, so it only covers songs already seen — when it
     misses, naming falls back to `song_<hash>`.
     """
     lab = label_for(snap.get('ezi_url'), os.path.dirname(os.path.abspath(__file__))) or {}
@@ -711,7 +711,7 @@ def main():
         sys.stdout.reconfigure(line_buffering=True)   # unbuffered logs under redirection
     except Exception:
         pass
-    driver = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+    driver = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           "tools", "build", "_dumpsong_run.js")
     if not os.path.exists(driver):
         sys.exit("missing %s — run: bash tools/il2cpp/build_run.sh" % driver)

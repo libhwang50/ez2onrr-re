@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Decisive experiment: does `c2s_login.data` carry the session key/IV?
 
-Working hypothesis (AGENTS.md §3.1): the login `data` field is one 2048-bit
+Working hypothesis (§3.1): the login `data` field is one 2048-bit
 RSA block, encrypted under the build's baked-in `zf.publicKey`, whose plaintext
 is `key(32 ASCII hex) || iv(16 ASCII hex)` — i.e. the client's live API session
 key.  The private server owns a keypair and the drop-in `version.dll` rewrites
@@ -10,7 +10,7 @@ key.  The private server owns a keypair and the drop-in `version.dll` rewrites
 This addon does **only** that one measurement, so it is independent of the full
 private server and of the memory harvester:
 
-    mitmdump -s server/_login_probe.py
+    mitmdump -s server/re/_login_probe.py
 
 Install the patcher DLL first (`client/patcher/install.sh patcher`) and launch
 the game; its automatic login fires the request.  Every login is saved to
@@ -34,7 +34,7 @@ import urllib.parse
 
 from mitmproxy import http
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the server/ dir
 sys.path.insert(0, HERE)
 import _rsa  # noqa: E402
 

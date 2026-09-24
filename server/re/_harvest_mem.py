@@ -27,7 +27,7 @@ Cross-platform via `client/ez2on_patch.py` backends.  On Linux needs
 ptrace_scope to allow it (sudo, or `kernel.yama.ptrace_scope=0`); Windows is
 same-user.
 
-    python server/_harvest_mem.py [--interval 0.5] [--once]
+    python server/re/_harvest_mem.py [--interval 0.5] [--once]
 """
 import argparse
 import json
@@ -36,7 +36,7 @@ import re
 import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 sys.path.insert(0, os.path.join(ROOT, 'client'))
 import ez2on_patch as ep  # noqa: E402
 

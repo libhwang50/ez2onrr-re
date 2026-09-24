@@ -14,7 +14,7 @@ Run (two terminals):
 
     # 1. session-key bridge (Frida -> file), leave running — it re-attaches
     #    automatically when the game restarts:
-    .venv/bin/python server/_harvest_session.py
+    .venv/bin/python server/re/_harvest_session.py
 
     # 2. the server itself:
     mitmdump -q -s server/_pserver.py
@@ -22,7 +22,7 @@ Run (two terminals):
 Then start the game as usual. The real TCP battle/control channels (raw IPs)
 are untouched and keep working.
 
-Protocol notes (all verified against captures — see AGENTS.md §3.1):
+Protocol notes (all verified against captures — see §3.1):
   * API request  body: form-encoded; the `data` field holds
     urlenc(b64( magic[6]=d3ad76d3adb8 || AES-CBC-PKCS7(json) )). `c2s_login`
     additionally carries `ticket` and `identity` fields.
@@ -253,7 +253,7 @@ def try_login_rsa(body: bytes, addr: str | None = None):
     **Confirmed live 2026-09-24**: the login `data` field is one 2048-bit
     (256 B) RSA block whose plaintext is the client's login JSON
     `{"steamid","appid","version","key","iv"}` — so it carries the session
-    key/IV *and* the identity (AGENTS.md §3.1).  The drop-in patcher rewrites
+    key/IV *and* the identity (§3.1).  The drop-in patcher rewrites
     `zf.publicKey` to ours, so this recovers both with no Frida and no memory
     scan.  We always attempt the decode (the key rotates within a launch), bind
     the result in the session registry, and return that `Session`.  On failure
@@ -748,7 +748,7 @@ def ensure_key(timeout=20.0):
     if waited:
         _last_key_timeout = time.time()
         log('still no session key after waiting — is '
-            '.venv/bin/python server/_harvest_session.py running?')
+            '.venv/bin/python server/re/_harvest_session.py running?')
     return False
 
 
@@ -942,10 +942,10 @@ def capture_cdn_response(flow):
 
     Writes `extracted_charts/<song>/<km>/<diff>/cdn_ez_*.bin` / `cdn_ezi_*.bin`
     plus an `ident.json` carrying the URLs and the label, i.e. exactly the layout
-    `dump_song.py` produces and `_build_data.py` consumes — so a sweep run needs
+    `ripper/dump_song.py` produces and `_build_data.py` consumes — so a sweep run needs
     no separate pipeline, and the archive stays the single source of truth for
     what the server can serve. The decrypted `.ez`/`.ezi` are written too, so a
-    capture can be audited with `check_charts.py` like any other dump.
+    capture can be audited with `ripper/check_charts.py` like any other dump.
     """
     p = flow.request.path.split('?')[0]
     resp = flow.response
@@ -984,11 +984,11 @@ def capture_cdn_response(flow):
                 'labelSource': 'pattern request'})
     ident['label'] = lbl
     # Decrypt alongside, so a sweep capture is a complete dump like
-    # dump_song.py's. Each file stands alone (the key pair is chosen by
+    # ripper/dump_song.py's. Each file stands alone (the key pair is chosen by
     # validation), so there is no ordering requirement; failures are logged,
     # never swallowed - a silent ImportError here cost us a day.
     try:
-        sys.path.insert(0, ROOT)
+        sys.path.insert(0, os.path.join(ROOT, 'ripper'))
         import decrypt_chart
         for kind, out_name in (('ez', 'ez.ez'), ('ezi', 'ezi.ezi')):
             src = os.path.join(d, f'cdn_{kind}_cap.bin')
@@ -1255,10 +1255,10 @@ def respond_api(flow, obj, sess=None):
             _warned_no_key = True
             log('NO SESSION KEY for a client — cannot encrypt the API response. '
                 'Install the patcher version.dll (client/patcher), or start '
-                'the harvester: /usr/bin/python server/_harvest_mem.py.')
+                'the harvester: /usr/bin/python server/re/_harvest_mem.py.')
         flow.response = _flowshim.make(
             502,
-            b'private server: no session key - run server/_harvest_session.py',
+            b'private server: no session key - run server/re/_harvest_session.py',
             {'Content-Type': 'text/plain'})
         return
     flow.response = _flowshim.make(

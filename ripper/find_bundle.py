@@ -7,11 +7,11 @@ bundles. Supports searching, indexing, bulk decryption and on-demand decryption.
 
 Usage
 -----
-    python3 find_bundle.py rebind                 # find a song's bundles
-    python3 find_bundle.py --index                # rebuild song_index.json
-    python3 find_bundle.py rebind --decrypt       # decrypt the matches
-    python3 find_bundle.py --decrypt-all          # decrypt the first 5 bundles
-    python3 find_bundle.py --decrypt-all --limit 0  # decrypt every bundle
+    python3 ripper/find_bundle.py rebind                 # find a song's bundles
+    python3 ripper/find_bundle.py --index                # rebuild song_index.json
+    python3 ripper/find_bundle.py rebind --decrypt       # decrypt the matches
+    python3 ripper/find_bundle.py --decrypt-all          # decrypt the first 5 bundles
+    python3 ripper/find_bundle.py --decrypt-all --limit 0  # decrypt every bundle
 
 Decryption is a no-op on a bundle that is already plaintext, so re-running is safe.
 """
@@ -177,7 +177,7 @@ def main():
 
     if not args.query:
         print("[!] Please specify a song ID or keyword to search.")
-        print("Example: python3 find_bundle.py rebind")
+        print("Example: python3 ripper/find_bundle.py rebind")
         print(f"Total indexed bundles: {len(index)}")
         return
 

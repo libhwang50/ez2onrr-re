@@ -16,9 +16,9 @@ WORKDIR /app
 COPY server/requirements.txt server/requirements.txt
 RUN pip install --no-cache-dir -r server/requirements.txt
 
-# server code + the repo-root chart decryptor _pserver imports lazily
+# server code + the repo-root (ripper/) chart decryptor _pserver imports lazily
 COPY server/ server/
-COPY decrypt_chart.py decrypt_chart.py
+COPY ripper/decrypt_chart.py ripper/decrypt_chart.py
 
 # mount points (bind mounts overlay these); the archive is not baked in
 RUN mkdir -p /app/extracted_charts /app/server/data

@@ -2,7 +2,7 @@
 
 Tools for decrypting and extracting assets from **EZ2ON REBOOT: R** (Unity IL2CPP):
 keysounds, BGA videos, AssetBundles, and the chart payloads the game fetches
-from its CDN. The full technical write-up for AI agents (or humans) is in **`AGENTS.md`**.
+from its CDN. The technical write-up is in **`docs/`** (index), or as a brief in **`AGENTS.md`**.
 
 > **For archiving and personal educational use only.** All rights to the game, its
 > assets, audio, video and chart files belong to Neonovice / EZ2ON REBOOT: R.
@@ -14,9 +14,9 @@ from its CDN. The full technical write-up for AI agents (or humans) is in **`AGE
 | ✅ AssetBundles | first 1,024 bytes XOR-encrypted (`true_key_1024.bin`); everything after is plaintext Unity data |
 | ✅ Keysounds & BGA | extracted byte-exact from raw `TextAsset` / `VideoClip` objects |
 | ✅ API traffic | `game1-play.ez2game.co.kr` decrypted (AES-CBC, live session key) |
-| ✅ Charts & keysound index | **cracked** — `decrypt_chart.py` decrypts CDN payloads offline |
+| ✅ Charts & keysound index | **cracked** — `ripper/decrypt_chart.py` decrypts CDN payloads offline |
 | ✅ **Private server (standalone, multi-user)** | login → music list → profile → chart download → leaderboard, served locally or from a homeserver (`server/`, Docker included). Per-user progression + server-issued accounts; the client runs Frida-free via a pubkey-swap `version.dll` |
-| ✅ **Fully offline songs (confirmed in game)** | no official server contact at all: the CloudFront URL signature is never verified, and `bundleCryptKey` is minted server-side (it is AES-CBC of a client-side *constant* under the live session key — `AGENTS.md` §3.2). The only input from the running game is its session key, which it never sends |
+| ✅ **Fully offline songs (confirmed in game)** | no official server contact at all: the CloudFront URL signature is never verified, and `bundleCryptKey` is minted server-side (it is AES-CBC of a client-side *constant* under the live session key — §3.2). The only input from the running game is its session key, which it never sends |
 
 ## Private server
 
@@ -46,7 +46,7 @@ fallback for an unpatched client. For a public server the client runs a thin rel
 
 Songs load **fully offline** with no setup step: the server mints its own CDN URLs
 and `bundleCryptKey`, and forwards nothing. Chart matching is exact (the capture for
-the requested key mode and difficulty). Coverage is per song; `server/_coverage.py`
+the requested key mode and difficulty). Coverage is per song; `server/re/_coverage.py`
 reports it and `server/_build_data.py` regenerates the data from your own captures.
 
 Full guides: **`server/README.md`** (running, Docker, identity, the offline recipe)
@@ -68,7 +68,7 @@ the offline ripper are **UnityPy** (bundles) and **pycryptodome** (the ciphers);
 is optional (FLAC tags) and `frida` is only needed for the live-game reads.
 
 The game runs under Proton/Wine. **Frida is only needed for the *live-game read*
-tools** (`dump_song.py`, `harvest_key.py`, `harvest_metadata.py` and the
+tools** (`ripper/dump_song.py`, `ripper/harvest_key.py`, `ripper/harvest_metadata.py` and the
 `tools/il2cpp` drivers), which attach to a Frida Gadget on `127.0.0.1:27042`. The
 private server no longer needs it: the client-side `version.dll` patcher
 (`client/patcher/`) handles the session-key hand-off, and the memory harvester is
@@ -76,32 +76,32 @@ a fallback. `true_key_1024.bin` must sit in the repo root; derive it once with t
 game running and a song loaded:
 
 ```bash
-python3 harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 1024 B
+python3 ripper/harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 1024 B
 ```
 
 ## Tools
 
 | Tool | What it does |
 |---|---|
-| `extract_assets.py <song> [--bga]` | keysounds (FLAC/OGG), optionally BGA `.mp4` → `extracted_assets/<song_id>/` |
-| `find_bundle.py <keyword> [--decrypt\|--index]` | map bundle hashes → song codenames; build/refresh `song_index.json` |
-| `find_bundle.py --decrypt-all [--limit N]` | bulk-decrypt `.unity3d` bundles → `EZ2ON REBOOT R/decrypted_bundles/` |
-| `dump_song.py [--out DIR] [--interval S]` | **recommended** — per-song byte-exact CDN archive + in-memory snapshot |
-| `harvest_key.py [--out FILE]` | **derive `true_key_1024.bin`** from live memory, validated against the bundles on disk |
-| `decrypt_chart.py <cdn_*.bin> [--keypair …]` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
-| `decrypt_chart.py --archive [DIR …]` | **complete chart dumps** — decrypt every raw CDN capture in a tree (default `extracted_charts/`), writing `ez.ez` / `ezi.ezi` / `instrumentDic.json`; `--check` audits without writing |
-| `parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
-| `chart_labels.py` | decrypt captured API traffic → `chart_labels.json` (song name, key mode, difficulty) |
-| `check_charts.py` | **audit the captures** — flags a chart filed under the wrong key mode or difficulty, a missing artifact, or a record that disagrees with the chart on disk; exits non-zero |
-| `render_song.py <song_dir>` | **render the song** — plays every note's keysound at its scheduled time; `--assets auto` matches the keysounds by content, `--all` walks every captured chart |
-| `visualize_song.py <song_dir>` | **visualise the render** — an mp4 with the keysounds, lanes and progress overlaid on the BGA (or a plain background). Pass a song directory or `--all` to render every variant, `--skip-existing` to leave finished ones |
-| `song_meta.py` | look up a song's title/composer from the harvested metadata table |
-| `harvest_metadata.py` | dump the game's song metadata table → `music_names.json` |
+| `ripper/extract_assets.py <song> [--bga]` | keysounds (FLAC/OGG), optionally BGA `.mp4` → `extracted_assets/<song_id>/` |
+| `ripper/find_bundle.py <keyword> [--decrypt\|--index]` | map bundle hashes → song codenames; build/refresh `song_index.json` |
+| `ripper/find_bundle.py --decrypt-all [--limit N]` | bulk-decrypt `.unity3d` bundles → `EZ2ON REBOOT R/decrypted_bundles/` |
+| `ripper/dump_song.py [--out DIR] [--interval S]` | **recommended** — per-song byte-exact CDN archive + in-memory snapshot |
+| `ripper/harvest_key.py [--out FILE]` | **derive `true_key_1024.bin`** from live memory, validated against the bundles on disk |
+| `ripper/decrypt_chart.py <cdn_*.bin> [--keypair …]` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
+| `ripper/decrypt_chart.py --archive [DIR …]` | **complete chart dumps** — decrypt every raw CDN capture in a tree (default `extracted_charts/`), writing `ez.ez` / `ezi.ezi` / `instrumentDic.json`; `--check` audits without writing |
+| `ripper/parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
+| `ripper/chart_labels.py` | decrypt captured API traffic → `chart_labels.json` (song name, key mode, difficulty) |
+| `ripper/check_charts.py` | **audit the captures** — flags a chart filed under the wrong key mode or difficulty, a missing artifact, or a record that disagrees with the chart on disk; exits non-zero |
+| `ripper/render_song.py <song_dir>` | **render the song** — plays every note's keysound at its scheduled time; `--assets auto` matches the keysounds by content, `--all` walks every captured chart |
+| `ripper/visualize_song.py <song_dir>` | **visualise the render** — an mp4 with the keysounds, lanes and progress overlaid on the BGA (or a plain background). Pass a song directory or `--all` to render every variant, `--skip-existing` to leave finished ones |
+| `ripper/song_meta.py` | look up a song's title/composer from the harvested metadata table |
+| `ripper/harvest_metadata.py` | dump the game's song metadata table → `music_names.json` |
 
-`ez2lib.py` is the shared internal helper (key loading, bundle-header decryption, capture
+`ripper/ez2lib.py` is the shared internal helper (key loading, bundle-header decryption, capture
 labels) — it is imported by the tools above, not run directly.
 
-Then just **play songs**: `dump_song.py` captures each one on entry and writes
+Then just **play songs**: `ripper/dump_song.py` captures each one on entry and writes
 
 | file | contents |
 |---|---|
@@ -133,7 +133,7 @@ carries the same index → filename mapping. (This was added while chasing the f
 theory that it caused them; it did not — the hang was caught in a read that invokes nothing —
 but the unpacked-pointer risk is real, so it stays opt-in.)
 
-The captures are audited with `check_charts.py`, which flags a chart filed under the wrong
+The captures are audited with `ripper/check_charts.py`, which flags a chart filed under the wrong
 key mode or difficulty (the mislabelling bug filed a 4K chart under `5k/shd`), a missing
 artifact, or a record that disagrees with the chart on disk.
 
@@ -149,7 +149,7 @@ hijack has livelocked the main thread under Proton (100% CPU, gadget wedged, rea
 return), so it is off by default.
 
 **Kill a crashed game before relaunching.** A dead game's husk keeps the gadget's port
-(`127.0.0.1:27042`) bound, so a relaunched game's gadget cannot listen and `dump_song.py`
+(`127.0.0.1:27042`) bound, so a relaunched game's gadget cannot listen and `ripper/dump_song.py`
 attaches to the corpse. It checks the first read and says so, but
 `pgrep -af EZ2ON.exe` and kill any leftover first.
 
@@ -183,33 +183,33 @@ alternative key/IV pairs `svk`/`svl`, `svm`/`svn`, `svo`/`svp`). **Which pair a 
 is not recorded anywhere** — exactly one of them gives valid PKCS7 padding, so the
 decryptor tries all three and keeps the one that yields a real chart or index. It is *not*
 per-song: an earlier per-song-key theory came from `bundleCryptKey`, which is a session
-record and not the chart key. Full derivation in `AGENTS.md` §3.3.
+record and not the chart key. Full derivation in §3.3.
 
 ```bash
-# decrypt a captured payload (dump_song.py already writes these decrypted)
-python3 decrypt_chart.py --out extracted_charts/_decrypted extracted_charts/_live/*.ez
+# decrypt a captured payload (ripper/dump_song.py already writes these decrypted)
+python3 ripper/decrypt_chart.py --out extracted_charts/_decrypted extracted_charts/_live/*.ez
 
 # read it — header summary, full JSON, or a per-note listing
-python3 parse_chart.py extracted_charts/_decrypted/cur_conflict_ez_url.ez
-python3 parse_chart.py --json chart.json extracted_charts/_decrypted/cur_conflict_ez_url.ez
-python3 parse_chart.py --notes --ezi extracted_charts/_decrypted/cur_conflict_ezi_url.ezi \
+python3 ripper/parse_chart.py extracted_charts/_decrypted/cur_conflict_ez_url.ez
+python3 ripper/parse_chart.py --json chart.json extracted_charts/_decrypted/cur_conflict_ez_url.ez
+python3 ripper/parse_chart.py --notes --ezi extracted_charts/_decrypted/cur_conflict_ezi_url.ezi \
     extracted_charts/_decrypted/cur_conflict_ez_url.ez
 
 # every chart under a tree, decrypting captures as needed
-python3 parse_chart.py --dir extracted_charts
-python3 parse_chart.py --dir extracted_charts --json archive.json
+python3 ripper/parse_chart.py --dir extracted_charts
+python3 ripper/parse_chart.py --dir extracted_charts --json archive.json
 
 # which keysound is the full song? (track 22's note — the filename varies)
-python3 parse_chart.py --backing --ezi song/ezi.ezi song/ez.ez
+python3 ripper/parse_chart.py --backing --ezi song/ezi.ezi song/ez.ez
 ```
 
 ### Visualising a render
 
 ```bash
-python3 visualize_song.py extracted_charts/changa2            # -> visualizations/changa2.mp4
-python3 visualize_song.py <song> --no-bga --size 1920x1080 --fps 60
-python3 visualize_song.py extracted_charts/ultimatum         # bulk: every variant under it
-python3 visualize_song.py --all --skip-existing              # every chart, skipping ones done
+python3 ripper/visualize_song.py extracted_charts/changa2            # -> visualizations/changa2.mp4
+python3 ripper/visualize_song.py <song> --no-bga --size 1920x1080 --fps 60
+python3 ripper/visualize_song.py extracted_charts/ultimatum         # bulk: every variant under it
+python3 ripper/visualize_song.py --all --skip-existing              # every chart, skipping ones done
 ```
 
 A video of the render. `--mode default` shows the key mode + difficulty, a lane row that
@@ -255,7 +255,7 @@ the rendered audio in one pass. Anything ffmpeg can do beyond the built-in flags
 with `--ffmpeg-args` (output options) and `--ffmpeg-global-args` (before the first input):
 
 ```bash
-python3 visualize_song.py <song> \
+python3 ripper/visualize_song.py <song> \
     --ffmpeg-args='-tune animation -movflags +faststart -pix_fmt yuv444p'
 ```
 
@@ -266,9 +266,9 @@ To change the encoder use `--encoder`, which also drops the x264-only `-crf`/`-p
 encoders that do not take them:
 
 ```bash
-python3 visualize_song.py <song> --encoder libx265                       # HEVC
-python3 visualize_song.py <song> --encoder libsvtav1 --ffmpeg-args='-preset 8 -crf 30'
-python3 visualize_song.py <song> --encoder h264_nvenc --ffmpeg-args='-preset p4 -cq 20 -rc vbr'
+python3 ripper/visualize_song.py <song> --encoder libx265                       # HEVC
+python3 ripper/visualize_song.py <song> --encoder libsvtav1 --ffmpeg-args='-preset 8 -crf 30'
+python3 ripper/visualize_song.py <song> --encoder h264_nvenc --ffmpeg-args='-preset p4 -cq 20 -rc vbr'
 ```
 
 Putting `-c:v` in `--ffmpeg-args` instead mostly works, since it lands after the built-in flag —
@@ -278,16 +278,16 @@ switches the overlay's output format to match, so the chroma is not subsampled a
 upsampled again. Rendering runs at roughly 2x realtime at 1280x720/30fps —
 `--fps`, `--size` and `--until` trade that off.
 
-`parse_chart.py` also accepts an encrypted payload straight from the CDN, so
-`python3 parse_chart.py extracted_charts/_live/cur_conflict_ez_url.ez` works too.
+`ripper/parse_chart.py` also accepts an encrypted payload straight from the CDN, so
+`python3 ripper/parse_chart.py extracted_charts/_live/cur_conflict_ez_url.ez` works too.
 
 > **Where is the full song?** It does not exist as a file. **The song is a render of the
 > chart**: every type-1 note, on every track, triggers its keysound at its scheduled time.
 > The keysound triggered once by **track 22** (`00-MR.flac`, `MR.flac`, or for
 > `ae_illusion` `mrt22Fix.flac`) is **not** the full song — it holds only the instruments
 > too long or too incidental to sample as keysounds (for Rebind, just ambience).
-> `parse_chart.py --backing` finds that layer, and `render_song.py` builds the song. See
-> `AGENTS.md` §3.5.
+> `ripper/parse_chart.py --backing` finds that layer, and `ripper/render_song.py` builds the song. See
+> §3.5.
 >
 > **One chart per song is enough.** Difficulty and key mode do not change the song — they
 > move notes between the player's lanes and the auto-played tracks. PUPA 5K HD and 5K NM
@@ -296,13 +296,13 @@ upsampled again. Rendering runs at roughly 2x realtime at 1280x720/30fps —
 >
 > **The Lounge harvests charts without gameplay.** Watching a BGA in the in-game Lounge
 > goes through the same download flow and serves the song's **4K EZ** chart — so browse the
-> Lounge and `dump_song.py` collects each song's chart, which is all the renderer needs.
+> Lounge and `ripper/dump_song.py` collects each song's chart, which is all the renderer needs.
 
 ### Rendering a song
 
 ```bash
-python3 render_song.py extracted_charts/<song> --assets auto -o song.flac
-python3 render_song.py --all -o rendered_songs/        # every captured chart
+python3 ripper/render_song.py extracted_charts/<song> --assets auto -o song.flac
+python3 ripper/render_song.py --all -o rendered_songs/        # every captured chart
 ```
 
 **Verified by ear against in-game gameplay — reported as an exact match.** Long notes need
@@ -328,20 +328,20 @@ The safe pattern is read-only memory reads, managed calls on the game's main thr
 ## Repository layout
 
 ```
-AGENTS.md            full technical report
+AGENTS.md / docs/    project brief + full technical report
 README.md
 requirements.txt     Python deps for the ripper + live tools (see Setup)
 ruff.toml            lint gate
-true_key_1024.bin    master bundle XOR key (derive with harvest_key.py)
+true_key_1024.bin    master bundle XOR key (derive with ripper/harvest_key.py)
 song_index.json      bundle-hash → song index
-ez2lib.py            shared helpers — imported by the tools, not run directly
+ripper/ez2lib.py            shared helpers — imported by the tools, not run directly
 Dockerfile  docker-compose.yml  deploy/Caddyfile   standalone server container
 
-extract_assets.py  find_bundle.py                  bundles → assets / index
-dump_song.py  harvest_key.py                       live-game reads over the Frida Gadget
-decrypt_chart.py  parse_chart.py  check_charts.py  chart ciphers, readers and audits
-chart_labels.py  harvest_metadata.py  song_meta.py naming and metadata
-render_song.py  visualize_song.py                  render and visualise a song
+ripper/extract_assets.py  ripper/find_bundle.py                  bundles → assets / index
+ripper/dump_song.py  ripper/harvest_key.py                       live-game reads over the Frida Gadget
+ripper/decrypt_chart.py  ripper/parse_chart.py  ripper/check_charts.py  chart ciphers, readers and audits
+ripper/chart_labels.py  ripper/harvest_metadata.py  ripper/song_meta.py naming and metadata
+ripper/render_song.py  ripper/visualize_song.py                  render and visualise a song
 server/              private server + capture automation — see server/README.md
   app.py _core.py _flowshim.py                     standalone HTTP(S)/ASGI server
   _pserver.py _relay.py _fake_client.py            game logic, client relay, test client

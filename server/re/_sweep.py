@@ -5,24 +5,24 @@ The *server log is the sensor*: every `c2s_get_pattern_file` request names the
 song, keymode, levelmode and gamemode, so the sweep never has to see the screen.
 It presses keys, waits for a request it has not seen before, and moves on.
 
-    python server/_sweep.py --watch            # just tail the log (no input)
-    python server/_sweep.py --dry-run          # show bindings + plan, send nothing
-    python server/_sweep.py --calibrate --write # DEDUCE the keys from the request JSON
-    python server/_sweep.py --limit 50         # capture 50 song entries
-    python server/_sweep.py --mode STANDARD [--from BASIC]   # step to that card first
-    python server/_sweep.py --variant 5K:HD    # capture every song at 5K HD
-    python server/_sweep.py --keymodes 4K,5K --difficulties EZ,HD   # the cross product
-    python server/_sweep.py --variants         # every key mode x every difficulty
-    python server/_sweep.py --no-smart         # do not skip variants already dumped
-    python server/_sweep.py --shot             # save a screenshot before each entry
-    python server/_sweep.py --state            # classify the current screen and exit
-    python server/_sweep.py --no-screen        # disable the screen classifier
-    python server/_sweep.py --no-verify        # do not confirm the song select
-    python server/_sweep.py --no-stop-on-wrap  # ignore the wrap/end checks
+    python server/re/_sweep.py --watch            # just tail the log (no input)
+    python server/re/_sweep.py --dry-run          # show bindings + plan, send nothing
+    python server/re/_sweep.py --calibrate --write # DEDUCE the keys from the request JSON
+    python server/re/_sweep.py --limit 50         # capture 50 song entries
+    python server/re/_sweep.py --mode STANDARD [--from BASIC]   # step to that card first
+    python server/re/_sweep.py --variant 5K:HD    # capture every song at 5K HD
+    python server/re/_sweep.py --keymodes 4K,5K --difficulties EZ,HD   # the cross product
+    python server/re/_sweep.py --variants         # every key mode x every difficulty
+    python server/re/_sweep.py --no-smart         # do not skip variants already dumped
+    python server/re/_sweep.py --shot             # save a screenshot before each entry
+    python server/re/_sweep.py --state            # classify the current screen and exit
+    python server/re/_sweep.py --no-screen        # disable the screen classifier
+    python server/re/_sweep.py --no-verify        # do not confirm the song select
+    python server/re/_sweep.py --no-stop-on-wrap  # ignore the wrap/end checks
 
 The server log is the primary sensor (a request names song/keymode/levelmode/
 gamemode, and CDN OK/HIT says whether it was captured). A screenshot classifier
-(`server/_screen.py`) is the *safety* sensor: on a missed request it tells whether
+(`server/re/_screen.py`) is the *safety* sensor: on a missed request it tells whether
 the game is still in the previous song (pause menu safe), back at song select, or
 at the main menu — instead of guessing whether ESC is safe. It also waits out
 LOADING/TRANSITION instead of counting a slow load as a miss, confirms the song
@@ -35,10 +35,10 @@ safe rather than after a fixed delay.
 Capture run (one entry per song is enough — the server serves a song's chart for
 any of its keymodes, and the .ezi is per-song):
 
-    python server/_exp.py harvest            # hybrid + chart exact + minted token
-    python server/_sweep.py --calibrate      # once, to learn the keys
-    python server/_sweep.py --limit 600      # walk the list
-    python server/_build_data.py && python server/_coverage.py
+    python server/re/_exp.py harvest            # hybrid + chart exact + minted token
+    python server/re/_sweep.py --calibrate      # once, to learn the keys
+    python server/re/_sweep.py --limit 600      # walk the list
+    python server/_build_data.py && python server/re/_coverage.py
 
 Safety: keys go to the FOCUSED window, so every input is preceded by a check that
 the focused window really is the game (`niri msg focused-window`). Without the
@@ -51,7 +51,7 @@ import subprocess
 import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # for _screen
 DATA = os.path.join(ROOT, 'server', 'data')
 LOG = os.path.join(ROOT, 'server', 'pserver.log')
@@ -492,7 +492,7 @@ GAMEMODE = {'BASIC': '1', 'STANDARD': '2'}
 # Variant axes, in selection order.
 KEYMODES = ['4K', '5K', '6K', '8K']   # Tab order (wraps: 4K -> 5K -> 6K -> 8K -> 4K)
 DIFFS = ['EZ', 'NM', 'HD', 'SHD']     # Left/Right order (Left clamps, does not wrap)
-# API labels -> index (AGENTS.md 3.5: keymode 1/2/3 = 4K/5K/6K, 4 assumed 8K;
+# API labels -> index (§3.5: keymode 1/2/3 = 4K/5K/6K, 4 assumed 8K;
 # levelmode 1=EZ, 2=NM, 3=HD, 4=SHD).
 API_KEYMODE = {'1': 0, '2': 1, '3': 2, '4': 3}
 API_DIFF = {'1': 0, '2': 1, '3': 2, '4': 3}
@@ -923,7 +923,7 @@ def sweep(limit, variants, shot, dry, mode=None):
     print(f'\ndone: {captured} captured, {skipped} already known, '
           f'{nochart} asked-but-no-chart (still missing), {failed} with no request')
     print(f'progress journal: {os.path.relpath(PROGRESS, ROOT)}')
-    print('next: python server/_build_data.py && python server/_coverage.py')
+    print('next: python server/_build_data.py && python server/re/_coverage.py')
     return 0
 
 

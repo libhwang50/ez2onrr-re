@@ -5,17 +5,17 @@ read it.
 Why: this is where the client hands its session key to the *battle* server. The
 `zf` literals `[9903]sendKeyDataStr:`, `sendaes,`, `[AES 키 전송 완료]` and
 `s2c_aes_connect_completed` describe the exchange, and the packet framing is
-`aes,<command>[,<args>]` (AGENTS.md §3.1). Catching `sendaes,` would show how the
+`aes,<command>[,<args>]` (§3.1). Catching `sendaes,` would show how the
 key travels on this channel and whether it is RSA-wrapped (compare with
 `c2s_login.data`, the API server's copy). Earlier notes here called this the
 "server-side audit" of `bundleCryptKey`; that reading is superseded — the bCK is
-validated **locally** (AGENTS.md §3.2).
+validated **locally** (§3.2).
 
 The address is served by OUR rank stub (`get_battle_server_ip`), so redirect it
 here with:
 
     echo '127.0.0.1:9902' > server/data/battle_server.txt
-    python3 server/_stub9902.py 9902
+    python3 server/re/_stub9902.py 9902
 
 then relaunch the game, log in (private server) and load a chart. Everything the
 client sends is logged to server/stub9902.log as hex + printable ASCII, and any
@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 LOG = os.path.join(ROOT, 'server', 'stub9902.log')
 KEYFILE = os.path.join(ROOT, 'server', 'session_key.json')
 

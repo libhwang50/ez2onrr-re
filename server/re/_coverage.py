@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Chart coverage audit for the private server.
 
-    python server/_coverage.py            # summary + missing songs
-    python server/_coverage.py --queue    # also write the capture queue
-    python server/_coverage.py --log      # what the game has asked for so far
-    python server/_coverage.py --json     # machine-readable
+    python server/re/_coverage.py            # summary + missing songs
+    python server/re/_coverage.py --queue    # also write the capture queue
+    python server/re/_coverage.py --log      # what the game has asked for so far
+    python server/re/_coverage.py --json     # machine-readable
 
 Coverage is counted **per song, not per variant**. The client never chooses the
 CDN path — it downloads whatever URL the server hands it — so one captured
@@ -22,7 +22,7 @@ import os
 import re
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 DATA = os.path.join(ROOT, 'server', 'data')
 LOG = os.path.join(ROOT, 'server', 'pserver.log')
 QUEUE = os.path.join(DATA, 'coverage_queue.json')

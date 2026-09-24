@@ -3,7 +3,7 @@
 
 The private server keys each session off the SteamID inside the RSA-wrapped
 login JSON, so a fake client only has to reproduce four things (all of which the
-real client does, see AGENTS.md §3.1):
+real client does, see §3.1):
 
   1. generate a 32-hex key / 16-hex IV,
   2. RSA-encrypt `{"steamid","appid","version","key","iv"}` under the server's
