@@ -181,7 +181,27 @@ Bodies are `data=<base64>` (request) / raw base64 (response) around **AES-CBC / 
 |---|---|
 | `zf.wy` = `S2C_GET_PATTERN_FILE` | `final_url_ez`@0x10, `final_url_ezi`@0x18, **`bundleCryptKey`**@0x20, `result`@0x28 |
 | `zf.wx` = `C2S_GET_PATTERN_FILE` | `appid`, `musicresourcename`, `keymode`, `levelmode`, `gamemode` |
-| `zf.wz` = `C2S_GET_USERINFO` | `appid`, `steamId:UInt64[]` — the leaderboard profile fetch; 10 ids observed in one request. The client **crashes with a JSON parse error** (popup → exit) when the response is a single-`memberinfo` object, so `S2C_GET_USERINFO` almost certainly carries a **list** of profiles (shape still uncaptured) |
+| `zf.wz` = `C2S_GET_USERINFO` | `appid`, `steamId:UInt64[]` — the leaderboard profile fetch; 10 ids observed in one request |
+
+**The DTO field sets are recoverable without decryption, from `global-metadata.dat`.**
+Its string table contains plaintext field names grouped by class (classes are obfuscated,
+fields are not), so `strings` over a window around a known field names the whole struct.
+Mined 2026-09-24:
+
+| DTO | Field set |
+|---|---|
+| `S2C_GET_USERINFO` | `memberinfo` (list), `result`; each **entry = `STEAM_ID`, `LEVEL`, `RATING` only** — *not* the full `c2s_get_myinfo` `memberinfo` struct. There is **no nickname field anywhere** in the client (`grep -a NICK global-metadata.dat` is empty) |
+| `C2S_SET_GAME_CLEAR` | `appid`, `musicid`, `keymode`, `levelmode`, `lamp`, `gamemode`, `log_data` |
+| `S2C_SET_GAME_CLEAR` | `level`, `exp`, `nextExp`, `result` — explains the 48-byte (64-char b64) response exactly |
+| `S2C_GET_MYINFO` | `memberinfo`, `config`, `clearlist`, `course_clearlist`, `result`; `memberinfo` = `MEMBER_ID STATUS PLATE ACC_DATE REG_DATA ROUND LEVEL EXP NEXT_EXP RATING`; each `clearlist` entry = `MUSIC_ID` + `LAMP SCORE RATE COMBO KOOL_JUDGEMENT COOL_JUDGEMENT GOOD_JUDGEMENT MISS_JUDGEMENT FAIL_JUDGEMENT PLAY_COUNT` |
+| `loungeloglist` | `appid`, `loungeloglist` (list), `result`; entry = `SEQ`, `MEMBER_ID`, `STEAM_ID`, `INQUIRY_CODE`, `MUSIC_ID`, `GAME_MODE`, `LOG_DATA` |
+
+* **`clearlist` arrays are 16-wide and indexed keymode-major:** `idx = (keymode − 1) * 4
+  + (levelmode − 1)` with `keymode` 1=4K, 2=5K, 3=6K (the API's 1-based key mode) and
+  `levelmode` 1=EZ…4=SHD. Verified on the real `server/data/myinfo.json`: 156 of 184
+  entries carry only index 3 (4K SHD), and multi-variant entries are natural pairs like
+  `[3,7]` (4K+5K SHD) and `[3,6]` (4K SHD + 5K HD). This is the per-user progression
+  model the multi-user store has to reproduce.
 
 * **`bundleCryptKey` — SOLVED.** It is **not a key**: it is
   `base64( AES-256-CBC/PKCS7( 32-byte constant ) )` under the client's **own live session

@@ -768,7 +768,17 @@ def handle_api(flow: http.HTTPFlow):
         # client accepted {"result":1}-shaped guesses so far (unvalidated — the
         # validated response in the first test actually came from upstream).
         cfg = os.path.join(DATA, 'set_game_clear.json')
-        tpl = json.load(open(cfg)) if os.path.exists(cfg) else {'result': 1}
+        if os.path.exists(cfg):
+            tpl = json.load(open(cfg))
+        else:
+            # real DTO (see the metadata-mined catalog above): the client reads
+            # level/exp/nextExp from this response, so a bare {"result":1} is
+            # the wrong shape even though it once appeared to work.
+            prof = get_profile()
+            tpl = {'level': int(prof.get('LEVEL', 1)),
+                   'exp': int(prof.get('EXP', 0)),
+                   'nextExp': int(prof.get('NEXT_EXP', 0)),
+                   'result': 1}
         return respond_api(flow, tpl, sess)
 
     log(f'UNKNOWN api endpoint {path} — returning generic result')
@@ -1019,9 +1029,16 @@ def userinfo_response(req_json):
     """c2s_get_userinfo: {"appid":...,"steamId":[UInt64,...]} — the leaderboard
     profile fetch (up to ~10 players at once).
 
-    The real response shape is not yet captured; the client crashed on a
-    single-memberinfo body, so serve a LIST with one entry per requested
-    steamId. Tune data/userinfo_entry.json once a real capture lands."""
+    **Shape solved from the IL2CPP metadata** (2026-09-24). The string table
+    groups the DTOs by class, and `c2s_get_userinfo` is
+    `{memberinfo: [{STEAM_ID, LEVEL, RATING}, …], result}` — the entry is *not*
+    the full `memberinfo` struct of `c2s_get_myinfo`. There is no nickname field
+    anywhere in the client (a plain `grep NICK` over global-metadata.dat is
+    empty), so the earlier guess carried invented fields. The official capture
+    (`mitm_parsed/replay_0922`) cannot be decrypted — the session key rotated and
+    was never kept — but the field set is not a guess any more.
+
+    `data/userinfo_entry.json` may override the per-entry template."""
     try:
         req = json.loads(req_json) if req_json else {}
     except Exception:
@@ -1031,18 +1048,15 @@ def userinfo_response(req_json):
         ids = [ids]
     tpl_p = os.path.join(DATA, 'userinfo_entry.json')
     tpl = json.load(open(tpl_p)) if os.path.exists(tpl_p) else {
-        'MEMBER_ID': 0, 'STATUS': 0, 'PLATE': 1,
-        'ACC_DATE': '2026-01-01T00:00:00', 'REG_DATE': '2026-01-01T00:00:00',
-        'ROUND': 0, 'LEVEL': 98, 'EXP': 0, 'NEXT_EXP': 0, 'RATING': 4.978,
-        'NICKNAME': 'player', 'STEAM_ID': '0',
+        'STEAM_ID': '0', 'LEVEL': 1, 'RATING': 0.0,
     }
     entries = []
     for sid in ids:
         e = dict(tpl)
         e['STEAM_ID'] = str(sid)
-        e['NICKNAME'] = f'player_{str(sid)[-4:]}'
         entries.append(e)
-    log(f'get_userinfo: {len(entries)} profile(s) served (shape = GUESS, see README)')
+    log(f'get_userinfo: {len(entries)} profile(s) served '
+        f'(entry = STEAM_ID/LEVEL/RATING)')
     return {'memberinfo': entries, 'result': 1}
 
 

@@ -55,9 +55,10 @@ a mixed session came from the real servers — with a clean run they come from
 
 Validated in-game (one session): login → music list → profile → Finite 5K HD
 chart + `.ezi` served from cache → played → score upload logged. The leaderboard
-profile fetch (`c2s_get_userinfo`, a list of up to ~10 SteamIDs) is the one
-remaining shape guess — a wrong body makes the client pop a JSON parse error and
-exit; tune `data/userinfo_entry.json` if that appears.
+profile fetch (`c2s_get_userinfo`) serves `{memberinfo:[{STEAM_ID,LEVEL,RATING}],
+result}` — the DTO field set was recovered from `global-metadata.dat` when the
+account was lost and the official capture could no longer be decrypted (the
+session key had rotated away); see AGENTS.md §3.2.
 
 ## Files
 
@@ -72,14 +73,14 @@ exit; tune `data/userinfo_entry.json` if that appears.
 | `data/login.json` | `c2s_login` response template (real, captured) |
 | `data/myinfo.json` | `c2s_get_myinfo` template — `clearlist`, `memberinfo`, … |
 | `data/gameinfo.json` | `c2s_get_gameinfo` template — the 1,201-entry music list |
-| `data/profile.json` | your member-field overrides (`NICKNAME`, `LEVEL`, …). Note: the in-game rating shown per key mode is **computed client-side** from your play data — `RATING` here only sets the myinfo field, not the displayed per-mode values |
+| `data/profile.json` | your member-field overrides (`LEVEL`, `EXP`, …), deep-merged into the `c2s_get_myinfo` template. The real `memberinfo` DTO has **no nickname field** — the name shown in game and sent in `plf…` is the Steam persona name from Steamworks. The in-game rating shown per key mode is **computed client-side** from your play data — `RATING` here only sets the myinfo field |
 | `data/charts.json` | (song, keymode, levelmode) → CDN paths, 47 variants / 15 songs |
 | `data/cdn_paths.json` | CDN path → local ciphertext file (126 paths) |
 | `data/rank_sample.csv` | fallback leaderboard body when no exact capture matches |
 | `data/rank_csv/` | real leaderboard CSVs per query (Top100 / MyRange of captured songs), served exactly |
-| `data/userinfo_entry.json` | one leaderboard-profile entry, cloned per requested SteamID (shape = best guess until a real capture) |
+| `data/userinfo_entry.json` | optional override of one `c2s_get_userinfo` entry; the shape is **solved** — `{STEAM_ID, LEVEL, RATING}` (AGENTS.md §3.2), there is no nickname field |
 | `data/bundleCryptKey.txt` | value served as `bundleCryptKey` when no knob overrides it |
-| `data/set_game_clear.json` | optional override for `c2s_set_game_clear` (default `{"result":1}`) |
+| `data/set_game_clear.json` | optional override for `c2s_set_game_clear` (real shape `{level, exp, nextExp, result}`; the built-in fallback uses `profile.json`) |
 | `data/mutate_urls.txt` / `data/mutate_bck.txt` | the experiment knobs written by `_exp.py` (read per request) |
 | `data/passthrough_endpoints.txt` | endpoints forwarded upstream (hybrid mode), read per request |
 | `data/last_upstream_*.json` / `…​.full.json` | the last decrypted upstream response (shortened / with real URLs+key) |
@@ -504,13 +505,12 @@ battle server's copy. See AGENTS.md §3.1 and §7.6.
 
 ## Known simplifications / next steps
 
-* `c2s_set_game_clear` response is a guess (`{"result":1}`); the real body is
-  48 B of ciphertext — capture one session against the **real** servers with the
-  bridge running (plain `mitmdump -w`, addon disabled) to fill
-  `data/set_game_clear.json`.
-* `c2s_get_userinfo` serves a **guessed list shape** (`data/userinfo_entry.json`
-  cloned per requested SteamID); a wrong shape makes the client pop its JSON
-  parse error — screenshot it if you see it, it names the expected type.
+* `c2s_set_game_clear` and `c2s_get_userinfo` **shapes are known now** (AGENTS.md
+  §3.2): the former is `{level, exp, nextExp, result}` (which is exactly the 48-byte
+  / 64-char captured body), the latter `{memberinfo:[{STEAM_ID, LEVEL, RATING}],
+  result}`. The missing part is *values*, not shape: `LEVEL`/`RATING` are placeholders
+  until the per-user store lands, and the official bytes can no longer be decrypted
+  (the session key rotated and was never kept).
 * **The session key is Frida-free, and the login hand-off is solved.** The
   `version.dll` patcher rewrites `zf.publicKey` in-process, so the login block's RSA
   plaintext is the client's `{steamid,appid,version,key,iv}` JSON; `_pserver.py`
