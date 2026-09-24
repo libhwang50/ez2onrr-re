@@ -247,6 +247,50 @@ Notes:
 * A few songs' CDN paths were recorded from mitm captures under `mitm_parsed/`;
   mount `./mitm_parsed:/app/mitm_parsed:ro` if you serve them.
 
+### Bootstrapping `server/data` (first run)
+
+The image carries no data, and a **fresh/empty mount can answer `/healthz` and
+rank lookups but cannot log anyone in** — login needs the captured response
+templates.  Build `server/data` where the captures live, then copy it over:
+
+```bash
+# on the machine that has mitm_parsed/ + extracted_charts/
+python server/_rsa.py init                       # once per deployment (see invariant)
+EZ2_API_SESSION_KEY=<32> EZ2_API_SESSION_IV=<16> python server/_build_data.py
+rsync -av server/data/       homeserver:/path/to/repo/server/data/
+rsync -av extracted_charts/  homeserver:/path/to/repo/extracted_charts/
+```
+
+| file | needed for | from |
+|---|---|---|
+| `login.json` `myinfo.json` `gameinfo.json` | login / profile / the 1,201-song list | `_build_data.py` |
+| `charts.json` `cdn_paths.json` + `extracted_charts/` | loading songs | captures |
+| `server_rsa_private.pem` / `server_rsa_public.xml` | the login key hand-off | `_rsa.py init` |
+| `profile.json` | display overrides (optional) | edit |
+| `rank_csv/` | captured leaderboards (fallback only) | captures |
+| `store.db` `auth.json` | progression / identity | generated at runtime |
+
+**RSA invariant:** the keypair is generated once and must be identical in three
+places — `server/data/server_rsa_private.pem` on the server, `server/data/` on the
+machine running `_fake_client.py --remote`, and the public key compiled into the
+client `version.dll` (`client/patcher/build.sh` reads
+`server/data/server_rsa_public.xml`).  Generate it first, build the DLL from that
+same file, and never regenerate it after handing the DLL out.
+
+**Verify the deployment** — no game and no local proxy; talk to the server
+directly:
+
+```bash
+curl https://ez2.example.com/healthz
+curl -H 'X-EZ2-Host: game1-rank.ez2game.co.kr' \
+     'https://ez2.example.com/?data=get_battle_server_ip'
+# full login -> myinfo -> play -> leaderboard against the deployed server:
+python server/_fake_client.py 76561190000000001 --remote https://ez2.example.com
+```
+
+`--remote` needs the *same* keypair locally (it RSA-encrypts the login with
+`server/data/server_rsa_private.pem`), which holds if you built the data above.
+
 ## Identity & accounts (for a public server)
 
 The **SteamID is not a credential**.  A third party cannot verify the Steam auth
@@ -304,8 +348,9 @@ python3 server/_fake_client.py 76561190000000002 --play --score 1012345 --leader
 
 `_fake_client.py` speaks the real wire protocol (`data=<b64( d3ad76d3adb8 ||
 AES )>`, RSA-wrapped login), so it also serves as the protocol test harness for
-the public-server auth work.  In `token` mode, pass the account's token and the
-id the server assigned:
+the public-server auth work.  To test a **deployed** server with no local proxy,
+use `--remote` (see “Bootstrapping `server/data`”).  In `token` mode, pass the
+account's token and the id the server assigned:
 
 ```bash
 TOKEN=$(python3 server/_accounts.py issue --name Alice | awk -F': ' '/token/{print $2}')

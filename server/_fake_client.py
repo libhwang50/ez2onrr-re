@@ -44,6 +44,10 @@ RANK_HOST = 'game1-rank.ez2game.co.kr'
 APPID = '1477590'
 MAGIC = bytes.fromhex('d3ad76d3adb8')
 PROXY = os.environ.get('PSERVER_PROXY', 'http://127.0.0.1:8080')
+# Direct-to-deployment mode: POST straight at a standalone server (server/app.py)
+# with an X-EZ2-Host header, no local mitmproxy.  PSERVER_REMOTE=https://ez2.example.com
+REMOTE = (os.environ.get('PSERVER_REMOTE') or '').rstrip('/')
+INSECURE = os.environ.get('PSERVER_INSECURE', '') not in ('', '0', 'false', 'False')
 
 
 def _pkcs7(b: bytes) -> bytes:
@@ -65,24 +69,37 @@ def _aes_dec(ct: bytes, key: bytes, iv: bytes) -> bytes:
     return _unpad(c.update(ct) + c.finalize())
 
 
+def _opener(host, headers):
+    """An opener for the direct remote, or the local mitmproxy."""
+    if REMOTE:
+        headers['X-EZ2-Host'] = host
+        url = REMOTE + '{path}'
+        if INSECURE:
+            import ssl
+            return url, urllib.request.build_opener(
+                urllib.request.HTTPSHandler(
+                    context=ssl._create_unverified_context()))
+        return url, urllib.request.build_opener()
+    return f'http://{host}' + '{path}', urllib.request.build_opener(
+        urllib.request.ProxyHandler({'http': PROXY, 'https': PROXY}))
+
+
 def _post(host: str, path: str, form: dict, token: str = None) -> bytes:
     body = urllib.parse.urlencode(form).encode()
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
     if token:
         headers['X-EZ2-Token'] = token
-    req = urllib.request.Request(f'http://{host}{path}', data=body, headers=headers)
-    op = urllib.request.build_opener(
-        urllib.request.ProxyHandler({'http': PROXY, 'https': PROXY}))
-    with op.open(req, timeout=10) as r:
+    url, op = _opener(host, headers)
+    req = urllib.request.Request(url.format(path=path), data=body, headers=headers)
+    with op.open(req, timeout=15) as r:
         return r.read()
 
 
 def _get(host: str, path: str, token: str = None) -> bytes:
     headers = {'X-EZ2-Token': token} if token else {}
-    req = urllib.request.Request(f'http://{host}{path}', headers=headers)
-    op = urllib.request.build_opener(
-        urllib.request.ProxyHandler({'http': PROXY, 'https': PROXY}))
-    with op.open(req, timeout=10) as r:
+    url, op = _opener(host, headers)
+    req = urllib.request.Request(url.format(path=path), headers=headers)
+    with op.open(req, timeout=15) as r:
         return r.read()
 
 
@@ -163,9 +180,20 @@ def main():
     ap.add_argument('--score', type=int, default=0)
     ap.add_argument('--token', default=os.environ.get('EZ2_TOKEN'),
                     help='server account token (or $EZ2_TOKEN); omitted = guest/open')
+    ap.add_argument('--remote', default=None,
+                    help='standalone server base URL (default $PSERVER_REMOTE); '
+                         'when set, talk to it directly instead of a local proxy')
+    ap.add_argument('--insecure', action='store_true',
+                    help='skip TLS verification of --remote')
     ap.add_argument('--play', action='store_true', help='record a clear')
     ap.add_argument('--leaderboard', action='store_true')
     args = ap.parse_args()
+
+    global REMOTE, INSECURE
+    if args.remote:
+        REMOTE = args.remote.rstrip('/')
+    if args.insecure:
+        INSECURE = True
 
     c = FakeClient(args.steamid, token=args.token)
     print(f'login {args.steamid}: {c.login()}')
