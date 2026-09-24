@@ -55,12 +55,17 @@ from mitmproxy import http
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _rsa  # noqa: E402
 import _sessions  # noqa: E402
+import _store  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, 'server', 'data')
 KEYFILE = os.path.join(ROOT, 'server', 'session_key.json')
 # multi-user: steamid -> Session (key/iv), plus an addr cache; see _sessions.py
 SESSIONS = _sessions.Registry()
+# per-user progression (memberinfo + clearlist); lives under git-ignored data/
+STORE = _store.Store(os.path.join(DATA, 'store.db'))
+# the account whose captured progression seeds a fresh store (data/owner.txt)
+OWNER = '76561199429391557'
 LOG = open(os.path.join(ROOT, 'server', 'pserver.log'), 'a', buffering=1)
 
 API_HOST = 'game1-play.ez2game.co.kr'
@@ -134,6 +139,11 @@ def load_data():
     get_profile()
     global PASSTHROUGH_PATTERN
     PASSTHROUGH_PATTERN = os.path.exists(os.path.join(DATA, 'passthrough_pattern'))
+    global OWNER
+    p = os.path.join(DATA, 'owner.txt')
+    if os.path.exists(p):
+        OWNER = open(p).read().strip() or OWNER
+    seed_owner()
     log(f'data loaded: templates={sorted(TEMPLATES)} cdn={len(CDN_PATHS)} charts={len(CHARTS)} '
         f'passthrough_pattern={PASSTHROUGH_PATTERN} endpoints={sorted(passthrough_set()) or "-"} '
         f'knobs={[n for n in ("mutate_urls.txt", "mutate_bck.txt") if _knob(n)] or "-"}')
@@ -307,6 +317,19 @@ def flow_addr(flow):
         return peer[0] if peer else ''
     except Exception:
         return ''
+
+
+def seed_owner():
+    """Import the captured progression once, for the owner account only."""
+    tpl = TEMPLATES.get('myinfo')
+    if not OWNER or not isinstance(tpl, dict) or not tpl.get('clearlist'):
+        return
+    try:
+        if STORE.player(OWNER) is None or not STORE.clearlist(OWNER):
+            n = STORE.seed_myinfo(OWNER, tpl)
+            log(f'store: seeded {n} cleared variants for owner {OWNER}')
+    except Exception:
+        log('store: owner seed failed\n' + traceback.format_exc())
 
 
 def parse_form(body: bytes):
@@ -753,10 +776,10 @@ def handle_api(flow: http.HTTPFlow):
         tpl = TEMPLATES.get('myinfo')
         if tpl is None:
             return respond_api(flow, {'result': 0}, sess)
-        return respond_api(flow, apply_profile(tpl), sess)
+        return respond_api(flow, myinfo_response(tpl, sess.steamid if sess else None), sess)
 
     if endpoint == 'c2s_get_userinfo':
-        return respond_api(flow, userinfo_response(req_json), sess)
+        return respond_api(flow, userinfo_response(req_json, sess), sess)
 
     if endpoint == 'c2s_get_pattern_file':
         resp = pattern_response(req_json, sess)
@@ -764,21 +787,44 @@ def handle_api(flow: http.HTTPFlow):
         return respond_api(flow, resp, sess)
 
     if endpoint == 'c2s_set_game_clear':
-        # refinement candidate: the real response is 48 B of ciphertext; the
-        # client accepted {"result":1}-shaped guesses so far (unvalidated — the
-        # validated response in the first test actually came from upstream).
+        # real DTO (metadata-mined): {level, exp, nextExp, result}; the request
+        # carries musicid/keymode/levelmode + the play's statistics, which we
+        # fold into the per-user store so get_myinfo reflects them next session.
+        if sess is not None and sess.steamid and req_json:
+            try:
+                r = json.loads(req_json)
+                mid = int(r.get('musicid') or 0)
+                km = int(r.get('keymode') or 0)
+                lm = int(r.get('levelmode') or 0)
+                if mid and km and lm:
+                    STORE.record_clear(
+                        sess.steamid, mid, km, lm,
+                        lamp=int(r.get('lamp') or 0),
+                        score=int(float(r.get('score') or 0)),
+                        rate=float(r.get('rate') or 0.0),
+                        combo=int(r.get('combo') or 0),
+                        kool=int(r.get('kool') or 0),
+                        cool=int(r.get('cool') or 0),
+                        good=int(r.get('good') or 0),
+                        miss=int(r.get('miss') or 0),
+                        fail=int(r.get('fail') or 0))
+                    log(f'set_game_clear: stored {sess.steamid} music={mid} '
+                        f'km={km} lm={lm} score={r.get("score")}')
+            except Exception as e:
+                log(f'set_game_clear: could not store play ({e})')
         cfg = os.path.join(DATA, 'set_game_clear.json')
         if os.path.exists(cfg):
             tpl = json.load(open(cfg))
         else:
-            # real DTO (see the metadata-mined catalog above): the client reads
-            # level/exp/nextExp from this response, so a bare {"result":1} is
-            # the wrong shape even though it once appeared to work.
-            prof = get_profile()
-            tpl = {'level': int(prof.get('LEVEL', 1)),
-                   'exp': int(prof.get('EXP', 0)),
-                   'nextExp': int(prof.get('NEXT_EXP', 0)),
-                   'result': 1}
+            p = STORE.player(sess.steamid) if (sess and sess.steamid) else None
+            if p:
+                tpl = {'level': int(p['level']), 'exp': int(p['exp']),
+                       'nextExp': int(p['next_exp']), 'result': 1}
+            else:
+                prof = get_profile()
+                tpl = {'level': int(prof.get('LEVEL', 1)),
+                       'exp': int(prof.get('EXP', 0)),
+                       'nextExp': int(prof.get('NEXT_EXP', 0)), 'result': 1}
         return respond_api(flow, tpl, sess)
 
     log(f'UNKNOWN api endpoint {path} — returning generic result')
@@ -1025,7 +1071,31 @@ def bundle_crypt_key():
     return '0' * 96
 
 
-def userinfo_response(req_json):
+def myinfo_response(tpl, steamid):
+    """Build `c2s_get_myinfo` from the per-user store.
+
+    With a resolved SteamID the `memberinfo` and `clearlist` come from the store
+    (the store is seeded from the captured `myinfo.json` for the owner).  Without
+    one — the legacy single-client harvester path — the captured template is
+    served unchanged.  `profile.json` overrides still apply to the owner.
+    """
+    try:
+        mi = json.loads(json.dumps(tpl))
+    except Exception:
+        mi = dict(tpl)
+    if steamid:
+        STORE.touch_player(steamid)
+        mi['memberinfo'] = STORE.memberinfo(steamid)
+        mi['clearlist'] = STORE.clearlist(steamid)
+        mi.setdefault('course_clearlist', [])
+        if steamid == OWNER:
+            apply_profile(mi)
+    else:
+        apply_profile(mi)
+    return mi
+
+
+def userinfo_response(req_json, sess=None):
     """c2s_get_userinfo: {"appid":...,"steamId":[UInt64,...]} — the leaderboard
     profile fetch (up to ~10 players at once).
 
@@ -1054,6 +1124,10 @@ def userinfo_response(req_json):
     for sid in ids:
         e = dict(tpl)
         e['STEAM_ID'] = str(sid)
+        p = STORE.player(sid)
+        if p:
+            e['LEVEL'] = int(p.get('level') or 0)
+            e['RATING'] = float(p.get('rating') or 0.0)
         entries.append(e)
     log(f'get_userinfo: {len(entries)} profile(s) served '
         f'(entry = STEAM_ID/LEVEL/RATING)')

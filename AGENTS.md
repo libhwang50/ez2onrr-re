@@ -947,10 +947,14 @@ server's. In-game validation of the server itself is in progress.
    session key, exactly as the official server does. Nothing comes from an official
    response any more. Remaining nicety: a game update can change the constant —
    re-derive it (a fresh capture or `server/data/bck_payload.hex` overrides).
-9. Persist progression: feed accepted `plf` uploads back into the served myinfo
-   `clearlist` so scores/records survive across sessions (the client computes its
-   per-key-mode rating from that data — §3.7), and RE the exact per-mode rating
-   formula if precise control is wanted.
+9. Persist progression — **started**: `server/_store.py` (SQLite, `data/store.db`)
+   keeps per-user `memberinfo` + `clearlist` (one row per cleared variant, rebuilt
+   into the client's 16-wide arrays), seeded for the owner from the captured
+   `myinfo.json` (319 variants). `c2s_set_game_clear` now records every play
+   (best-of score, never downgrade the lamp, count plays) and `c2s_get_myinfo` /
+   `c2s_get_userinfo` read it. Still to do: feed the rank `plf…` uploads in too
+   (the same data over the other host), and RE / implement the per-mode rating
+   formula (the client computes it from this clearlist — §3.7).
 10. Re-check the captions in the "8CN26" sections above when touching them: the code
    means "Song Load timeout" (a watchdog), NOT "corrupt file" — the Korean popup text
    ("게임 파일이 손상되었습니다") is the generic wrapper the reporter shows.

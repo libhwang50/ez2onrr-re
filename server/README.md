@@ -65,6 +65,8 @@ session key had rotated away); see AGENTS.md §3.2.
 | file | purpose |
 |---|---|
 | `_pserver.py` | the mitmproxy addon (the server itself); logs to `pserver.log`; never forwards game-host traffic upstream |
+| `_sessions.py` | per-user API session registry: `steamid -> {key, iv}`, with an address cache and trial decryption for the SteamID-less requests |
+| `_store.py` | per-user progression store (SQLite, `data/store.db`): `memberinfo` + the 16-wide `clearlist` arrays, normalised to one row per cleared variant; seeds the owner from the captured `myinfo.json` |
 | `_rsa.py` | server keypair + **strict** RSA decode of the login block (`init`/`show`/`decrypt`/`selftest`). The old `cryptography` PKCS#1 v1.5 call was not a validity oracle (82% of random blocks "decrypted"); this is |
 | `_login_probe.py` | standalone probe: captures `c2s_login`, strict-decodes `data`, reports the payload shape. The experiment that pinned the login JSON |
 | `_harvest_mem.py` | **fallback** session key: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds at login → `session_key.json`. Handles relaunches/rotations; keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/sudo, Windows is same-user |
