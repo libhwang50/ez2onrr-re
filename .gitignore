@@ -80,3 +80,5 @@ server/stub9902_last.bin
 server/stub9902_client.bin
 server/last_probe.json
 server/hunt_result.json
+
+.env
