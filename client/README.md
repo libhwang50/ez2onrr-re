@@ -90,12 +90,21 @@ nothing). On Windows it works same-user, no admin.
 > shows `ERROR : STEAMCLIENT_AUTH_TIMEOUT` and `ERROR : STEAM_AUTH_TIMEOUT` (seen
 > with the genuine DLL but a Steam client that is not fully logged in).
 >
-> **Workaround:** keep the genuine `steam_api64.dll` and run with a Steam client
-> logged in. Because the build has no `RestartAppIfNecessary`/SteamStub and the
-> private server does not validate the auth ticket, a non-owning **free** Steam
-> account launched directly is expected to be enough (unconfirmed); otherwise
-> use Steam Family Sharing. The blocker is the client anti-cheat, not the
-> server.
+> **There is no known account-less route.** The genuine `steam_api64.dll` only
+> passes the gate with a Steam client logged into an account that **owns**
+> app `1477590`:
+>
+> * an account that does not own the game sees *Purchase*, not *Play*, so the
+>   free-account idea cannot launch it normally (running `EZ2ON.exe` directly
+>   with Steam logged in is untested and may still be rejected — the client does
+>   contain `SteamApps.BIsSubscribedApp` / `GetAppOwner`);
+> * **Steam Family Sharing is explicitly disabled for multiplayer** by the game
+>   itself (`Multiplayer is disabled for Steam family sharing.`), so it cannot
+>   serve the private server either.
+>
+> The blocker is the client anti-cheat, not the server. A truly account-less
+> client needs a client-side bypass of the anti-cheat (and possibly the
+> ownership check) — an open item, not a server or config change.
 
 Users who do not own the game on Steam (and therefore have no SteamID) were meant
 to join a private server by running the client under a Steam emulator. The build
@@ -139,8 +148,8 @@ Caveats:
   server; a public server must not trust the claimed SteamID and needs the
   server-issued identity token planned for that deployment.
 * **The emulator is stopped by Uncheater before the lobby**, so none of the
-  setup above has any effect on the retail build. The supported account-less
-  route is a free Steam account + the genuine `steam_api64.dll` (warning above).
+  setup above has any effect on the retail build, and there is currently no
+  account-less route (see the warning above).
 
 ## Why the RSA block is the key
 
