@@ -85,7 +85,7 @@ selected).
   Consequence for the private server and for capture: **record `gamemode` with every chart
   capture** and prefer the exact one when serving (`gamemode` is in the request JSON, so a
   capture run records it for free). Source: NamuWiki "EZ2ON REBOOT : R/시스템" §4.1–4.2.
-* **`_pserver.py` can also *capture*.** With `cdn` in the passthrough list (what
+* **The capture addon can also *capture*.** With `cdn` in the passthrough list (what
   `re/_exp.py harvest` sets) a CDN cache miss is forwarded to the official CDN and the body is
   filed into `extracted_charts/<song>/<km>/<diff>/` in exactly `ripper/dump_song.py`'s layout
   (`cdn_ez_cap.bin`, `cdn_ezi_cap.bin`, an `ident.json` with the URLs and label, and the
@@ -93,7 +93,7 @@ selected).
   key pair validates — `ripper/decrypt_chart.py --archive` backfills any of that which is missing).
   **The decrypt step is backend-agnostic on purpose**: `ripper/decrypt_chart.py` used to import
   pycryptodome only, which the *system* python running mitmdump does not have, and a bare
-  `except` in the addon hid the ImportError — so captures filed the ciphertext and silently
+  `except` in the capture addon hid the ImportError — so captures filed the ciphertext and silently
   skipped the plaintext. That makes the archive the single
   source of truth — `_build_data.py` is still the only translator — and turns a whole song
   sweep into coverage with no extra tooling. Without the knob a miss is a 404 and no

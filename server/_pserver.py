@@ -1,26 +1,16 @@
 """
-EZ2ON REBOOT:R — basic private server, implemented as a mitmproxy addon.
+EZ2ON REBOOT:R — private-server game logic (standalone, transport-neutral).
 
-The game's Wine prefix already routes WinHTTP through mitmproxy (ProxyEnable=1,
-127.0.0.1:8080) and trusts the mitmproxy CA, so this addon stubs the three
-game hosts entirely server-side — no hosts-file edits, no extra certificates,
-no privileged ports:
+This module is the offline server core: the three game hosts are answered
+entirely server-side, with no upstream contact.
 
     game1-play.ez2game.co.kr   API   (AES-256-CBC/PKCS7, zf session key)
     game1-rank.ez2game.co.kr   rank  (plaintext GETs)
     game1-cdn.ez2game.co.kr    CDN   (chart/index ciphertext blobs)
 
-Run (two terminals):
-
-    # 1. session-key bridge (Frida -> file), leave running — it re-attaches
-    #    automatically when the game restarts:
-    .venv/bin/python server/re/_harvest_session.py
-
-    # 2. the server itself:
-    mitmdump -q -s server/_pserver.py
-
-Then start the game as usual. The real TCP battle/control channels (raw IPs)
-are untouched and keep working.
+Run it with the standalone transport (`server/app.py`) behind the client-side
+relay (`server/_relay.py`).  The handlers only touch the small request/response
+surface supplied by `_flowshim`, so this body of code is transport-neutral.
 
 Protocol notes (all verified against captures — see §3.1):
   * API request  body: form-encoded; the `data` field holds
@@ -29,12 +19,12 @@ Protocol notes (all verified against captures — see §3.1):
   * API response body: b64( AES-CBC-PKCS7(json) )            (no magic)
   * key/IV = ASCII bytes of zf.aes_key (32) / zf.aes_iv (16), generated
     client-side per session (zf.gnf: RNGCryptoServiceProvider -> hex).
-    The harvester writes them to server/session_key.json.
+    The patcher version.dll hands them over in the RSA login block; the memory
+    scanner writes them to server/session_key.json for an unpatched client.
 
-IMPORTANT: game-host requests are NEVER forwarded upstream. If handling fails,
-the addon serves an explicit error instead — otherwise mitmproxy silently
-proxies to the official servers and the session becomes a confusing mix of
-real and fake data (this exact bug shipped once).
+Game-host requests are NEVER forwarded upstream by this module.  Chart capture
+from the official CDN (the sweep) is a separate mitmproxy addon that wraps this
+core: `server/re/_capture_addon.py`.
 """
 from __future__ import annotations
 
@@ -50,16 +40,6 @@ import urllib.parse
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-# mitmproxy is optional: the same handlers run under the standalone server
-# (server/app.py).  `_flowshim` supplies the request/response pieces and returns
-# a real mitmproxy Response when mitmproxy is importable.
-try:
-    from mitmproxy import http  # noqa: F401  (annotations only)
-except Exception:               # pragma: no cover - standalone deployment
-    http = None  # type: ignore
-
-# server/_rsa.py is next to this addon; mitmdump does not put the script's dir
-# on sys.path, so add it explicitly (the RSA hand-off is the Frida-free route).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _flowshim  # noqa: E402
 import _rsa  # noqa: E402
@@ -93,8 +73,6 @@ TEMPLATES = {}
 CDN_PATHS = {}
 # paths the last pattern responses pointed at: {path: {song,keymode,levelmode,
 # gamemode,kind}} - so a forwarded CDN body can be filed under the chart it is
-PENDING_CDN = {}
-PENDING_CDN_URLS = {}
 ARCHIVE = os.path.join(ROOT, 'extracted_charts')
 KM_DIR = {1: '4k', 2: '5k', 3: '6k', 4: '8k', 5: '7k'}
 DIFF_DIR = {1: 'ez', 2: 'nm', 3: 'hd', 4: 'shd'}
@@ -127,8 +105,6 @@ def log(*a):
     LOG.write(time.strftime('[%H:%M:%S] ') + ' '.join(str(x) for x in a) + '\n')
 
 
-PASSTHROUGH_PATTERN = False
-
 def load_data():
     global BATTLE_SERVER
     p = os.path.join(DATA, 'battle_server.txt')
@@ -153,15 +129,13 @@ def load_data():
     if os.path.exists(p):
         RANK_CSV_SAMPLE = open(p).read().strip()
     get_profile()
-    global PASSTHROUGH_PATTERN
-    PASSTHROUGH_PATTERN = os.path.exists(os.path.join(DATA, 'passthrough_pattern'))
     global OWNER
     p = os.path.join(DATA, 'owner.txt')
     if os.path.exists(p):
         OWNER = open(p).read().strip() or OWNER
     seed_owner()
-    log(f'data loaded: templates={sorted(TEMPLATES)} cdn={len(CDN_PATHS)} charts={len(CHARTS)} '
-        f'passthrough_pattern={PASSTHROUGH_PATTERN} endpoints={sorted(passthrough_set()) or "-"} '
+    log(f'data loaded: templates={sorted(TEMPLATES)} cdn={len(CDN_PATHS)} '
+        f'charts={len(CHARTS)} '
         f'knobs={[n for n in ("mutate_urls.txt", "mutate_bck.txt") if _knob(n)] or "-"}')
 
 
@@ -506,23 +480,6 @@ def mutation_requested():
     return bool(_knob('mutate_urls.txt') or _knob('mutate_bck.txt'))
 
 
-def passthrough_set():
-    """Endpoints to forward to the upstream official server, from
-    `passthrough_endpoints.txt` (comma-separated, e.g. `login,pattern`) or the
-    legacy `passthrough_pattern` marker. Everything not listed stays stubbed,
-    so scores/records remain private.
-
-    Forwarding `login` makes the upstream mint a real session, which is what
-    makes a forwarded `pattern` response valid (fresh URLs + fresh
-    bundleCryptKey). Read per request, so it can be changed without a restart.
-    """
-    s = _knob('passthrough_endpoints.txt')
-    eps = {p.strip() for p in s.replace(';', ',').split(',') if p.strip()}
-    if os.path.exists(os.path.join(DATA, 'passthrough_pattern')):
-        eps.add('pattern')
-    return eps
-
-
 def upstream_like_headers():
     """The headers the real nginx API returns; the client has only ever seen
     these, so mimic them (mp-14: our own responses had almost none)."""
@@ -534,40 +491,6 @@ def upstream_like_headers():
         'X-Content-Type-Options': 'nosniff',
         'X-XSS-Protection': '1; mode=block',
     }
-
-
-def _redact(v):
-    if isinstance(v, str) and len(v) > 28:
-        return v[:14] + f'…({len(v)})'
-    return v
-
-
-def summarize_obj(obj, secret=()):
-    if not isinstance(obj, dict):
-        return repr(obj)[:200]
-    out = []
-    for k, v in obj.items():
-        if k in secret:
-            out.append(f'{k}=<{len(v) if isinstance(v, str) else "?"}>')
-        elif isinstance(v, str) and len(v) > 28:
-            out.append(f'{k}={_redact(v)}')
-        else:
-            out.append(f'{k}={v}')
-    return '{' + ', '.join(out) + '}'
-
-
-def save_upstream(ep, obj):
-    """Persist a decrypted upstream response: a shortened copy for reading and
-    a full one (real URLs + bundleCryptKey) for reuse/diffing. Both live in the
-    git-ignored server/data/."""
-    try:
-        red = {k: _redact(v) for k, v in obj.items()} if isinstance(obj, dict) else obj
-        json.dump(red, open(os.path.join(DATA, 'last_upstream_' + ep + '.json'),
-                            'w'), indent=1, ensure_ascii=False)
-        json.dump(obj, open(os.path.join(DATA, 'last_upstream_' + ep + '.full.json'),
-                            'w'), indent=1, ensure_ascii=False)
-    except Exception:
-        pass
 
 
 def mutate_url(u, mode):
@@ -607,9 +530,9 @@ def mutate_pattern_response(obj, defaults=True, sess=None):
     With `defaults=True` (the local-serving path) an absent knob means the
     offline recipe: mint a fresh `Expires` (the CloudFront signature is never
     verified) and mint the `bundleCryptKey` knowledge proof from the client's
-    live session key. `defaults=False` is used for the *passthrough* response
-    hook, where the upstream already minted both and a rewrite would break the
-    real CloudFront signature.
+    live session key. `defaults=False` is used by the capture addon's upstream
+    response hook, where the upstream already minted both and a rewrite would
+    break the real CloudFront signature.
 
     A knob of `off`/`none` disables that piece of the default. Returns a list
     of applied changes, or None."""
@@ -627,14 +550,6 @@ def mutate_pattern_response(obj, defaults=True, sess=None):
         return None
     changed = []
     if m_url:
-        if cdn_passthrough():
-            # The URLs are about to be fetched from the real CloudFront, which
-            # verifies the signature. Rewriting Expires (or the params/host)
-            # invalidates it -> 403 for every chart. Skip and say so loudly.
-            log(f'  WARNING: ignoring urls={m_url} — cdn passthrough is on and '
-                f'CloudFront checks the upstream signature (use `_exp.py offline` '
-                f'for minted URLs)')
-            m_url = ''
         for f in ('final_url_ez', 'final_url_ezi'):
             if m_url and isinstance(obj.get(f), str):
                 obj[f] = mutate_url(obj[f], m_url)
@@ -752,15 +667,16 @@ def ensure_key(timeout=20.0):
     return False
 
 
-def handle_api(flow: http.HTTPFlow):
-    path = flow.request.path.split('?')[0]
-    endpoint = path.rstrip('/').split('/')[-1]
-    addr = flow_addr(flow)
-    body = flow.request.raw_content or b''
-    # The login block is RSA under our public key (patcher `version.dll`) and
-    # carries the session key/IV *and* the SteamID; it creates (or refreshes) the
-    # user's session.  Every other API request carries no SteamID, so it is
-    # attributed by address, then by trial decryption against the known keys.
+def bind_session(flow: '_flowshim.Flow', endpoint, body, addr):
+    """Attribute an API request to a session and stash it on the flow.
+
+    The login block is RSA under our public key (patcher `version.dll`) and
+    carries the session key/IV *and* the SteamID; it creates (or refreshes) the
+    user's session.  Every other API request carries no SteamID, so it is
+    attributed by address, then by trial decryption against the known keys.
+    Shared with the capture addon, which needs the session to decrypt an
+    upstream (forwarded) response.  Returns (session, request_json).
+    """
     if endpoint == 'c2s_login':
         sess = try_login_rsa(body, addr)
         if sess is None and ensure_key():
@@ -780,16 +696,15 @@ def handle_api(flow: http.HTTPFlow):
             flow.metadata['ps_req'] = req_json
         except Exception:
             pass
+    return sess, req_json
 
-    ep_short = endpoint  # c2s_xxx
-    for e in passthrough_set():
-        if e in ep_short:
-            # forward this endpoint upstream verbatim (the client's request is
-            # already encrypted with its own session key, which the real server
-            # shares — this is a genuine session for those endpoints only).
-            # The response hook logs it before the client sees it.
-            log(f'{endpoint}: PASSTHROUGH to upstream (live session)')
-            return
+
+def handle_api(flow: '_flowshim.Flow'):
+    path = flow.request.path.split('?')[0]
+    endpoint = path.rstrip('/').split('/')[-1]
+    addr = flow_addr(flow)
+    body = flow.request.raw_content or b''
+    sess, req_json = bind_session(flow, endpoint, body, addr)
 
     if endpoint == 'c2s_login':
         if sess is None:
@@ -845,7 +760,6 @@ def handle_api(flow: http.HTTPFlow):
             log(f'pattern: {name!r} km={km} lm={lm} -> 404 NOT FOUND')
             flow.response = _flowshim.make(404, b'', {'Content-Type': 'text/plain'})
             return
-        register_cdn_urls(req_json, resp)
         return respond_api(flow, resp, sess)
 
     if endpoint == 'c2s_set_game_clear':
@@ -915,131 +829,6 @@ def cdn_url(path):
     return (f'https://{CDN_HOST}{path}?Expires={expires}'
             f'&Signature={cloudfront_shaped_signature()}'
             f'&Key-Pair-Id=K2L5B5JS5W46ST')
-
-
-def cdn_passthrough():
-    """Forward CDN cache misses to the official CDN (harvest mode).
-
-    Opt-in via `passthrough_endpoints.txt` containing `cdn`. Without it a miss
-    is a 404 and no game-host request ever leaves the machine - which is the
-    shipped guarantee (see the addon error path); this knob is the one explicit
-    way to let the real CDN serve a chart we do not have yet, so it can be
-    recorded and used offline from then on.
-    """
-    return 'cdn' in passthrough_set() or 'chart' in passthrough_set()
-
-
-def register_cdn_urls(req_json, resp_obj):
-    """Remember which chart a pattern response's CDN paths belong to."""
-    try:
-        req = json.loads(req_json) if req_json else {}
-    except Exception:
-        req = {}
-    if not isinstance(resp_obj, dict):
-        return
-    song = str(req.get('musicresourcename') or '')
-    meta = {'song': song, 'keymode': int(req.get('keymode') or 0),
-            'levelmode': int(req.get('levelmode') or 0),
-            'gamemode': str(req.get('gamemode') or '')}
-    for field, kind in (('final_url_ez', 'ez'), ('final_url_ezi', 'ezi')):
-        u = resp_obj.get(field)
-        if isinstance(u, str) and u.startswith('http'):
-            _p = urllib.parse.urlsplit(u).path
-            PENDING_CDN[_p] = {**meta, 'kind': kind}
-            PENDING_CDN_URLS[_p] = u
-
-
-def capture_cdn_response(flow):
-    """File a CDN body forwarded from the official CDN into the chart archive.
-
-    Writes `extracted_charts/<song>/<km>/<diff>/cdn_ez_*.bin` / `cdn_ezi_*.bin`
-    plus an `ident.json` carrying the URLs and the label, i.e. exactly the layout
-    `ripper/dump_song.py` produces and `_build_data.py` consumes — so a sweep run needs
-    no separate pipeline, and the archive stays the single source of truth for
-    what the server can serve. The decrypted `.ez`/`.ezi` are written too, so a
-    capture can be audited with `ripper/check_charts.py` like any other dump.
-    """
-    p = flow.request.path.split('?')[0]
-    resp = flow.response
-    status = getattr(resp, 'status_code', 0)
-    body = (resp.content or b'') if resp is not None else b''
-    if status != 200 or not body:
-        log(f'CDN FAIL {status} {p}')
-        return
-    meta = PENDING_CDN.get(p)
-    km, lm = (meta or {}).get('keymode'), (meta or {}).get('levelmode')
-    km_dir, diff_dir = KM_DIR.get(km), DIFF_DIR.get(lm)
-    if not meta or not km_dir or not diff_dir:
-        log(f'CDN OK {len(body)}B {p} (unfiled: no matching pattern request)')
-        return
-    kind = meta['kind']                      # 'ez' | 'ezi'
-    d = os.path.join(ARCHIVE, norm(meta['song']) or 'song_unknown', km_dir, diff_dir)
-    os.makedirs(d, exist_ok=True)
-    with open(os.path.join(d, f'cdn_{kind}_cap.bin'), 'wb') as f:
-        f.write(body)
-    ident_p = os.path.join(d, 'ident.json')
-    ident = {}
-    if os.path.exists(ident_p):
-        try:
-            ident = json.load(open(ident_p))
-        except Exception:
-            ident = {}
-    url = PENDING_CDN_URLS.get(p)
-    ident['ez_url' if kind == 'ez' else 'ezi_url'] = url
-    ident.setdefault('ready', True)
-    ident.setdefault('bundleCryptKey', None)
-    ident['capturedBy'] = 'sweep'
-    lbl = ident.get('label') or {}
-    lbl.update({'song': meta['song'], 'keymode': f"{KM_LANES.get(km, '?')}K",
-                'lanes': KM_LANES.get(km), 'difficulty': diff_dir.upper(),
-                'levelmode': str(lm), 'gamemode': meta.get('gamemode') or None,
-                'labelSource': 'pattern request'})
-    ident['label'] = lbl
-    # Decrypt alongside, so a sweep capture is a complete dump like
-    # ripper/dump_song.py's. Each file stands alone (the key pair is chosen by
-    # validation), so there is no ordering requirement; failures are logged,
-    # never swallowed - a silent ImportError here cost us a day.
-    try:
-        sys.path.insert(0, os.path.join(ROOT, 'ripper'))
-        import decrypt_chart
-        for kind, out_name in (('ez', 'ez.ez'), ('ezi', 'ezi.ezi')):
-            src = os.path.join(d, f'cdn_{kind}_cap.bin')
-            dst = os.path.join(d, out_name)
-            if not os.path.exists(src) or os.path.exists(dst):
-                continue
-            raw = open(src, 'rb').read()
-            try:
-                pt, pair = decrypt_chart.decrypt_named(raw)
-            except ValueError as e:
-                log(f'  {kind} NOT DECRYPTED ({e}) — {os.path.relpath(d, ROOT)}')
-                continue
-            with open(dst, 'wb') as f:
-                f.write(pt)
-            ident['chartKeyPair'] = pair
-            log(f'  {kind} -> {out_name} ({len(pt)}B, key pair {pair})')
-        # instrumentDic.json is just the .ezi mapping (the game's own dict is
-        # the same index -> basename list, only partial), so derive it
-        ezi_p = os.path.join(d, 'ezi.ezi')
-        dic_p = os.path.join(d, 'instrumentDic.json')
-        if os.path.exists(ezi_p) and not os.path.exists(dic_p):
-            rows = []
-            for line in open(ezi_p, 'rb').read().decode('utf-8', 'replace').splitlines():
-                parts = line.split()
-                if len(parts) >= 3 and parts[0].isdigit():
-                    rows.append([int(parts[0]), os.path.splitext(parts[2])[0]])
-            if rows:
-                with open(dic_p, 'w') as f:
-                    json.dump(rows, f, ensure_ascii=False)
-                log(f'  instrumentDic.json ({len(rows)} entries)')
-    except Exception:
-        log('decrypt step failed\n' + traceback.format_exc())
-
-    try:
-        with open(ident_p, 'w') as f:
-            json.dump(ident, f, indent=1, ensure_ascii=False)
-    except Exception:
-        log('ident.json write failed\n' + traceback.format_exc())
-    log(f'CDN OK {len(body)}B {kind} -> {os.path.relpath(d, ROOT)}')
 
 
 def chart_mode():
@@ -1286,7 +1075,7 @@ def rank_delay():
         return float(os.environ.get('EZ2_RANK_DELAY', '0') or 0)
 
 
-def handle_rank(flow: http.HTTPFlow):
+def handle_rank(flow: '_flowshim.Flow'):
     q = flow.request.query.get('data', '')
     body = flow.request.raw_content or b''
     # log EVERY rank request: the game also talks to this host on a raw,
@@ -1350,15 +1139,10 @@ def leaderboard_body(q):
     return RANK_CSV_SAMPLE.encode()
 
 
-def handle_cdn(flow: http.HTTPFlow):
+def handle_cdn(flow: '_flowshim.Flow'):
     p = flow.request.path.split('?')[0]
     rel = CDN_PATHS.get(p)
     if rel is None:
-        if cdn_passthrough():
-            # harvest: no local copy, so let the official CDN answer and we
-            # record the body on the way back (capture_cdn_response)
-            log(f'CDN MISS {p} -> upstream (harvest)')
-            return
         log(f'CDN MISS {p}')
         flow.response = _flowshim.make(404, b'', {'Content-Type': 'text/plain'})
         return
@@ -1366,86 +1150,3 @@ def handle_cdn(flow: http.HTTPFlow):
     data = open(os.path.join(ROOT, rel), 'rb').read()
     flow.response = _flowshim.make(
         200, data, {'Content-Type': 'application/octet-stream'})
-
-
-# ---------------- mitmproxy hooks ----------------
-
-class PrivateServer:
-    def load(self, loader):
-        load_data()
-
-    def request(self, flow: http.HTTPFlow):
-        host = (flow.request.host or '').lower()
-        if host not in (API_HOST, RANK_HOST, CDN_HOST):
-            return
-        try:
-            if host == API_HOST:
-                log(f'>>> {flow.request.method} {flow.request.path}')
-                handle_api(flow)
-            elif host == RANK_HOST:
-                handle_rank(flow)
-            else:
-                handle_cdn(flow)
-        except Exception:
-            # NEVER let a game-host request fall through upstream: mitmproxy
-            # would proxy it to the official servers and the session becomes a
-            # real/fake mix (shipped once — do not repeat).
-            log('ADDON ERROR on', flow.request.path, '\n' + traceback.format_exc())
-            if host == CDN_HOST:
-                flow.response = _flowshim.make(404, b'', {})
-            else:
-                flow.response = _flowshim.make(
-                    502, b'private server error (see pserver.log)',
-                    {'Content-Type': 'text/plain'})
-
-    def response(self, flow: http.HTTPFlow):
-        """CDN bodies coming back from upstream are recorded; for a
-        PASSTHROUGH API endpoint the upstream response is logged (so its exact
-        field set is visible), the mutate_* knobs are applied to a pattern
-        response, and everything else is let through untouched."""
-        host = (flow.request.host or '').lower()
-        if host == CDN_HOST:
-            try:
-                capture_cdn_response(flow)
-            except Exception:
-                log('CDN capture error\n' + traceback.format_exc())
-            return
-        if host != API_HOST or flow.response is None:
-            return
-        ep = flow.request.path.rsplit('/', 1)[-1]
-        eps = passthrough_set()
-        if not any(e in ep for e in eps):
-            return
-        try:
-            sess = flow.metadata.get('ps_session')
-            obj = decrypt_api_body(flow.response.content, sess)
-            if obj is None:
-                log(f'{ep}: upstream response did not decrypt (stale session '
-                    'key? — was the login forwarded too?)')
-                return
-            save_upstream(ep, obj)
-            ch = None
-            if ep == 'c2s_get_pattern_file' and mutation_requested():
-                ch = mutate_pattern_response(obj, defaults=False, sess=sess)
-                if ch:
-                    flow.response.content = encrypt_response(obj, sess)
-            log(f'UPSTREAM {ep}: {summarize_obj(obj, secret=("bundleCryptKey",))}'
-                + (f'  MUTATED {ch}' if ch else ''))
-            if ep == 'c2s_get_pattern_file' and isinstance(obj, dict):
-                register_cdn_urls(flow.metadata.get('ps_req'), obj)
-                for f in ('final_url_ez', 'final_url_ezi'):
-                    u = obj.get(f)
-                    if isinstance(u, str):
-                        q = urllib.parse.parse_qs(urllib.parse.urlsplit(u).query)
-                        log(f'    {f}: path={urllib.parse.urlsplit(u).path[:70]} '
-                            f'Expires={q.get("Expires")} siglen={len(q.get("Signature",[""])[0])}')
-        except Exception:
-            log('PASSTHROUGH response handling error\n' + traceback.format_exc())
-
-    def error(self, flow: http.HTTPFlow):
-        if (flow.request.host or '').lower() in (API_HOST, RANK_HOST, CDN_HOST):
-            log(f'FLOW ERROR {flow.request.method} {flow.request.path}: '
-                f'{flow.error.msg if flow.error else "?"}')
-
-
-addons = [PrivateServer()]

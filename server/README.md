@@ -17,10 +17,12 @@ Everything cryptographic is already solved (see §3.1/§3.3); this is
 
 ## How it works
 
-The game's Wine prefix already routes WinHTTP through mitmproxy
-(`ProxyEnable=1` → `127.0.0.1:8080`) and trusts the mitmproxy CA. So the
-private server is a **mitmproxy addon** that intercepts the three game hosts
-and never contacts the upstream:
+The private server is the transport-neutral core in `server/_pserver.py`, driven
+by `server/app.py` (plain HTTP(S)/ASGI) or the client-side relay.  On the client
+machine the game's Wine prefix already routes WinHTTP through mitmproxy
+(`ProxyEnable=1` → `127.0.0.1:8080`) and trusts the mitmproxy CA, so the relay
+can intercept the three game hosts without extra certs.  The core never contacts
+an upstream:
 
 | host | what we serve |
 |---|---|
@@ -45,13 +47,13 @@ Wire format (verified byte-for-byte against captures):
   scanner `re/_harvest_mem.py` remains as a fallback for an unpatched client, and the
   Frida bridge `re/_harvest_session.py` after that.
 
-**No upstream leakage.** An unhandled exception inside a mitmproxy addon hook
-does not abort the request — mitmproxy forwards it to the real upstream. The
-first test run therefore mixed real and private responses invisibly. The addon
-now catches every failure on a game host and serves an explicit error instead;
-a game-host request must never leak upstream. (Level/rating seen in-game during
-a mixed session came from the real servers — with a clean run they come from
-`data/profile.json`.)
+**No upstream leakage.** The standalone server has no upstream to fall through
+to; `_core.handle` catches every failure and returns an explicit error, and the
+client relay gives the same guarantee.  (Earlier, when the server *was* a
+mitmproxy addon, an unhandled exception let mitmproxy forward the request to the
+real servers and the first test run mixed real and private responses invisibly.)
+(Level/rating seen in-game during a mixed session came from the real servers —
+with a clean run they come from `data/profile.json`.)
 
 Validated in-game (one session): login → music list → profile → Finite 5K HD
 chart + `.ezi` served from cache → played → score upload logged. The leaderboard
@@ -69,8 +71,8 @@ captures).
 
 | file | purpose |
 |---|---|
-| `_pserver.py` | the game logic + mitmproxy addon (the server itself); logs to `pserver.log`; never forwards game-host traffic upstream. Importable without mitmproxy |
-| `_flowshim.py` | transport-neutral request/response so the handlers run under mitmproxy **or** a plain HTTP(S) server; returns a real mitmproxy `Response` when available |
+| `_pserver.py` | the game logic (the server core, transport-neutral); logs to `pserver.log`; never forwards game-host traffic upstream. Importable without mitmproxy |
+| `_flowshim.py` | transport-neutral request/response so the handlers run under a plain HTTP(S) server (and, for the capture addon, under mitmproxy; it returns a real mitmproxy `Response` when available) |
 | `_core.py` | `(host, method, path, headers, body) -> response` — routes the three game hosts, turns failures into explicit errors |
 | `app.py` | **standalone server** (stdlib HTTP(S) + `/healthz` + ASGI `asgi_app`) — no mitmproxy |
 | `_relay.py` | **client-side relay** mitmproxy addon: forwards the game's hosts to a remote `app.py` with `X-EZ2-Host` + `X-EZ2-Token` |
@@ -81,6 +83,7 @@ captures).
 | `_auth.py` | identity & access policy: `auth.json` (`open`/`token` mode, guest tier), token hashing, account resolution, optional Discord OAuth |
 | `_accounts.py` | admin CLI: `issue` / `list` / `ban` / `unban` server accounts + bearer tokens (no external service needed) |
 | `_fake_client.py` | **synthetic second client** for multi-user testing — logs in as any SteamID (RSA-wrapped key), then drives `c2s_get_myinfo` / `c2s_set_game_clear` / `c2s_get_userinfo` and the rank leaderboard. Creates a fresh account and a competing score with **no second game install** |
+| `re/_capture_addon.py` | **mitmproxy capture addon (sweep/RE only)** — wraps the offline core: forwards `login`/`pattern`/uncached CDN upstream and files every returned CDN body into `extracted_charts/`. No longer the server; the standalone path never forwards upstream |
 | `re/_harvest_mem.py` | **fallback** session key: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds at login → `session_key.json`. Handles relaunches/rotations; keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/sudo, Windows is same-user |
 | `re/_harvest_session.py` | Frida bridge (fallback): polls `zf.aes_key`/`aes_iv` at 1 Hz → `session_key.json`; **auto-re-attaches when the game restarts** |
 | `_build_data.py` | (re)builds `data/` from the captured artefacts in the repo |
@@ -124,7 +127,7 @@ export EZ2_API_SESSION_IV=<16-char ASCII zf.aes_iv of that session>
 ```bash
 bash client/patcher/install.sh patcher     # install the DLL into the game dir (once)
 # Proton only, in the Steam launch options:  WINEDLLOVERRIDES=version=n,b
-mitmdump -s server/_pserver.py             # the server
+python server/app.py --port 8081           # the server (client: EZ2_REMOTE=… mitmdump -s server/_relay.py)
 ```
 
 Then start the game normally. `server/pserver.log` should show
@@ -197,7 +200,7 @@ relay is the only place the token lives, and the server just reads `X-EZ2-Token`
 
 | piece | transport | runs where |
 |---|---|---|
-| `_pserver.py` | mitmproxy addon (or core) | the game's machine (local) **or** the server |
+| `_pserver.py` | none — game logic | the server |
 | `_core.py` | none — `(host,method,path,headers,body) -> response` | — |
 | `app.py` | HTTP(S) / ASGI | the server |
 | `_relay.py` | mitmproxy addon | each client |
@@ -420,7 +423,7 @@ does that already.
 
 ### The knobs and what they proved
 
-**Offline is the default now.** With no knob files the addon forwards nothing
+**Offline is the default now.** With no knob files the server forwards nothing
 and mints its own CDN `Expires` and `bundleCryptKey`. The knobs below *override*
 that default (and `off`/`none` turns a piece of it off for an experiment), so
 the old `hybrid off` + `urls now` + `bck mint` recipe is what happens on a fresh
@@ -460,7 +463,8 @@ live session key:
 
 ```bash
 /usr/bin/python server/re/_harvest_mem.py        # terminal 1: keeps session_key.json live
-mitmdump -s server/_pserver.py                # terminal 2: the server
+python server/app.py --port 8081              # terminal 2: the server
+EZ2_REMOTE=http://127.0.0.1:8081 mitmdump -s server/_relay.py   # terminal 3 (client)
 ```
 
 The three `re/_exp.py` commands that used to be required are now the built-in
@@ -494,6 +498,13 @@ python server/re/_coverage.py --queue    # write the capture queue (music-list o
 python server/re/_coverage.py --log      # what the game asked for vs what we could serve
 ```
 
+This is the one mode that forwards upstream, so it runs the **capture addon**,
+not `app.py`:
+
+```bash
+mitmdump -s server/re/_capture_addon.py
+```
+
 The loop that adds songs, end to end:
 
 1. **`re/_exp.py harvest`** — forwards `login,pattern,cdn` upstream. The API
@@ -501,7 +512,7 @@ The loop that adds songs, end to end:
    lets a chart we do not hold yet come from the official CDN** (without it a
    missing chart is a local 404 and nothing can ever be captured).
 2. Walk the song list (the game, or `server/re/_sweep.py`) so it asks for each song.
-3. The addon files every forwarded CDN body straight into
+3. `re/_capture_addon.py` files every forwarded CDN body straight into
    **`extracted_charts/<song>/<km>/<diff>/`** — `cdn_ez_cap.bin`, `cdn_ezi_cap.bin`
    and an `ident.json` with the URLs and the label — i.e. the same layout
    `ripper/dump_song.py` writes, so the archive stays the single source of truth and no
@@ -515,7 +526,7 @@ The loop that adds songs, end to end:
    `server/data/charts.json` + `cdn_paths.json`, then `re/_coverage.py` shows the
    result.
 
-The addon only lets a CDN request out when `cdn` is in the passthrough list — in
+The capture addon only lets a CDN request out when `cdn` is in the passthrough list — in
 `offline` mode nothing leaves the machine, and an uncached chart is a plain 404.
 
 `server/re/_sweep.py` automates that walk. The server log is its primary sensor — every
@@ -665,7 +676,7 @@ title is only known from the request), but the rest are skipped — `--no-smart`
   (`next_song` not advancing). `--no-stop-on-wrap` skips both checks.
 
 A chart only counts as captured once the CDN body actually arrived: the sweep
-watches for the addon's `CDN OK`/`CDN HIT` line and otherwise reports *asked but
+watches for the capture addon's `CDN OK`/`CDN HIT` line and otherwise reports *asked but
 no chart* and leaves the song on the to-do list (so a failed download can never
 silently inflate coverage).
 

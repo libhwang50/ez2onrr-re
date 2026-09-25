@@ -20,20 +20,20 @@ from its CDN. The technical write-up is in **`docs/`** (index), or as a brief in
 
 ## Private server
 
-`server/` is a **standalone** server — no mitmproxy needed on the host. It serves
+`server/` is a **standalone** server — no mitmproxy on the server host. It serves
 login, the music list, profiles, chart downloads and leaderboards, with per-user
-progression and server-issued accounts. It runs either as a local mitmproxy addon
-the game already points at, or as a plain HTTP(S)/ASGI service (Docker Compose
-included) for a public homeserver.
+progression and server-issued accounts, as a plain HTTP(S)/ASGI service (Docker
+Compose included). The client machine still runs a small mitmproxy **relay** that
+forwards the game's hosts to it.
 
 ```bash
-# local, single machine (the game's Wine proxy already points at mitmproxy)
 python server/_rsa.py init            # once — the client version.dll embeds this key
-mitmdump -s server/_pserver.py
 
-# standalone (public / homeserver)
-python server/app.py --host 0.0.0.0 --port 8081      # or: docker compose up -d
-docker compose --profile caddy up -d                 # optional TLS front end
+# the server (local or homeserver); Docker Compose works too
+python server/app.py --host 0.0.0.0 --port 8081
+
+# each client machine: the thin relay (points the game at the server)
+EZ2_REMOTE=http://<server>:8081 mitmdump -s server/_relay.py
 ```
 
 **No Frida by default.** The drop-in `client/patcher/version.dll` rewrites the

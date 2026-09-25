@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Control the private server's experiment knobs (server/data/*.txt).
 
-These files are re-read by server/_pserver.py on every request, so changes
-apply live — no mitmdump restart. Only `hybrid on/off` changes the set of
-endpoints forwarded upstream, which is also read per request.
+These files are re-read per request by the offline core (`server/_pserver.py`)
+and the capture addon (`server/re/_capture_addon.py`), so changes apply live —
+no restart. Only `hybrid on/off` changes the set of endpoints forwarded
+upstream, which the capture addon reads per request.
 
     python server/re/_exp.py                       # show current state
     python server/re/_exp.py offline               # (the default) fully offline serving
@@ -29,7 +30,7 @@ endpoints forwarded upstream, which is also read per request.
     python server/re/_exp.py hybrid off            # back to a pure private server
     python server/re/_exp.py reset                 # clear everything -> offline defaults
 
-Offline is now the default. With no knob files the addon forwards nothing and
+Offline is now the default. With no knob files the server forwards nothing and
 mints its own CDN `Expires` and `bundleCryptKey` from the client's live session
 key. `mutate_urls.txt` / `mutate_bck.txt` therefore *override* that default;
 `off`/`none` turns a piece of it off (a raw replay) for experiments. Chart

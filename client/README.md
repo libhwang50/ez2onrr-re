@@ -11,7 +11,8 @@ No hooks, no code patches, no Frida, no root — just an in-place rewrite of the
 
 ```
 server:  python server/_rsa.py init          # writes data/server_rsa_{private.pem,public.xml}
-server:  mitmdump -s server/_pserver.py      # offline default; c2s_login now RSA-decrypts the key
+server:  python server/app.py --port 8081    # standalone; c2s_login RSA-decrypts the key
+client:  EZ2_REMOTE=http://<server>:8081 mitmdump -s server/_relay.py   # forward game hosts
 client:  <drop-in version.dll>  OR  ez2on_patch.py --patch --watch
 ```
 

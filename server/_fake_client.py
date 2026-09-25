@@ -20,8 +20,8 @@ a second Steam account or a second game copy.  It is also the skeleton for the
     python3 server/_fake_client.py 76561190000000002 --play --score 1012345
     python3 server/_fake_client.py 76561190000000001 --leaderboard
 
-The proxy is the running mitmdump (`127.0.0.1:8080`); no real server is
-contacted (the addon answers game hosts itself).
+The proxy is the running mitmdump (`127.0.0.1:8080`) or `--remote` points at a
+standalone `server/app.py`; no real server is contacted.
 """
 import argparse
 import base64

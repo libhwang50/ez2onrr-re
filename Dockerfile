@@ -16,7 +16,7 @@ WORKDIR /app
 COPY server/requirements.txt server/requirements.txt
 RUN pip install --no-cache-dir -r server/requirements.txt
 
-# server code + the repo-root (ripper/) chart decryptor _pserver imports lazily
+# server code + the repo-root (ripper/) chart decryptor the capture addon imports lazily
 COPY server/ server/
 COPY ripper/decrypt_chart.py ripper/decrypt_chart.py
 

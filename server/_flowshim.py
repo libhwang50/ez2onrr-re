@@ -3,8 +3,9 @@
 `_pserver.py` was written against mitmproxy's `HTTPFlow`, but the game logic
 only touches a handful of fields.  This module provides those under a plain
 HTTP(S) server (`server/app.py`) and a `make()` that returns a real mitmproxy
-`Response` when mitmproxy is importable — so one body of handlers runs both as
-an addon (local, single-machine) and as a standalone server (public).
+`Response` when mitmproxy is importable — so the same handlers run both under
+the standalone server and under the sweep/RE capture addon
+(`server/re/_capture_addon.py`).
 
 Inventoried surface (see `_pserver.py`): `request.host / method / path /
 raw_content / headers / query`, `response` assignment, `response.content`,

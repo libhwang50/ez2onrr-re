@@ -35,6 +35,7 @@ safe rather than after a fixed delay.
 Capture run (one entry per song is enough — the server serves a song's chart for
 any of its keymodes, and the .ezi is per-song):
 
+    mitmdump -s server/re/_capture_addon.py     # the capture addon (forwards upstream)
     python server/re/_exp.py harvest            # hybrid + chart exact + minted token
     python server/re/_sweep.py --calibrate      # once, to learn the keys
     python server/re/_sweep.py --limit 600      # walk the list
@@ -496,7 +497,7 @@ DIFFS = ['EZ', 'NM', 'HD', 'SHD']     # Left/Right order (Left clamps, does not 
 # levelmode 1=EZ, 2=NM, 3=HD, 4=SHD).
 API_KEYMODE = {'1': 0, '2': 1, '3': 2, '4': 3}
 API_DIFF = {'1': 0, '2': 1, '3': 2, '4': 3}
-# Archive directory names <-> API ids. This is what `_pserver.py` files captures under,
+# Archive directory names <-> API ids. This is what `re/_capture_addon.py` files captures under,
 # so "already dumped" agrees with what the server can serve. 4 is 8K, 5 is 7K (course).
 KM_DIR = {1: '4k', 2: '5k', 3: '6k', 4: '8k', 5: '7k'}
 DIFF_DIR = {1: 'ez', 2: 'nm', 3: 'hd', 4: 'shd'}

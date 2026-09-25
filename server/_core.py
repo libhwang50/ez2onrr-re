@@ -32,12 +32,12 @@ def handle(host, method, path, headers=None, body=b'', addr=''):
         return _flowshim.make(502, b'private server error (see pserver.log)',
                               {'Content-Type': 'text/plain'})
     if flow.response is None:
-        # e.g. a CDN miss while the harvest knob was on: no local copy and no
-        # passthrough on a public server
+        # e.g. a CDN miss: no local copy (the standalone server never forwards)
         return _flowshim.make(404, b'', {'Content-Type': 'text/plain'})
     return flow.response
 
 
 def load():
-    """Load templates/charts/store (idempotent; the addon's `load` hook calls it)."""
+    """Load templates/charts/store (idempotent; the capture addon's `load`
+    hook and `server/app.py` call it)."""
     _pserver.load_data()

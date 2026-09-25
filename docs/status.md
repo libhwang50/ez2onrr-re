@@ -57,7 +57,7 @@ server's. In-game validation of the server itself is in progress.
    not a chart selector). Coverage is per *song*, because the server returns the CDN
    path — `chart any` serves a song's captured chart for any of its keymodes/
    difficulties. Adding songs needs one official pattern request each (hybrid,
-   `chart exact`, walk the song list), the addon's recorded CDN bodies, then
+   `chart exact`, walk the song list), the capture addon's recorded CDN bodies, then
    `_build_data.py`; `server/re/_coverage.py --log` verifies a capture run, and
    `server/re/_sweep.py` automates the walk (guarded by a focused-window check, with a
    `--calibrate` mode that learns the difficulty/keymode keys from the request JSON).
@@ -116,8 +116,10 @@ server's. In-game validation of the server itself is in progress.
    (`_relay.py`) that forwards each game host to the remote server with `X-EZ2-Host`
    and `X-EZ2-Token`.  Verified: in-process core (login→myinfo→rank→404), the HTTP
    server by `curl`, and the full path (`_fake_client` → relay:8082 → app:8081 →
-   leaderboard), in open and token mode.  The addon path (`mitmdump -s
-   server/_pserver.py`, the local single-machine setup) still works unchanged.
+   leaderboard), in open and token mode.  The old mitmproxy server addon has been
+   split out: `_pserver.py` is now the pure transport-neutral core, and the only
+   remaining server addon is the sweep/RE capture tool `server/re/_capture_addon.py`;
+   the offline default is unchanged.
    Containerised for a homeserver (`Dockerfile`, `docker-compose.yml`, an
    optional Caddy profile): only `server/data` (rw: RSA key, templates,
    `store.db`, `auth.json`) and `extracted_charts` (ro) are mounted;
