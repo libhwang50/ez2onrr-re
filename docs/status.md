@@ -95,9 +95,10 @@ server's. In-game validation of the server itself is in progress.
    — it stores its points in a separate structure and uses a different score
    curve; capture a Basic chart to finish it. For a **public** server the claimed
    SteamID must not be trusted: issue a server-side identity token instead (a
-   Steam emulator such as Goldberg lets account-less users play, but its identity
-   is self-asserted), and every user must set a **unique** SteamID or the session
-   registry and store collide.
+   Steam emulator such as Goldberg was expected to let account-less users play,
+   but it is **blocked by the client's Uncheater anti-cheat** — see
+   `client/README.md` §3 — and its identity is self-asserted), and every user
+   must set a **unique** SteamID or the session registry and store collide.
 10. Re-check the captions in the "8CN26" sections above when touching them: the code
    means "Song Load timeout" (a watchdog), NOT "corrupt file" — the Korean popup text
    ("게임 파일이 손상되었습니다") is the generic wrapper the reporter shows.

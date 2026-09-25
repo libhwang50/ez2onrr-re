@@ -373,8 +373,9 @@ For a **real** second client:
   patched `version.dll` + a unique SteamID;
 * on this machine, a second copy of the game under **Goldberg** (replace
   `EZ2ON_Data/Plugins/x86_64/steam_api64.dll`, add `steam_appid.txt` = `1477590`,
-  set a unique SteamID in Goldberg's `steam_settings/`) runs without a Steam
-  account — see `client/README.md`.
+  set a unique SteamID in Goldberg's `steam_settings/`) was meant to run without
+  a Steam account — **currently blocked by the client's Uncheater anti-cheat**,
+  which rejects the emulator at launch; see `client/README.md` §3.
 
 Every real user must set a **unique SteamID**: the session registry and the store
 both key on it, so two clients sharing one ID overwrite each other's key and

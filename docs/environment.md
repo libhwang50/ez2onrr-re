@@ -9,7 +9,7 @@
 | Core modules | `EZ2ON.exe`, `GameAssembly.dll`, `EZ2ON_Data/il2cpp_data/Metadata/global-metadata.dat` |
 | Assets | `EZ2ON_Data/StreamingAssets/Packs/01/` (audio), `02/` (video) — ~1,231 AssetBundles |
 | Instrumentation | Frida Gadget on `127.0.0.1:27042`, attach target `"Gadget"`; `.venv/bin/python` (frida, capstone, pefile, pycryptodome) |
-| Anti-cheat | None mapped natively. `uncheatercsd.dll` exists as a managed IL2CPP assembly; nothing blocks this work. |
+| Anti-cheat | **Wellbia "Uncheater"** (XIGNCODE-family): managed wrapper `uncheatercsd` in `GameAssembly.dll` plus native `xnina_x64.xem`/`xmag_x64.xem` under `EZ2ON_Data/StreamingAssets/{1B0E0030-…}/`. It runs in-process and does not block the tooling, but it **does** reject a Steam emulator (Goldberg) at launch — see [`client/README.md §3`](../client/README.md). |
 
 The game defines a global `Module`/`GameAssembly` that **shadows Frida's** — always
 use `Process.getModuleByName`.

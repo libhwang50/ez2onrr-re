@@ -74,9 +74,32 @@ nothing). On Windows it works same-user, no admin.
 
 ## 3. Playing without a Steam account (Goldberg)
 
-Users who do not own the game on Steam (and therefore have no SteamID) can still
-join a private server by running the client under a Steam emulator. The build is
-well suited to it:
+> **Blocked by the retail anti-cheat — read this first.** Replacing
+> `steam_api64.dll` with a Steam emulator trips the game's **Wellbia "Uncheater"**
+> anti-cheat (XIGNCODE-family). After the splash screens, right after
+> `c2s_get_gameinfo` is served, the client shows the generic error dialog
+> **"Security Check Failed"** and exits. The verdict is produced by the native
+> module (`EZ2ON_Data/StreamingAssets/{1B0E0030-…}/xnina_x64.xem` and
+> `xmag_x64.xem`, which write `uncheater.log`) and never reaches the game API:
+> **no `uncheater/gen_seed` / `uncheater/verify_cookie` request appears on the
+> proxied channel**, so a private server cannot satisfy or bypass it. Changing
+> the emulator's SteamID to a real one does not help; only the genuine
+> `steam_api64.dll` passes.
+>
+> The same dialog is the client's general anti-cheat/Steam gate UI — it also
+> shows `ERROR : STEAMCLIENT_AUTH_TIMEOUT` and `ERROR : STEAM_AUTH_TIMEOUT` (seen
+> with the genuine DLL but a Steam client that is not fully logged in).
+>
+> **Workaround:** keep the genuine `steam_api64.dll` and run with a Steam client
+> logged in. Because the build has no `RestartAppIfNecessary`/SteamStub and the
+> private server does not validate the auth ticket, a non-owning **free** Steam
+> account launched directly is expected to be enough (unconfirmed); otherwise
+> use Steam Family Sharing. The blocker is the client anti-cheat, not the
+> server.
+
+Users who do not own the game on Steam (and therefore have no SteamID) were meant
+to join a private server by running the client under a Steam emulator. The build
+is otherwise well suited to it:
 
 * it uses **Steamworks.NET** and ships the emulatable Unity plugin
   `EZ2ON_Data/Plugins/x86_64/steam_api64.dll` (this is the file an emulator
@@ -115,6 +138,9 @@ Caveats:
 * The emulated identity is **self-asserted**. That is fine for a friends/LAN
   server; a public server must not trust the claimed SteamID and needs the
   server-issued identity token planned for that deployment.
+* **The emulator is stopped by Uncheater before the lobby**, so none of the
+  setup above has any effect on the retail build. The supported account-less
+  route is a free Steam account + the genuine `steam_api64.dll` (warning above).
 
 ## Why the RSA block is the key
 
