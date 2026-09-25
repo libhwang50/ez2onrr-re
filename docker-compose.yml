@@ -19,9 +19,12 @@ services:
     # Override with EZ2_UID / EZ2_GID if your uid is not 1000.
     user: "${EZ2_UID:-1000}:${EZ2_GID:-1000}"
     environment:
-      # persist the log next to the mounted data;
-      # EZ2_DATA / EZ2_ARCHIVE already default to the paths below.
+      # persist the log and the recovered session key next to the mounted data;
+      # EZ2_DATA / EZ2_ARCHIVE already default to the paths below.  The image's
+      # /app/server is not writable by the non-root `${EZ2_UID}` user, so
+      # EZ2_KEYFILE must point into the rw mount.
       EZ2_LOG: /app/server/data/pserver.log
+      EZ2_KEYFILE: /app/server/data/session_key.json
       # EZ2_DATA: /app/server/data
       # EZ2_ARCHIVE: /app/extracted_charts
     ports:
