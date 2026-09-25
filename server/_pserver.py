@@ -833,6 +833,18 @@ def handle_api(flow: http.HTTPFlow):
 
     if endpoint == 'c2s_get_pattern_file':
         resp = pattern_response(req_json, sess)
+        # Missing chart: return 404 instead of {result:0} to prevent the game from hanging
+        if isinstance(resp, dict) and resp.get('result') == 0:
+            try:
+                req = json.loads(req_json) if req_json else {}
+            except Exception:
+                req = {}
+            name = str(req.get('musicresourcename') or req.get('MUSIC_RESOURCE_NAME') or '')
+            km = int(req.get('keymode') or req.get('KEYMODE') or 0)
+            lm = int(req.get('levelmode') or req.get('LEVELMODE') or 0)
+            log(f'pattern: {name!r} km={km} lm={lm} -> 404 NOT FOUND')
+            flow.response = _flowshim.make(404, b'', {'Content-Type': 'text/plain'})
+            return
         register_cdn_urls(req_json, resp)
         return respond_api(flow, resp, sess)
 
