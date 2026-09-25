@@ -78,6 +78,7 @@ captures).
 | `_relay.py` | **client-side relay** mitmproxy addon: forwards the game's hosts to a remote `app.py` with `X-EZ2-Host` + `X-EZ2-Token` |
 | `_sessions.py` | per-user API session registry: `steamid -> {key, iv}`, with an address cache and trial decryption for the SteamID-less requests |
 | `_store.py` | per-user progression store (SQLite, `data/store.db`): `memberinfo` + the 16-wide `clearlist` arrays, normalised to one row per cleared variant; seeds the owner from the captured `myinfo.json` |
+| `rating.py` | **STANDARD rating**, reverse-engineered from the client (see §3.7): the real 7-group category table, `rks = level + adj/10` (weights are already in `gameinfo.LEVEL`), `rating = (1/7)·Σ_cat (top-COUNT sum / COUNT)·RATIO`. `player_rating()` feeds `login`/`get_myinfo`/`get_userinfo`. Basic is not wired yet |
 | `_rsa.py` | server keypair + **strict** RSA decode of the login block (`init`/`show`/`decrypt`/`selftest`). The old `cryptography` PKCS#1 v1.5 call was not a validity oracle (82% of random blocks "decrypted"); this is |
 | `re/_login_probe.py` | standalone probe: captures `c2s_login`, strict-decodes `data`, reports the payload shape. The experiment that pinned the login JSON |
 | `_auth.py` | identity & access policy: `auth.json` (`open`/`token` mode, guest tier), token hashing, account resolution, optional Discord OAuth |
@@ -90,7 +91,7 @@ captures).
 | `data/login.json` | `c2s_login` response template (real, captured) |
 | `data/myinfo.json` | `c2s_get_myinfo` template — `clearlist`, `memberinfo`, … |
 | `data/gameinfo.json` | `c2s_get_gameinfo` template — the 1,201-entry music list |
-| `data/profile.json` | your member-field overrides (`LEVEL`, `EXP`, …), deep-merged into the `c2s_get_myinfo` template. The real `memberinfo` DTO has **no nickname field** — the name shown in game and sent in `plf…` is the Steam persona name from Steamworks. The in-game rating shown per key mode is **computed client-side** from your play data — `RATING` here only sets the myinfo field |
+| `data/profile.json` | your member-field overrides (`LEVEL`, `EXP`, …), deep-merged into the `c2s_get_myinfo` template. The real `memberinfo` DTO has **no nickname field** — the name shown in game and sent in `plf…` is the Steam persona name from Steamworks. The in-game rating shown per key mode is **computed client-side** from your play data; the server now also computes the **STANDARD** rating (`server/rating.py`) for `RATING`/`userinfo`. `profile.json`'s `RATING` is overridden by the computed value — Basic is not wired yet |
 | `data/auth.json` | optional identity config (`mode`, `guest`, `guest_persist`, `token_file`, `discord`). Absent = `open` mode (the old behaviour). Re-read per request |
 | `data/client_token.txt` | optional local bearer token, read when no `X-EZ2-Token` header is present (single-machine testing; the public relay supplies the header) |
 | `data/charts.json` | (song, keymode, levelmode) → CDN paths, 47 variants / 15 songs |

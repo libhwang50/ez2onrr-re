@@ -83,8 +83,17 @@ server's. In-game validation of the server itself is in progress.
    leaderboard) with no second game install, so multi-user is testable locally.
    Still to do: feed the rank `plf…` uploads in too (the same data over the other
    host — its fields do not cleanly carry `levelmode`, so `set_game_clear` remains
-   authoritative), and RE / implement the per-mode rating formula (the client
-   computes it from this clearlist — §3.7). For a **public** server the claimed
+   authoritative). **STANDARD rating — solved and wired** (`server/rating.py`, §3.7):
+   the client computes it locally in `da.cii` from `da.rwg` (a **7-group** category
+   table with COUNT/RATIO that supersedes the gameinfo `ratioCategoryList`),
+   `da.cr.rkl` (weighted level; the 불렙 weights are already baked into
+   `gameinfo.LEVEL`, e.g. Be-at SHD = 163) and the fine score table:
+   `rks = level + adj/10`, `rating = (1/7)·Σ_cat (top-COUNT rks sum / COUNT)·RATIO`.
+   `c2s_login` / `c2s_get_myinfo` / `c2s_get_userinfo` now serve the computed
+   value (the single `RATING` field = the best of the 4/5/6/8 key modes). Verified
+   against the live client: 4S 9.444 vs 9.434, 8S exact. **BASIC is not wired yet**
+   — it stores its points in a separate structure and uses a different score
+   curve; capture a Basic chart to finish it. For a **public** server the claimed
    SteamID must not be trusted: issue a server-side identity token instead (a
    Steam emulator such as Goldberg lets account-less users play, but its identity
    is self-asserted), and every user must set a **unique** SteamID or the session

@@ -199,6 +199,13 @@ class Store:
             return entries[start:start + limit], total
         return entries[:limit], total
 
+    def all_clears(self, steamid):
+        """Every clear row for a player (the normalised rating input)."""
+        with self._lock:
+            rows = self._db.execute('SELECT * FROM clears WHERE steamid=?',
+                                    (str(steamid),)).fetchall()
+        return [dict(r) for r in rows]
+
     def clear(self, steamid, music_id, keymode, levelmode):
         with self._lock:
             r = self._db.execute(

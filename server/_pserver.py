@@ -46,6 +46,7 @@ import _rsa  # noqa: E402
 import _sessions  # noqa: E402
 import _store  # noqa: E402
 import _auth  # noqa: E402
+import rating  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # data/ holds the RSA key, the templates and store.db; overridable so a container
@@ -56,6 +57,7 @@ KEYFILE = os.environ.get('EZ2_KEYFILE') or os.path.join(ROOT, 'server', 'session
 SESSIONS = _sessions.Registry()
 # per-user progression (memberinfo + clearlist); lives under git-ignored data/
 STORE = _store.Store(os.path.join(DATA, 'store.db'))
+RATING_DB = None  # rating.MusicDB, loaded by load_data()
 # the account whose captured progression seeds a fresh store (data/owner.txt)
 OWNER = '76561199429391557'
 try:
@@ -129,6 +131,8 @@ def load_data():
     if os.path.exists(p):
         RANK_CSV_SAMPLE = open(p).read().strip()
     get_profile()
+    global RATING_DB
+    RATING_DB = rating.MusicDB(os.path.join(DATA, 'gameinfo.json'))
     global OWNER
     p = os.path.join(DATA, 'owner.txt')
     if os.path.exists(p):
@@ -926,6 +930,28 @@ def bundle_crypt_key():
     return '0' * 96
 
 
+def standard_ratings(steamid):
+    """Per-keymode Standard rating for a player (see server/rating.py)."""
+    if RATING_DB is None or not steamid:
+        return {}
+    try:
+        return rating.ratings(RATING_DB, STORE.all_clears(steamid), 'standard')
+    except Exception:
+        log('rating: compute failed\n' + traceback.format_exc())
+        return {}
+
+
+def player_rating(steamid):
+    """The single `RATING` field: the player's best Standard keymode.
+
+    The client computes its own per-keymode display from the clearlist; this
+    value is what other players see through `c2s_get_userinfo` and the login
+    `member`.  Basic is not wired yet (its score curve is still unsolved).
+    """
+    vals = standard_ratings(steamid)
+    return max(vals.values()) if vals else 0.0
+
+
 def login_response(tpl, sess):
     """Rewrite the captured login template's `member` to the caller.
 
@@ -943,7 +969,7 @@ def login_response(tpl, sess):
         m['STEAM_ID'] = str(sid)
         p = STORE.player(sid) if (sess is None or sess.persist) else None
         m['LEVEL'] = int(p.get('level') or 1) if p else 1
-        m['RATING'] = float(p.get('rating') or 0.0) if p else 0.0
+        m['RATING'] = player_rating(sid) if (sess is None or sess.persist) else 0.0
         if sid == OWNER:
             apply_profile(m)
         else:
@@ -951,6 +977,8 @@ def login_response(tpl, sess):
             m['PLAY_COUNT'] = 0
             m['WIN_COUNT'] = 0
             m['LOSE_COUNT'] = 0
+        # server-computed Standard rating (profile.json must not clobber it)
+        m['RATING'] = player_rating(sid)
     return d
 
 
@@ -961,6 +989,8 @@ def default_myinfo(tpl, steamid):
     except Exception:
         mi = dict(tpl)
     mi['memberinfo'] = STORE.memberinfo(steamid) if steamid else mi.get('memberinfo', {})
+    if steamid:
+        mi['memberinfo']['RATING'] = player_rating(steamid)
     mi['clearlist'] = STORE.clearlist(steamid) if steamid else []
     mi.setdefault('course_clearlist', [])
     return mi
@@ -987,6 +1017,7 @@ def myinfo_response(tpl, sess):
         mi.setdefault('course_clearlist', [])
         if steamid == OWNER:
             apply_profile(mi)
+        mi['memberinfo']['RATING'] = player_rating(steamid)
         return mi
     if steamid:
         return default_myinfo(tpl, steamid)
@@ -1030,7 +1061,7 @@ def userinfo_response(req_json, sess=None):
         p = STORE.player(sid)
         if p:
             e['LEVEL'] = int(p.get('level') or 0)
-            e['RATING'] = float(p.get('rating') or 0.0)
+            e['RATING'] = player_rating(sid)
         entries.append(e)
     log(f'get_userinfo: {len(entries)} profile(s) served '
         f'(entry = STEAM_ID/LEVEL/RATING)')

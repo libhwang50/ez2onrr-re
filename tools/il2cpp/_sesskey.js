@@ -89,10 +89,11 @@ rpc.exports.zfstatics = function (clsName) {
             try { h = v.handle; } catch (e) {}
             try { n = v.length; } catch (e) {}
             if (h !== null && typeof n === 'number' && n > 0) {
+              rec.ptr = h.toString();
               const cap = Math.min(n, 128);
               let bytes = '';
               try {
-                const raw = new Uint8Array(Memory.readByteArray(h.add(0x20), cap));
+                const raw = new Uint8Array(h.add(0x20).readByteArray(cap));
                 for (let i = 0; i < raw.length; i++) {
                   bytes += raw[i].toString(16).padStart(2, '0');
                 }
@@ -100,7 +101,7 @@ rpc.exports.zfstatics = function (clsName) {
               } catch (e) {
                 rec.value = 'array[' + n + '] (read failed: ' + e + ')';
               }
-            } else { rec.value = String(v); }
+            } else { if (h !== null) { rec.ptr = h.toString(); } rec.value = String(v); }
           }
         }
       } catch (e) { rec.value = 'ERR ' + e; }
