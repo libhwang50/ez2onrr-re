@@ -80,8 +80,14 @@ class Relay:
         if insecure:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
+        # Never honor the system proxy: when the client machine routes traffic
+        # through this very mitmproxy (Windows global proxy), urllib would
+        # re-enter mitmdump with a CONNECT and deadlock until the timeout.
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPSHandler(context=ctx))
         try:
-            with urllib.request.urlopen(req, timeout=30, context=ctx) as r:
+            with opener.open(req, timeout=30) as r:
                 status, out = r.status, r.read()
                 ctype = r.headers.get('Content-Type', 'application/octet-stream')
         except urllib.error.HTTPError as e:
