@@ -68,7 +68,7 @@ selected).
   be course-only, behind the O2Jam Collaboration DLC).
 * **Difficulty is `levelmode`: 1=EZ, 2=NM, 3=HD, 4=SHD** (Conflict and Engine at levelmode 4
   are both SHD; Conflict levelmode 3 is HD).
-* **`gamemode` is BASIC (1) vs STANDARD (2), and it IS a chart selector — for some songs**
+* **`gamemode` is STANDARD (1) vs BASIC (2), and it IS a chart selector — for some songs**
   *(supersedes the earlier "gamemode 1 and 2 produced identical charts, so it is not a
   chart selector", which held only for the songs sampled)*. The two modes are otherwise
   identical (controls, play style, judgement *names*, scoring to 1.1 M, multiplayer); BASIC
