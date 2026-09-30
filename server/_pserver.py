@@ -132,7 +132,8 @@ def load_data():
         RANK_CSV_SAMPLE = open(p).read().strip()
     get_profile()
     global RATING_DB
-    RATING_DB = rating.MusicDB(os.path.join(DATA, 'gameinfo.json'))
+    gi = os.path.join(DATA, 'gameinfo.json')
+    RATING_DB = rating.MusicDB(gi) if os.path.exists(gi) else None
     global OWNER
     p = os.path.join(DATA, 'owner.txt')
     if os.path.exists(p):

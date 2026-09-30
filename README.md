@@ -86,7 +86,7 @@ python3 tools/live/harvest_metadata.py   # -> music_names.json
 | `ripper/extract_assets.py <song> [--bga]` | keysounds (FLAC/OGG), optionally BGA `.mp4` → `extracted_assets/<song_id>/` |
 | `ripper/find_bundle.py <keyword> [--decrypt\|--index]` | map bundle hashes → song codenames; build/refresh `song_index.json` |
 | `ripper/find_bundle.py --decrypt-all [--limit N]` | bulk-decrypt `.unity3d` bundles → `EZ2ON REBOOT R/decrypted_bundles/` |
-| `ripper/capture.py` | **capture charts** — interactive, Frida-free: sets the relay to harvest mode, runs the memory harvester, files each song you play into `extracted_charts/` |
+| `ripper/capture.py` | **capture charts** — interactive, Frida-free: sets the relay to harvest mode (or full passthrough with `--passthrough`), runs the memory harvester, files each song you play into `extracted_charts/` |
 | `ripper/decrypt_chart.py <cdn_*.bin> [--keypair …]` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
 | `ripper/decrypt_chart.py --archive [DIR …]` | **complete chart dumps** — decrypt every raw CDN capture in a tree (default `extracted_charts/`), writing `ez.ez` / `ezi.ezi` / `instrumentDic.json`; `--check` audits without writing |
 | `ripper/parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
@@ -141,6 +141,10 @@ python3 ripper/capture.py                    # relay + harvester + watch
 * `capture.py --setup-only` just writes the harvest knobs and prints the commands
   if you prefer to run the pieces yourself; `--no-mitm` / `--no-harvester` skip the
   parts you already have running.
+* **No `server/data/` yet?** `capture.py --passthrough` forwards *everything*
+  upstream instead of only `login`/`pattern`/`cdn`, so the relay is a pure
+  recording proxy and needs no server data at all. The trade-off: the official
+  account handles the whole session (scores and progression included).
 * **One chart per song is enough.** A chart's note assignment is per key
   mode/difficulty, but the `.ezi` keysound index and the audio are identical for
   every variant. The in-game Lounge goes through the same download flow (serving

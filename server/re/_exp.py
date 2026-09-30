@@ -9,6 +9,7 @@ upstream, which the capture addon reads per request.
     python server/re/_exp.py                       # show current state
     python server/re/_exp.py offline               # (the default) fully offline serving
     python server/re/_exp.py harvest               # capture: forward login+pattern+cdn, no mutations
+    python server/re/_exp.py passthrough           # capture: forward EVERYTHING (needs no server/data)
     python server/re/_exp.py hybrid on             # forward login+pattern upstream
     python server/re/_exp.py hybrid pattern        # forward only the pattern
     python server/re/_exp.py hybrid off            # pure private server (also the default)
@@ -40,6 +41,8 @@ a chart's note assignment is per keymode/difficulty.
 Hybrid mode is what makes a forwarded pattern response valid: the upstream
 official server must have a live session, so `login` must be forwarded too.
 Scores/records stay private either way unless you forward those endpoints.
+`passthrough` forwards *everything*, so no server/data is needed — the official
+account then handles the whole session (scores included).
 """
 import os
 import sys
@@ -120,6 +123,19 @@ def main():
         set_('urls', '')
         set_('bck', '')
         set_('chart', 'exact')     # irrelevant in passthrough; set for clarity
+        show()
+        return 0
+    if a[0] in ('passthrough', 'all'):
+        # The pure capture proxy: forward EVERY game-host request upstream, so
+        # capture needs no server/data at all. The relay still records CDN
+        # bodies and labels them from the harvested session key. Unlike
+        # `harvest`, the official account is used for the whole session
+        # (scores/progression included) - that is the price of not maintaining
+        # a local profile.
+        set_('endpoints', 'all')
+        set_('urls', '')
+        set_('bck', '')
+        set_('chart', 'exact')
         show()
         return 0
     if a[0] in ('off', 'reset'):

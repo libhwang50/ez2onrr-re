@@ -84,7 +84,7 @@ captures).
 | `_auth.py` | identity & access policy: `auth.json` (`open`/`token` mode, guest tier), token hashing, account resolution, optional Discord OAuth |
 | `_accounts.py` | admin CLI: `issue` / `list` / `ban` / `unban` server accounts + bearer tokens (no external service needed) |
 | `_fake_client.py` | **synthetic second client** for multi-user testing — logs in as any SteamID (RSA-wrapped key), then drives `c2s_get_myinfo` / `c2s_set_game_clear` / `c2s_get_userinfo` and the rank leaderboard. Creates a fresh account and a competing score with **no second game install** |
-| `re/_capture_addon.py` | **the mitmproxy capture relay** — wraps the offline core: forwards `login`/`pattern`/uncached CDN upstream and files every returned CDN body into `extracted_charts/`. Driven by `ripper/capture.py` (and, for RE, by `re/_sweep.py`). The standalone server never forwards upstream |
+| `re/_capture_addon.py` | **the mitmproxy capture relay** — wraps the offline core: forwards `login`/`pattern`/uncached CDN upstream and files every returned CDN body into `extracted_charts/`. With `passthrough_endpoints.txt` = `all` it forwards every game-host request instead, so capture needs no server data. Driven by `ripper/capture.py` (and, for RE, by `re/_sweep.py`). The standalone server never forwards upstream |
 | `re/_harvest_mem.py` | **the Frida-free session key** — scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds at login → `session_key.json`. It is chart capture's key source and the standalone server's fallback for an unpatched client. Handles relaunches/rotations; keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/sudo, Windows is same-user |
 | `re/_harvest_session.py` | Frida bridge (fallback): polls `zf.aes_key`/`aes_iv` at 1 Hz → `session_key.json`; **auto-re-attaches when the game restarts** |
 | `_build_data.py` | (re)builds `data/` from the captured artefacts in the repo |
@@ -509,6 +509,12 @@ starts the relay and the harvester and sets the knobs for you:
 bash client/patcher/install.sh uninstall
 python3 ripper/capture.py
 ```
+
+If you have no `server/data/` yet, add `--passthrough`: the relay then forwards
+every game-host request upstream (not just `login`/`pattern`/`cdn`), so nothing is
+served locally and no server data is required — at the cost of the official
+account handling the whole session, scores included. The harvester still runs,
+because labelling a capture means decrypting the pattern request.
 
 The loop that adds songs, end to end:
 

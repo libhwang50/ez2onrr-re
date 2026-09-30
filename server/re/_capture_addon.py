@@ -14,7 +14,10 @@ filed into the archive:
 Everything else is served locally by the core.  The forwarding knobs are the
 `server/data/*.txt` files written by `server/re/_exp.py`; the interactive capture
 tool `ripper/capture.py` drives this via `_exp.py harvest` (and the RE-only auto
-macro `server/re/_sweep.py` drives the same path).
+macro `server/re/_sweep.py` drives the same path).  With
+`passthrough_endpoints.txt` set to `all` (`_exp.py passthrough`) the core is
+bypassed entirely: every game-host request is forwarded, so capture needs no
+`server/data/` at all — at the cost of the official account handling the session.
 
     mitmdump -s server/re/_capture_addon.py
 
@@ -73,6 +76,19 @@ def passthrough_set():
     if os.path.exists(os.path.join(DATA, 'passthrough_pattern')):
         eps.add('pattern')
     return eps
+
+
+def passthrough_all():
+    """Forward EVERY game-host request upstream: a pure capture proxy that needs
+    no `server/data/` at all (no templates, no charts, no CDN index).  The relay
+    still records CDN bodies and labels them from the harvested session key, so
+    `extracted_charts/` fills exactly as in `harvest` mode.  Opt-in via
+    `passthrough_endpoints.txt` containing `all`; read per request.
+
+    The trade-off is that the official account is used for the whole session —
+    scores and progression included — because nothing is served locally.
+    """
+    return 'all' in passthrough_set()
 
 
 def cdn_passthrough():
@@ -248,13 +264,21 @@ class CaptureAddon:
             endpoint = path.rstrip('/').split('/')[-1]
             addr = ps.flow_addr(flow)
             body = flow.request.raw_content or b''
-            if host == ps.API_HOST and any(e in endpoint for e in passthrough_set()):
+            if host == ps.API_HOST and (passthrough_all()
+                                        or any(e in endpoint for e in passthrough_set())):
                 # forward this endpoint upstream verbatim (the client's request
                 # is already encrypted with its own session key, which the real
                 # server shares — a genuine session for those endpoints only).
                 # The response hook logs it before the client sees it.
                 ps.bind_session(flow, endpoint, body, addr)
                 log(f'{endpoint}: PASSTHROUGH to upstream (live session)')
+                return
+            if passthrough_all():
+                # pure capture proxy: rank and every uncached CDN path go upstream
+                # verbatim too, so no server/data is needed.  The response hook
+                # still records the CDN bodies.
+                if host == ps.CDN_HOST:
+                    log(f'CDN MISS {path} -> upstream (passthrough)')
                 return
             if host == ps.CDN_HOST and cdn_passthrough() and path not in ps.CDN_PATHS:
                 # harvest: no local copy, so let the official CDN answer and we
@@ -293,7 +317,7 @@ class CaptureAddon:
         if host != ps.API_HOST or flow.response is None:
             return
         ep = flow.request.path.rsplit('/', 1)[-1]
-        if not any(e in ep for e in passthrough_set()):
+        if not (passthrough_all() or any(e in ep for e in passthrough_set())):
             return
         try:
             sess = flow.metadata.get('ps_session')

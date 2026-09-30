@@ -8,7 +8,7 @@ User-facing (repo root):
 |---|---|
 | `ripper/extract_assets.py` | extract keysounds (FLAC/OGG) and `--bga` videos |
 | `ripper/find_bundle.py` | map bundles → songs (`--index`, `--decrypt`, `--decrypt-all`) |
-| `ripper/capture.py` | **capture charts** — interactive, Frida-free: harvest-mode relay + memory harvester, files each song you play into `extracted_charts/` |
+| `ripper/capture.py` | **capture charts** — interactive, Frida-free: harvest-mode relay + memory harvester, files each song you play into `extracted_charts/`; `--passthrough` forwards everything upstream so it needs no `server/data/` |
 | `ripper/decrypt_chart.py` | **decrypt CDN payloads** → `.ez` / `.ezi` plaintext (library + CLI); `--archive` completes a whole capture tree, `--check` audits it without writing |
 | `ripper/parse_chart.py` | **read decrypted charts** — `.ez` note charts and `.ezi` keysound indexes, as a summary, JSON, or note listing |
 | `ripper/chart_labels.py` | **name charts** — decrypt captured API traffic into `chart_labels.json` (song name, key mode, difficulty) |
@@ -31,7 +31,7 @@ Private server (see **`server/README.md`** for the full guide):
 | Tool | Purpose |
 |---|---|
 | `server/_pserver.py` | **the private server core** — transport-neutral game logic that stubs `game1-play` / `game1-rank` / `game1-cdn` server-side; run via `server/app.py` (standalone) or the client relay |
-| `server/re/_capture_addon.py` | **the mitmproxy capture relay** — wraps the offline core: forwards `login`/`pattern`/uncached CDN upstream and files the returning CDN bodies into `extracted_charts/`. Driven by `ripper/capture.py` (and, for RE, `_sweep.py`). No longer the server |
+| `server/re/_capture_addon.py` | **the mitmproxy capture relay** — wraps the offline core: forwards `login`/`pattern`/uncached CDN upstream and files the returning CDN bodies into `extracted_charts/`. With `passthrough_endpoints.txt` set to `all` it forwards every game-host request instead, so capture needs no server data. Driven by `ripper/capture.py` (and, for RE, `_sweep.py`). No longer the server |
 | `server/_rsa.py` | **the RSA hand-off** — server keypair (`init`/`show`) and a **strict** raw-RSA decode of `c2s_login.data` (the earlier `cryptography` PKCS#1 v1.5 call was not a validity oracle — 82% of random blocks "decrypted"). `selftest` guards the oracle; `decrypt <block>` decodes one |
 | `server/re/_login_probe.py` | **the decisive experiment**: a mitmproxy addon that captures every `c2s_login`, strict-decodes its `data` block and reports whether the patcher is active. This is how the login JSON was pinned |
 | `server/re/_harvest_mem.py` | **Frida-free session key (fallback)**: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds for login → `server/session_key.json`. Tracks relaunches/rotations, keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/root; Windows is same-user |

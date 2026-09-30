@@ -21,6 +21,16 @@ What it starts
 Then just play songs.  Captures are printed as they land; Ctrl-C stops cleanly
 and restores the server knobs it changed.
 
+No server data?  Use `--passthrough`
+-----------------------------------
+The default `harvest` mode still needs a populated `server/data/` (the gameinfo/
+myinfo templates the game reads between songs).  `--passthrough` forwards *every*
+game-host request upstream instead, so nothing is served locally and capture
+needs no server data at all — it is just a recording proxy.  The cost is that the
+official account is used for the whole session, scores and progression included
+(nothing stays private).  The memory harvester is still required, because
+labelling a capture means decrypting the pattern request.
+
 Capture needs an *unpatched* client
 -----------------------------------
 `harvest` forwards `c2s_login` to the official server, so the client must
@@ -42,6 +52,7 @@ Prerequisites
 Usage
 -----
     python3 ripper/capture.py                  # set up + relay + harvester + watch
+    python3 ripper/capture.py --passthrough     # same, but forward EVERYTHING (no server data)
     python3 ripper/capture.py --setup-only      # only set the harvest knobs, then exit
     python3 ripper/capture.py --no-mitm         # the relay is already running elsewhere
     python3 ripper/capture.py --no-harvester    # the session key comes from elsewhere
@@ -195,6 +206,10 @@ def main():
                     help='do not start mitmdump (a capture relay is already running)')
     ap.add_argument('--no-harvester', action='store_true',
                     help='do not start the memory harvester (session key supplied elsewhere)')
+    ap.add_argument('--passthrough', action='store_true',
+                    help='forward EVERY request to the official servers (a pure recording '
+                         'proxy): needs no server/data, but the official account is used '
+                         'for the whole session (scores included)')
     ap.add_argument('--keep-knobs', action='store_true',
                     help='leave the harvest knobs in place on exit instead of restoring the '
                          'previous knobs')
@@ -221,10 +236,21 @@ def main():
               '          RSA key, so capture works, but the Gadget is what makes the\n'
               '          game unstable on launch.  Prefer the built-in version.dll.')
 
+    mode = 'passthrough' if args.passthrough else 'harvest'
+    if not args.passthrough and not os.path.exists(
+            os.path.join(SERVER, 'data', 'gameinfo.json')):
+        print('[capture] note: server/data/gameinfo.json is missing, so the offline core\n'
+              '          has no music list to serve the game.  If you have not set up\n'
+              '          server/data yet, pass --passthrough to forward everything to\n'
+              '          the official servers instead (no server data needed).')
     _snap = snapshot_knobs()
-    print('[capture] setting harvest knobs (forward login/pattern/cdn upstream)')
-    if run_exp('harvest') != 0:
-        sys.exit('[capture] could not set the harvest knobs')
+    if args.passthrough:
+        print('[capture] setting passthrough knobs (forward EVERYTHING upstream; '
+              'no server data needed)')
+    else:
+        print('[capture] setting harvest knobs (forward login/pattern/cdn upstream)')
+    if run_exp(mode) != 0:
+        sys.exit('[capture] could not set the %s knobs' % mode)
 
     if args.setup_only:
         print('\n[capture] setup-only.  Run these yourself, then launch the game:\n'
