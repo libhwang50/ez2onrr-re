@@ -1,8 +1,10 @@
 # `tools/` — reverse-engineering & analysis tooling
 
 Everything here is investigation tooling, kept separate from the user-facing
-ripper scripts at the repository root (`ripper/extract_assets.py`, `ripper/find_bundle.py`,
-`ripper/dump_song.py`, `ripper/harvest_key.py`).
+ripper scripts at the repository root (`ripper/extract_assets.py`,
+`ripper/find_bundle.py`, `ripper/capture.py`, …).  None of the user-facing tools
+need Frida: the Frida host scripts live in `live/` and are installed separately
+from `requirements-frida.txt`.
 
 The directory was pruned on 2026-09-23: the one-off probe campaigns, failed
 crypto sweeps and first-generation scripts were removed. What remains is the
@@ -14,6 +16,7 @@ actually use. Deleted work is recoverable from git history; the important
 
 | directory | contents |
 |---|---|
+| `live/` | Frida live-game host scripts: `dump_song.py` (per-song snapshot), `harvest_key.py` (`true_key_1024.bin`), `harvest_metadata.py` (`music_names.json`). They load the `il2cpp/` drivers and attach to the Gadget. Interactive, Frida-free chart capture is `ripper/capture.py`. |
 | `il2cpp/` | `frida-il2cpp-bridge` (`_il2cpp_bridge.js`) plus the IL2CPP drivers: symbolication (`_sym.js`, `_namemap.js`, `_methods.js`), **call-site scanning and enclosing-method attribution (`_callers.js` — the workhorse)**, **klass/vtable inspection (`_slotfind.js`, `_probe_cls.js`, `_vt.js`)**, **static-field extraction (`_statics.js`, `_mem.js`, `_staticscan.js`, `_clsstr.js` — static string values)**, string hunting (`_findstr.js` — the `patternjson` scanner), the per-song dump driver (`_dumpsong.js`) and the music-table dumper (`_musicdic.js`), and the private server's session-key reader **and memory-probe toolkit** (`_sesskey.js`). |
 | `probes/` | `_poll_da.py` — the safe 4 Hz host-side poll loop, the pattern for any new passive watcher. (The hook/guard-page experiments were deleted; never re-add them, see the crash notes below.) |
 | `mitm/` | mitmproxy addons (`_cdn_rewrite.py` rewrite oracle, `_capture_all.py` full-corpus capture), flow parsing (`_replay_extract.py` — native `-w` dump → per-flow JSONL + bodies), API decryption (`_decrypt_api.py`, `_decrypt_api_all.py`). |
@@ -23,8 +26,8 @@ actually use. Deleted work is recoverable from git history; the important
 | `../logs/` | Captured run logs from the probe campaigns. |
 
 Drivers used by shipped tools, do not rename: `_sesskey.js` (the harvester),
-`_dumpsong.js` (`ripper/dump_song.py`), `_musicdic.js` (`ripper/harvest_metadata.py`),
-`_statics.js` (`ripper/chart_labels.py`), `_findstr.js` (§3.2), `_poll_da.js`
+`_dumpsong.js` (`tools/live/dump_song.py`), `_musicdic.js` (`tools/live/harvest_metadata.py`),
+`_statics.js` (session-key/statics extraction), `_findstr.js` (§3.2), `_poll_da.js`
 (`tools/probes/_poll_da.py`).
 
 ## Running a driver
@@ -116,8 +119,8 @@ the lesson stays:
 Two further hazards, learned later, that are **not** about hooking:
 
 * **Killing a watcher without detaching.** SIGTERM does not run Python `finally`
-  blocks, so `timeout 30 python3 ripper/dump_song.py` leaves the Frida agent resident and
-  wedges the gadget's message loop. `ripper/dump_song.py` installs
+  blocks, so `timeout 30 python3 tools/live/dump_song.py` leaves the Frida agent resident and
+  wedges the gadget's message loop. `tools/live/dump_song.py` installs
   SIGTERM/SIGINT/SIGHUP handlers that detach before exiting — keep that guard when
   writing new watchers, and prefer a clean Ctrl-C over `kill`.
 * **Invoking list methods while the game is still building the list.** `normalLanes`

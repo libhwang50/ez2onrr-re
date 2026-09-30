@@ -15,8 +15,9 @@ UnityPy
 # Chart + API ciphers: decrypt_chart.py, chart_labels.py
 pycryptodome
 
-# Live-game reads over the Frida Gadget: harvest_key.py, dump_song.py
-frida
+# Live-game reads over the Frida Gadget are RE-only now; they live under
+# tools/live/ and tools/ and need a separate install:
+#   uv pip install --python .venv/bin/python -r requirements-frida.txt
 
 # Rendering and visualising a song: render_song.py, visualize_song.py
 numpy
@@ -27,6 +28,3 @@ mutagen          # optional: FLAC tags on a render; render_song.py skips them wi
 # Private server (server/) and the mitmproxy-based capture tools
 mitmproxy
 cryptography     # server/_pserver.py imports it directly for the API cipher
-
-# Investigation tooling (tools/)
-capstone

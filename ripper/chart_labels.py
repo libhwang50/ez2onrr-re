@@ -5,7 +5,7 @@ The game asks for each chart with `c2s_get_pattern_file`, whose request body car
 `musicresourcename`, `keymode`, `levelmode` and `gamemode` — and whose response carries the
 signed CDN URLs. So a mitm capture gives us the labels for any chart we also captured.
 
-`ripper/dump_song.py` reads the resulting JSON and matches its current `ezi_url` against it, which
+`tools/live/dump_song.py` reads the resulting JSON and matches its current `ezi_url` against it, which
 is how a capture gets a readable name instead of `song_<hash>`.
 
 Usage

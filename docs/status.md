@@ -13,7 +13,7 @@ static key material (`svq`/`svr` mask tables, three key/IV pairs), and verified 
 end-to-end (5 songs, 3 key pairs). The 4K lane map and the long-note rule are verified
 against the game's own `normalLanes`, 12/12 lanes exact. `ripper/parse_chart.py` reads the result:
 header, tracks, note events with normal/long, `.ezi` join; JSON or a note listing.
-`ripper/dump_song.py` now decrypts on capture and waits for the parse before snapshotting.
+`tools/live/dump_song.py` now decrypts on capture and waits for the parse before snapshotting.
 The login/session-key protocol is fully mapped (§3.1) and the private server (`server/`)
 serves a complete online session — login, music list, profile, pattern files, CDN charts,
 rank stubs. **Chart loads are fully offline**: the only thing taken from the running game
@@ -25,13 +25,24 @@ server's. In-game validation of the server itself is in progress.
 
 1. Identify note types 5/6/9 against `InGameCore`'s `specialNoteData` / `autoNoteData`.
 2. Find the song *name* for a chart with no API label — the header name gives the variant
-   (`5-hd`) but not the song, so `ripper/dump_song.py` still falls back to `song_<hash>` there.
-   (`patternFileInfo` reads empty at capture time, which is what forces the API route.)
+   (`5-hd`) but not the song, so the Frida `tools/live/dump_song.py` still falls back to
+   `song_<hash>` there. (`patternFileInfo` reads empty at capture time, which is what forces
+   the API route. The interactive relay capture `ripper/capture.py` labels from the request
+   directly, so this is only a limitation of the Frida dumper.)
 3. Determine whether the API's `keymode` ever disagrees with the header-name / lane-count
    key mode (7K unobserved; 8K seen as `8-ez` but no API label yet).
 4. Find what selects the key pair (`svk`/`svm`/`svo`) — not the payload, the CDN path, or
    `bundleCryptKey`; all three are in wide use and some songs mix them across variants, so
    it looks like an authoring/build-time choice.
+4b. **Stale-URL captures — FIXED server-side.** The Frida dumper's ident snapshot can
+   lag the body it writes: four captures (air/4k/shd, air/5k/hd, pupa/4k/shd,
+   ultimatum/5k/ez) recorded another capture's CDN URL, so one path mapped to two
+   different bodies and one variant of each pair was served the wrong chart
+   (`ripper/check_charts.py` flags them as "stale URL"; the *bodies* are correct for
+   their labels — only the URLs crossed). `server/_build_data.py` now re-keys the
+   second body under a content-addressed path on collision, so a rebuild serves both
+   variants correctly; re-capture is optional. The relay capture labels and URLs come
+   from the same pattern response and cannot cross.
 5. Capture a bridge-keyed session **of the real servers** (plain `mitmdump -w` **plus**
    `server/re/_harvest_session.py` running — the auto-reattach harvester makes the ordering
    irrelevant) to decrypt the real `c2s_set_game_clear` response (48/64 B, length varies)

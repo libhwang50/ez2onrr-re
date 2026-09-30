@@ -1,0 +1,16 @@
+# EZ2ON REBOOT: R — RE-only dependencies (Frida + live-game tooling).
+#
+# The user-facing ripper tools and the private server do NOT need these.  This
+# file is for `tools/` (the reverse-engineering harness) and `tools/live/`
+# (the Frida host scripts: dump_song.py, harvest_key.py, harvest_metadata.py,
+# plus the old live session-key harvester `server/re/_harvest_session.py`).
+#
+#   uv pip install --python .venv/bin/python -r requirements-frida.txt
+#
+# Ground rules for anything that attaches to the live game are in
+# docs/environment.md and tools/README.md — read them first.
+
+frida
+
+# tools/_dis.py disassembles live module bytes
+capstone

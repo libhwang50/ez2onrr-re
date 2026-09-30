@@ -17,11 +17,11 @@ resolved one (`Hyper_Magic_4K_SHD.flac`), else its resource codename, plus the k
 difficulty so variants do not collide. An unidentified capture keeps its `song_<hash>` name.
 Without `-o`, a render is written to `rendered_songs/<name>.flac`.
 
-`song_dir` must hold a decrypted `ez.ez` and `ezi.ezi` (what `ripper/dump_song.py` writes, or
+`song_dir` must hold a decrypted `ez.ez` and `ezi.ezi` (what `tools/live/dump_song.py` writes, or
 `ripper/decrypt_chart.py --out` produces); a parent directory is accepted when it contains
 exactly one chart. `--assets auto` finds the matching
 `extracted_assets/<song_id>` by comparing keysound filenames, which is necessary because
-`ripper/dump_song.py` names its directories `song_<hash>` and never records the song id.
+`tools/live/dump_song.py` names its directories `song_<hash>` and never records the song id.
 
 Requires numpy and soundfile (`uv pip install --python .venv/bin/python numpy soundfile`).
 
@@ -55,7 +55,7 @@ def tag_file(path, song, label=None):
     """Write Vorbis comments onto a rendered FLAC. Returns the tags written.
 
     The song's title and composer come from the game's `MUSIC_NAME_DIC` (see
-    `ripper/harvest_metadata.py`); the mode/difficulty come from the capture's label. Nothing is
+    `tools/live/harvest_metadata.py`); the mode/difficulty come from the capture's label. Nothing is
     written when the song cannot be resolved, so a render never gets wrong credits.
     """
     label = label or {}

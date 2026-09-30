@@ -30,8 +30,11 @@ track walk, the 13-byte stride, the type-1 keysound index (every one lands insid
     order); every other track, from the track-22 `MR` layer upward, is auto-played;
   * **a type-1 note is a long note iff `flags not in (0, 6)`**, and `flags` **is the hold
     length in ticks** — every hold then ends at or before the next note in its lane;
-  * **key mode follows the lane count**: 4 -> 4K, 5 -> 5K, 6 -> 6K, 8 -> 8K, agreeing with
-    the header's `<keys>-<difficulty>` name tag when it is set.
+  * **key mode follows the playable-lane span** (tracks 3..10): 4 -> 4K, 5 -> 5K,
+    6 -> 6K, 8 -> 8K. The header's `<keys>-<difficulty>` tag is **not** trustworthy
+    for key mode — it is wrong on ~47% of the reference archive (every 8K capture is
+    tagged `6-*`) — so the lane span wins and the header is only a fallback for a
+    chart with no player notes.
 
 The `velocity`/`pan` byte positions follow the EZ2AC spec, but `velocity` is 127 for
 essentially every note here, so its meaning is untested. Note types 5/6/9 are
@@ -47,10 +50,17 @@ import sys
 BYTES_PER_NOTE = 13
 NOTE_TYPE_NAMES = {1: 'note', 2: 'volume', 3: 'bpm', 4: 'beats'}
 
-# The header `name` at 0x06 is the chart variant, e.g. '4-shd', '8-ez', '5-nm'. It is the
-# most direct source for key mode and difficulty, when the chart sets it.
+# The header `name` at 0x06 is the chart variant, e.g. '4-shd', '8-ez', '5-nm'. The
+# difficulty half is reliable; the key-mode half is **not** — across the reference
+# archive it disagrees with the runtime request ~47% of the time (every 8K capture is
+# authored/tagged `6-*`, many 4K ones `5-*`, ...). Treat it as a hint, never as
+# authority: derive key mode from the playable-lane span instead.
 VARIANT_RE = re.compile(r'^(\d+)-(ez|nm|hd|shd)$', re.I)
 LANE_LABEL = {4: '4K', 5: '5K', 6: '6K', 7: '7K', 8: '8K'}
+# 1P player lanes are contiguous from track 3: 4K=3-6, 5K=3-7, 6K=3-8, 8K=3-10
+# (Key1-5, Effector1-2, Scratch). Tracks past 10 (Pedal/Effector3-4/2P) are not part
+# of the 4/5/6/8 set and must not inflate the count.
+PLAYER_LO, PLAYER_HI = 3, 10
 DIFF_BY_LEVELMODE = {'1': 'EZ', '2': 'NM', '3': 'HD', '4': 'SHD'}
 
 # Arcade track roles (EZ2AC v6+). REBOOT files use 64 tracks; roles past 21 are not
@@ -195,8 +205,15 @@ class Chart:
 
     @property
     def lane_count(self):
-        """Playable lanes: tracks from 3 upwards that carry notes (4 for 4K, 8 for 8K...)."""
-        return sum(1 for t in self.tracks[3:22] if t.notes_of_type(1))
+        """Playable lanes, from the highest 1P player track used (tracks are contiguous 3+).
+
+        4K is tracks 3-6, 5K 3-7, 6K 3-8, 8K 3-10.  The *span* is reported, not the
+        number of tracks that happen to carry a note: a chart that leaves a middle or
+        top lane empty (e.g. an 8K chart with no scratch notes) still has that lane, and
+        the game's `normalLanes` reports it.  Tracks past 10 are ignored.
+        """
+        used = [t.index for t in self.tracks[PLAYER_LO:PLAYER_HI + 1] if t.notes_of_type(1)]
+        return (max(used) - PLAYER_LO + 1) if used else 0
 
     @property
     def variant(self):
@@ -204,12 +221,21 @@ class Chart:
         return self.header['name'] or None
 
     @property
-    def keymode(self):
-        """'4K'..'8K'. Prefers the header name ('4-shd' -> 4K), else counts the lanes."""
+    def header_keymode(self):
+        """The key mode the header's `<n>-<diff>` name claims, or None. Unreliable; see above."""
         m = VARIANT_RE.match(self.header['name'] or '')
-        if m:
-            return m.group(1) + 'K'
-        return LANE_LABEL.get(self.lane_count)
+        return (m.group(1) + 'K') if m else None
+
+    @property
+    def keymode(self):
+        """'4K'..'8K' from the playable-lane span, falling back to the header name.
+
+        The lane span agrees with the runtime request on 3,097 of the 3,101 charts in the
+        reference archive; the header name agrees on 1,631.  The header is therefore only
+        used when the chart has no player notes at all.
+        """
+        km = LANE_LABEL.get(self.lane_count)
+        return km or self.header_keymode
 
     @property
     def difficulty(self):
@@ -350,8 +376,12 @@ def summarize_chart(ch):
     lines = ['EZFF chart  v%d  name=%r' % (h['version'], h['name'])]
     bits = [b for b in (ch.keymode, ch.difficulty) if b]
     if bits:
-        lines.append('  variant       : %s%s' % (' '.join(bits),
-                     '  [from the header name]' if ch.difficulty else '  [from lane count]'))
+        src = []
+        if ch.lane_count:
+            src.append('key mode from the %d-lane span' % ch.lane_count)
+        if ch.difficulty:
+            src.append('difficulty from the header name')
+        lines.append('  variant       : %s  [%s]' % (' '.join(bits), '; '.join(src) or 'n/a'))
     lines += ['  ticks/measure : %d' % h['ticksPerMeasure'],
              '  initial BPM   : %.3f' % h['initialBPM'],
              '  second BPM    : %.3f' % h['secondBPM'],

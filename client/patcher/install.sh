@@ -4,6 +4,11 @@
 #   bash client/patcher/install.sh status    # what is installed right now
 #   bash client/patcher/install.sh patcher   # install the RSA-key patcher (Frida-free)
 #   bash client/patcher/install.sh gadget    # restore the Frida Gadget
+#   bash client/patcher/install.sh uninstall # remove the app-dir DLL (Wine uses its builtin)
+#
+# `uninstall` is what chart capture wants: `ripper/capture.py` forwards login
+# upstream, which needs the official RSA key, so the key-rewriting patcher must
+# not be live.
 #
 # The game directory is the Steam install (the repo's "EZ2ON REBOOT R" is a
 # symlink to it).  The Gadget is preserved as `version.dll.gadget` and is never
@@ -51,5 +56,15 @@ case "$cmd" in
     cp -f "$GADGET" "$LIVE"
     echo "restored gadget -> $LIVE"
     ;;
-  *) echo "usage: $0 {status|patcher|gadget}" >&2; exit 1 ;;
+  uninstall)
+    k="$(kind "$LIVE")"
+    case "$k" in
+      gadget)  [ -f "$GADGET" ] || cp -f "$LIVE" "$GADGET" ;;
+      patcher) cp -f "$LIVE" "$GAME/version.dll.patcher" ;;
+      *)       cp -f "$LIVE" "$GAME/version.dll.removed" ;;
+    esac
+    rm -f "$LIVE"
+    echo "removed the $k version.dll; Wine will use its builtin version.dll"
+    ;;
+  *) echo "usage: $0 {status|patcher|gadget|uninstall}" >&2; exit 1 ;;
 esac

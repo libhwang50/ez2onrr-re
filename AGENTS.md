@@ -16,11 +16,12 @@ that apply everywhere. Section numbers like `§3.1` resolve in `docs/`.
 ## Layout
 
 ```
-ripper/    archiving tools — assets, bundles, charts, render (see README.md)
-server/    the private server (standalone HTTP(S)/ASGI) + capture automation
-server/re/ investigation/diagnostics used while developing the server
+ripper/    archiving tools — assets, bundles, charts, render, interactive capture (see README.md)
+server/    the private server (standalone HTTP(S)/ASGI) + capture relay
+server/re/ investigation/diagnostics + the RE-only auto sweep
 client/    the Frida-free version.dll patcher
 tools/     the reverse-engineering toolbox (Frida drivers, mitm, crypto)
+tools/live/  Frida live-game host scripts (RE-only; requirements-frida.txt)
 docs/      this technical report
 deploy/    Caddyfile for the optional TLS profile
 ```

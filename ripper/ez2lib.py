@@ -51,7 +51,7 @@ def load_bundle_key() -> bytes:
     path = bundle_key_path()
     if not os.path.exists(path):
         sys.exit("[!] Master XOR key missing: expected %s (derive it once with "
-                 "ripper/harvest_key.py, with the game running)" % path)
+                 "tools/live/harvest_key.py, with the game running)" % path)
     with open(path, "rb") as f:
         key = f.read(1024)
     if len(key) < 1024:
@@ -67,7 +67,7 @@ def decrypt_bundle_head(head: bytes, key: bytes) -> bytes:
 
 
 def chart_label(song_dir: str) -> dict:
-    """The label dict ``ripper/dump_song.py`` wrote next to a capture, if present.
+    """The label dict ``tools/live/dump_song.py`` wrote next to a capture, if present.
 
     Returns ``{}`` when ``ident.json`` is missing or malformed, so callers can treat
     "no label" and "bad label" the same way.

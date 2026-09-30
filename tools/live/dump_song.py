@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ripper/dump_song.py — snapshot every song you enter, automatically.
+tools/live/dump_song.py — snapshot every song you enter, automatically.
 
 Attaches to the running game's Frida Gadget and watches `InGameCore.instance`.
 Each time a new chart is fetched it immediately (a) downloads the signed CDN
@@ -9,10 +9,10 @@ the keysound dictionary and the parsed note data.
 
 Usage
 -----
-    python3 ripper/dump_song.py                # watch, ~1 Hz, output under extracted_charts/
-    python3 ripper/dump_song.py --out dir --interval 0.4
-    python3 ripper/dump_song.py --read-instrument-dic   # opt into the risky cross-check read
-    python3 ripper/dump_song.py --no-patternjson        # skip the in-memory label sweep (diagnostic)
+    python3 tools/live/dump_song.py                # watch, ~1 Hz, output under extracted_charts/
+    python3 tools/live/dump_song.py --out dir --interval 0.4
+    python3 tools/live/dump_song.py --read-instrument-dic   # opt into the risky cross-check read
+    python3 tools/live/dump_song.py --no-patternjson        # skip the in-memory label sweep (diagnostic)
 
 Then just play songs; each one is captured on entry.  Read-only memory reads
 plus one HTTP GET per chart — no hooks, no guard pages.
@@ -108,8 +108,11 @@ def _install_teardown():
         except Exception:
             pass
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import decrypt_chart  # noqa: E402  (same directory)
+_HERE = os.path.dirname(os.path.abspath(__file__))            # tools/live
+ROOT = os.path.dirname(os.path.dirname(_HERE))                # repo root
+RIPPER = os.path.join(ROOT, 'ripper')
+sys.path.insert(0, RIPPER)
+import decrypt_chart  # noqa: E402  (ripper/decrypt_chart.py)
 
 HEADERS = {
     "User-Agent": "UnityPlayer/6000.0.78f1 (UnityWebRequest/1.0, libcurl/8.10.1-DEV)",
@@ -175,7 +178,7 @@ def variant_from_name(ez_path):
     count — that is a weaker signal and must not outrank the runtime.
     """
     try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        sys.path.insert(0, RIPPER)
         from parse_chart import parse_ez, VARIANT_RE
         name = parse_ez(open(ez_path, 'rb').read()).header['name'] or ''
         m = VARIANT_RE.match(name)
@@ -190,7 +193,7 @@ def chart_variant(ez_path):
     Key mode falls back to the playable lane count when the name does not carry it.
     """
     try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        sys.path.insert(0, RIPPER)
         from parse_chart import parse_ez
         ch = parse_ez(open(ez_path, 'rb').read())
         return ch.keymode, ch.difficulty, ch.lane_count
@@ -203,7 +206,7 @@ def chart_identity(ez_bytes):
     if not ez_bytes:
         return None, None, None
     try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        sys.path.insert(0, RIPPER)
         from parse_chart import parse_ez
         ch = parse_ez(ez_bytes)
         return ch.keymode, ch.difficulty, ch.lane_count
@@ -294,32 +297,30 @@ def label_for(ezi_url, root='.'):
 def describe(snap, d, runtime=None):
     """One line naming the song and its mode/difficulty, plus a dict for ident.json.
 
-    Source order: the game's own request JSON (authoritative), then the chart's header name
-    (which encodes the variant), then the label cache from API captures, then the lane
-    count for key mode.
+    Source order: the game's own request JSON (authoritative), then the chart's own
+    playable-lane span for key mode, then the API label cache. The chart header name is
+    **not** consulted for key mode: it is wrong on ~47% of the reference archive (every
+    8K capture is tagged `6-*`), so at most it is the last-resort fallback.
     """
     runtime = runtime or {}
-    lab = label_for(snap.get('ezi_url'), os.path.dirname(os.path.abspath(__file__))) or {}
+    lab = label_for(snap.get('ezi_url'), ROOT) or {}
     name_km, name_diff = variant_from_name(os.path.join(d, 'ez.ez'))
     lanes = chart_variant(os.path.join(d, 'ez.ez'))[2]
-    file_km = name_km or LANE_LABEL.get(lanes)          # the chart file's own key mode
+    lane_km = LANE_LABEL.get(lanes)                     # the chart's playable-lane span
     rt_km = KEYMODE_LABEL.get(str(runtime.get('keymode')))
     rt_diff = DIFF_LABEL.get(str(runtime.get('levelmode')))
 
-    # The runtime reflects whatever was playing when it was read, so only trust it when it
-    # agrees with the chart file. Otherwise the lane count wins (a 4-lane chart is 4K
-    # whatever the game was doing) and we say so rather than mixing the two.
-    consistent = not (file_km and rt_km) or file_km == rt_km
-    km = file_km or rt_km
-    diff = name_diff or (rt_diff if consistent else None) or \
-           DIFF_LABEL.get(str(lab.get('levelmode')))
-    song = (runtime.get('musicresourcename') if consistent else None) \
-        or lab.get('song') or song_name(snap)
+    # The runtime request is what the game actually asked for, so it is authoritative. The
+    # chart's lane span is the offline cross-check: a genuine disagreement means the
+    # snapshot raced a URL/label update. The header name is deliberately not used here.
+    km = rt_km or lane_km or name_km
+    diff = rt_diff or name_diff or DIFF_LABEL.get(str(lab.get('levelmode')))
+    song = runtime.get('musicresourcename') or lab.get('song') or song_name(snap)
 
     # enrich with the game's metadata table (title, composer), when it resolves
     meta = {}
     try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        sys.path.insert(0, RIPPER)
         import song_meta
         rec = song_meta.by_resource(
             song, gamemode=runtime.get('gamemode') or lab.get('gamemode'))
@@ -333,27 +334,30 @@ def describe(snap, d, runtime=None):
         pass
 
     mismatch = ''
-    if file_km and rt_km and file_km != rt_km:
-        mismatch = ('chart is %s (%d lanes) but the game requested %s; the runtime '
-                    'difficulty was ignored' % (file_km, lanes or 0, rt_km))
+    if lane_km and rt_km and lane_km != rt_km:
+        mismatch = ('runtime requested %s but the chart has %s lane(s); the runtime '
+                    'label is kept' % (rt_km, lanes or 0))
     bits = [b for b in (km, diff) if b]
     out = {'song': song, 'keymode': km, 'lanes': lanes, 'difficulty': diff,
-           'keymodeFromChart': file_km, 'keymodeFromRuntime': rt_km,
+           'keymodeFromChart': lane_km, 'keymodeFromRuntime': rt_km,
+           'keymodeFromHeader': name_km,
            'levelmode': runtime.get('levelmode') or lab.get('levelmode'),
            'gamemode': runtime.get('gamemode') or lab.get('gamemode'),
-           'labelSource': 'runtime' if (runtime and consistent) else 'chart',
+           'labelSource': 'runtime' if rt_km else ('chart' if lane_km else 'api'),
            'labelMismatch': mismatch or None}
     out.update(meta)
     text = '   song    : %s%s' % (song, ('  [%s]' % ' '.join(bits)) if bits else '')
     if runtime:
         text += '   (runtime keymode=%s levelmode=%s gamemode=%s)' % (
             runtime.get('keymode'), runtime.get('levelmode'), runtime.get('gamemode'))
+    elif lane_km:
+        text += '   (key mode from the %d-lane span)' % (lanes or 0)
     elif name_diff:
         text += "   (variant from the chart's header name)"
     elif lab:
         text += '   (difficulty from API levelmode=%s)' % lab.get('levelmode')
     else:
-        text += '   (key mode from lane count; difficulty unknown)'
+        text += '   (key mode and difficulty unknown)'
     if mismatch:
         text += '\n   !! label mismatch: %s' % mismatch
     if meta:
@@ -403,7 +407,7 @@ def capture_name(rt, snap, name_by='variant'):
     if resource:
         if name_by == 'id':
             try:
-                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                sys.path.insert(0, RIPPER)
                 import song_meta
                 rec = song_meta.by_resource(resource, gamemode=(rt or {}).get('gamemode'))
                 if rec and rec.get('id'):
@@ -427,7 +431,7 @@ def label_cache_as_runtime(snap):
     mitmproxy captures by `ripper/chart_labels.py`, so it only covers songs already seen — when it
     misses, naming falls back to `song_<hash>`.
     """
-    lab = label_for(snap.get('ezi_url'), os.path.dirname(os.path.abspath(__file__))) or {}
+    lab = label_for(snap.get('ezi_url'), ROOT) or {}
     if not lab.get('song'):
         return None
     return {'musicresourcename': lab['song'], 'keymode': lab.get('keymode'),
@@ -711,8 +715,7 @@ def main():
         sys.stdout.reconfigure(line_buffering=True)   # unbuffered logs under redirection
     except Exception:
         pass
-    driver = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                          "tools", "build", "_dumpsong_run.js")
+    driver = os.path.join(ROOT, "tools", "build", "_dumpsong_run.js")
     if not os.path.exists(driver):
         sys.exit("missing %s — run: bash tools/il2cpp/build_run.sh" % driver)
     sc = ses.create_script(open(driver).read())

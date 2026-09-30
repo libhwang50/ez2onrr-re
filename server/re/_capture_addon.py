@@ -1,24 +1,24 @@
-"""Mitmproxy capture addon for the private server — sweep / RE tooling only.
+"""Mitmproxy capture addon — the relay behind `ripper/capture.py`.
 
-This is the reverse-engineering bridge that the standalone server deliberately
-does **not** use.  It wraps the offline core (`server/_pserver.py`) so a sweep
-run can pull chart bodies we do not hold yet from the official CDN and file them
-into the archive:
+This is the one mode that forwards upstream.  The standalone server
+(`server/app.py` + `server/_relay.py`) never contacts an upstream, and the
+offline core mints its own URLs/token.  For *capture* the addon wraps that core
+so chart bodies we do not hold yet can be pulled from the official CDN and
+filed into the archive:
 
   * a configured set of API endpoints (`login`, `pattern`, …) and uncached CDN
     paths are forwarded upstream verbatim, and
   * every CDN body that comes back is written to `extracted_charts/` in the same
-    layout `ripper/dump_song.py` produces (see `capture_cdn_response`).
+    layout `tools/live/dump_song.py` produces (see `capture_cdn_response`).
 
 Everything else is served locally by the core.  The forwarding knobs are the
-`server/data/*.txt` files written by `server/re/_exp.py`; `_sweep.py` drives this
-via `_exp.py harvest`.
+`server/data/*.txt` files written by `server/re/_exp.py`; the interactive capture
+tool `ripper/capture.py` drives this via `_exp.py harvest` (and the RE-only auto
+macro `server/re/_sweep.py` drives the same path).
 
     mitmdump -s server/re/_capture_addon.py
 
-This is the only remaining mitmproxy *server* addon; the standalone server
-(`server/app.py` + `server/_relay.py`) never contacts an upstream.  The capture
-path can be made standalone later.
+This is the only remaining mitmproxy *server* addon.
 """
 from __future__ import annotations
 
@@ -145,7 +145,7 @@ def capture_cdn_response(flow):
 
     Writes `extracted_charts/<song>/<km>/<diff>/cdn_ez_*.bin` / `cdn_ezi_*.bin`
     plus an `ident.json` carrying the URLs and the label, i.e. exactly the layout
-    `ripper/dump_song.py` produces and `_build_data.py` consumes — so a sweep run needs
+    `tools/live/dump_song.py` produces and `_build_data.py` consumes — so a sweep run needs
     no separate pipeline, and the archive stays the single source of truth for
     what the server can serve. The decrypted `.ez`/`.ezi` are written too, so a
     capture can be audited with `ripper/check_charts.py` like any other dump.
@@ -179,7 +179,7 @@ def capture_cdn_response(flow):
     ident['ez_url' if kind == 'ez' else 'ezi_url'] = url
     ident.setdefault('ready', True)
     ident.setdefault('bundleCryptKey', None)
-    ident['capturedBy'] = 'sweep'
+    ident['capturedBy'] = 'capture'
     lbl = ident.get('label') or {}
     lbl.update({'song': meta['song'], 'keymode': f"{KM_LANES.get(km, '?')}K",
                 'lanes': KM_LANES.get(km), 'difficulty': diff_dir.upper(),
@@ -187,7 +187,7 @@ def capture_cdn_response(flow):
                 'labelSource': 'pattern request'})
     ident['label'] = lbl
     # Decrypt alongside, so a sweep capture is a complete dump like
-    # ripper/dump_song.py's. Each file stands alone (the key pair is chosen by
+    # tools/live/dump_song.py's. Each file stands alone (the key pair is chosen by
     # validation), so there is no ordering requirement; failures are logged,
     # never swallowed - a silent ImportError here cost us a day.
     try:

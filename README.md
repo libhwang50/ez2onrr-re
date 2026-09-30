@@ -62,21 +62,21 @@ pip install -r requirements.txt
 uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
-`requirements.txt` lists everything the tools, the private server and the investigation
-scripts need, grouped by which part of the toolset uses it. The only hard requirements for
-the offline ripper are **UnityPy** (bundles) and **pycryptodome** (the ciphers); `mutagen`
-is optional (FLAC tags) and `frida` is only needed for the live-game reads.
+`requirements.txt` lists what the user-facing ripper, the renderer and the private
+server need. The only hard requirements for the offline ripper are **UnityPy**
+(bundles) and **pycryptodome** (the ciphers); `mutagen` is optional (FLAC tags).
 
-The game runs under Proton/Wine. **Frida is only needed for the *live-game read*
-tools** (`ripper/dump_song.py`, `ripper/harvest_key.py`, `ripper/harvest_metadata.py` and the
-`tools/il2cpp` drivers), which attach to a Frida Gadget on `127.0.0.1:27042`. The
-private server no longer needs it: the client-side `version.dll` patcher
-(`client/patcher/`) handles the session-key hand-off, and the memory harvester is
-a fallback. `true_key_1024.bin` must sit in the repo root; derive it once with the
-game running and a song loaded:
+**Frida is not part of ripping any more.** The live-game tools all live under
+`tools/` (RE-only) and need a separate install, `requirements-frida.txt`; they
+attach to a Frida Gadget on `127.0.0.1:27042`. Chart capture is Frida-free — see
+**Capturing charts** below. `true_key_1024.bin` (bundle XOR key) and
+`music_names.json` are one-time RE artefacts derived with those tools; they must
+sit in the repo root:
 
 ```bash
-python3 ripper/harvest_key.py    # key = RAM_decrypted_header XOR disk_header, first 1024 B
+# one-time, needs requirements-frida.txt
+python3 tools/live/harvest_key.py        # -> true_key_1024.bin
+python3 tools/live/harvest_metadata.py   # -> music_names.json
 ```
 
 ## Tools
@@ -86,8 +86,7 @@ python3 ripper/harvest_key.py    # key = RAM_decrypted_header XOR disk_header, f
 | `ripper/extract_assets.py <song> [--bga]` | keysounds (FLAC/OGG), optionally BGA `.mp4` → `extracted_assets/<song_id>/` |
 | `ripper/find_bundle.py <keyword> [--decrypt\|--index]` | map bundle hashes → song codenames; build/refresh `song_index.json` |
 | `ripper/find_bundle.py --decrypt-all [--limit N]` | bulk-decrypt `.unity3d` bundles → `EZ2ON REBOOT R/decrypted_bundles/` |
-| `ripper/dump_song.py [--out DIR] [--interval S]` | **recommended** — per-song byte-exact CDN archive + in-memory snapshot |
-| `ripper/harvest_key.py [--out FILE]` | **derive `true_key_1024.bin`** from live memory, validated against the bundles on disk |
+| `ripper/capture.py` | **capture charts** — interactive, Frida-free: sets the relay to harvest mode, runs the memory harvester, files each song you play into `extracted_charts/` |
 | `ripper/decrypt_chart.py <cdn_*.bin> [--keypair …]` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
 | `ripper/decrypt_chart.py --archive [DIR …]` | **complete chart dumps** — decrypt every raw CDN capture in a tree (default `extracted_charts/`), writing `ez.ez` / `ezi.ezi` / `instrumentDic.json`; `--check` audits without writing |
 | `ripper/parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
@@ -96,66 +95,70 @@ python3 ripper/harvest_key.py    # key = RAM_decrypted_header XOR disk_header, f
 | `ripper/render_song.py <song_dir>` | **render the song** — plays every note's keysound at its scheduled time; `--assets auto` matches the keysounds by content, `--all` walks every captured chart |
 | `ripper/visualize_song.py <song_dir>` | **visualise the render** — an mp4 with the keysounds, lanes and progress overlaid on the BGA (or a plain background). Pass a song directory or `--all` to render every variant, `--skip-existing` to leave finished ones |
 | `ripper/song_meta.py` | look up a song's title/composer from the harvested metadata table |
-| `ripper/harvest_metadata.py` | dump the game's song metadata table → `music_names.json` |
+
+The Frida live-game tools are **RE-only** and need `requirements-frida.txt`:
+`tools/live/dump_song.py` (per-song snapshot incl. the in-memory buffers),
+`tools/live/harvest_key.py` (`true_key_1024.bin`) and
+`tools/live/harvest_metadata.py` (`music_names.json`). See [`tools/README.md`](tools/README.md).
 
 `ripper/ez2lib.py` is the shared internal helper (key loading, bundle-header decryption, capture
 labels) — it is imported by the tools above, not run directly.
 
-Then just **play songs**: `ripper/dump_song.py` captures each one on entry and writes
+### Capturing charts (interactive, Frida-free)
+
+`ripper/capture.py` captures songs as you play them, with no Frida and no game
+modification. It puts the private server's relay into `harvest` mode, runs the
+memory harvester and starts `mitmdump`; you just play songs. Each capture lands in
+`extracted_charts/<song>/<keymode>/<difficulty>/` — for example
+`extracted_charts/destr0yer/5k/hd/`:
 
 | file | contents |
 |---|---|
-| `ident.json` | song identity, signed URLs, field counts, per-lane note counts, and the song/mode/difficulty label |
-| `cdn_ez_*.bin`, `cdn_ezi_*.bin` | the CDN payloads, byte-exact as served |
+| `ident.json` | song identity, signed URLs, field counts, and the song/mode/difficulty label |
+| `cdn_ez_cap.bin`, `cdn_ezi_cap.bin` | the CDN payloads, byte-exact as served |
 | `ez.ez`, `ezi.ezi` | the decrypted chart and keysound index |
-| `mem_rjl.bin`, `mem_rjm.bin`, `mem_rjn.bin` | the buffers and transport key the game holds (the chart key is static — see below) |
-| `instrumentDic.json` | the keysound index as the game parsed it — **only with `--read-instrument-dic`** (see the note below) |
+| `instrumentDic.json` | the keysound index derived from `ezi.ezi` |
 
-into `extracted_charts/<song>/<keymode>/<difficulty>/` — for example
-`extracted_charts/destr0yer/5k/hd/` — read from the running game. **Each key mode and
-difficulty keeps its own capture**, so re-dumping a song at another difficulty adds a directory
-rather than replacing one. `--name-by title` drops the nesting and merges every variant into one
-directory (fine if you only want the song once, since one chart renders the whole song);
-`--name-by id` uses the numeric music id. A song that cannot be identified falls back to
-`song_<hash>`. A `403` on a `cdn_*`
-fetch only means the signed URL expired first.
+**Each key mode and difficulty keeps its own capture.** The directory and label
+come from the game's own `c2s_get_pattern_file` request, which is authoritative —
+the relay sees the song name, key mode, level mode and game mode directly and does
+not guess from the chart body.
 
-The capture directory is chosen by the **chart's own identity**, not just the runtime label:
-the game updates `ez_url`/`ezi_url` in stages, so a snapshot can catch the old label with the
-new chart. If they disagree and a capture already exists, the snapshot goes to
-`<name>_mismatch/` rather than overwriting the real one.
+```bash
+# capture forwards login upstream, so the key-rewriting patcher must NOT be live
+bash client/patcher/install.sh uninstall     # Wine then uses its built-in version.dll
+# Linux: let the memory harvester read the game
+sudo sysctl -w kernel.yama.ptrace_scope=0
 
-`instrumentDic.json` is **off by default** (`--read-instrument-dic` to enable). Walking the
-game's dictionary is ~4 managed invocations per entry — ~8,000 for Ultimatum's 2,014 — and
-the Frida bridge holds the enumerator and its boxed keys as raw pointers the IL2CPP GC is
-never told about, so a GC mid-loop can free them. It is only a cross-check anyway; `ezi.ezi`
-carries the same index → filename mapping. (This was added while chasing the freezes on the
-theory that it caused them; it did not — the hang was caught in a read that invokes nothing —
-but the unpacked-pointer risk is real, so it stays opt-in.)
+python3 ripper/capture.py                    # relay + harvester + watch
+# point the Wine proxy at 127.0.0.1:8080, launch the game, and play songs
+```
 
-The captures are audited with `ripper/check_charts.py`, which flags a chart filed under the wrong
-key mode or difficulty (the mislabelling bug filed a 4K chart under `5k/shd`), a missing
-artifact, or a record that disagrees with the chart on disk.
+* The **patched** client cannot capture: `harvest` forwards `c2s_login` to the
+  official server, which needs the official public key. `capture.py` checks and
+  refuses if the patcher is live. Leave the patcher for the standalone offline
+  server.
+* `capture.py --setup-only` just writes the harvest knobs and prints the commands
+  if you prefer to run the pieces yourself; `--no-mitm` / `--no-harvester` skip the
+  parts you already have running.
+* **One chart per song is enough.** A chart's note assignment is per key
+  mode/difficulty, but the `.ezi` keysound index and the audio are identical for
+  every variant. The in-game Lounge goes through the same download flow (serving
+  the song's 4K EZ chart), so browsing it captures charts without gameplay.
 
-If the read path dies — the game's main thread is wedged (spinning), has exited, or the Frida
-script is unloaded — the watch says so and stops rather than hanging or polling forever. Each
-call is bounded by a timeout, so a livelocked read reports instead of blocking on a futex. A
-capture interrupted that way still writes `ident.json`, with an `incomplete` list of what it
-could not read.
+The captures are audited with `ripper/check_charts.py`, which flags a chart filed
+under the wrong key mode or difficulty, a missing artifact, or a record that
+disagrees with the chart on disk. `ripper/decrypt_chart.py --archive` fills in any
+missing `ez.ez`/`ezi.ezi` across a whole tree (`--check` audits without writing).
 
-Reads run on Frida's own thread. `--on-main` puts them back on the game's main thread via
-`Process.runOnThread`, which is only needed for a call into the OS crypto provider — that
-hijack has livelocked the main thread under Proton (100% CPU, gadget wedged, reads never
-return), so it is off by default.
+### Frida live reads (RE-only)
 
-**Kill a crashed game before relaunching.** A dead game's husk keeps the gadget's port
-(`127.0.0.1:27042`) bound, so a relaunched game's gadget cannot listen and `ripper/dump_song.py`
-attaches to the corpse. It checks the first read and says so, but
-`pgrep -af EZ2ON.exe` and kill any leftover first.
-
-`--no-patternjson` skips the `rw-` range sweep that reads the in-play request JSON out of
-memory and takes the label from `chart_labels.json` instead. It is the switch for testing
-whether that sweep is what a crash lands on.
+`tools/live/dump_song.py` is the old Frida-Gadget snapshot (byte-exact CDN archive,
+plus the in-memory `da.rus` buffers and the parsed dictionaries); it is kept for
+reverse-engineering and needs `requirements-frida.txt`. Its `--on-main`,
+`--no-patternjson` and wedge-detection switches are documented in its docstring.
+**Kill a crashed game before relaunching** so its husk does not keep the gadget's
+port (`127.0.0.1:27042`) bound and capture the next launch's attach.
 
 ## Chart delivery
 
@@ -186,7 +189,7 @@ per-song: an earlier per-song-key theory came from `bundleCryptKey`, which is a 
 record and not the chart key. Full derivation in §3.3.
 
 ```bash
-# decrypt a captured payload (ripper/dump_song.py already writes these decrypted)
+# decrypt a captured payload (ripper/capture.py already writes these decrypted)
 python3 ripper/decrypt_chart.py --out extracted_charts/_decrypted extracted_charts/_live/*.ez
 
 # read it — header summary, full JSON, or a per-note listing
@@ -296,7 +299,7 @@ upsampled again. Rendering runs at roughly 2x realtime at 1280x720/30fps —
 >
 > **The Lounge harvests charts without gameplay.** Watching a BGA in the in-game Lounge
 > goes through the same download flow and serves the song's **4K EZ** chart — so browse the
-> Lounge and `ripper/dump_song.py` collects each song's chart, which is all the renderer needs.
+> Lounge and `ripper/capture.py` collects each song's chart, which is all the renderer needs.
 
 ### Rendering a song
 
@@ -313,7 +316,7 @@ sustained.
 matching the `.ezi` keysound filenames against the files on disk (exact, 100%, for every
 song here). Rendering is fast — the 5 captured songs render in 11 s.
 
-## ⚠️ Two rules for the Frida tooling
+## ⚠️ Two rules for live-game (Frida) tooling — RE only
 
 1. **Never `Interceptor.attach`** — every hook attempt has crashed the game, including on
    cold, once-per-launch functions. **Never `MemoryAccessMonitor`** on a shared or hot page
@@ -330,27 +333,28 @@ The safe pattern is read-only memory reads, managed calls on the game's main thr
 ```
 AGENTS.md / docs/    project brief + full technical report
 README.md
-requirements.txt     Python deps for the ripper + live tools (see Setup)
+requirements.txt     Python deps for the ripper + server (see Setup)
+requirements-frida.txt  RE-only deps (Frida, capstone)
 ruff.toml            lint gate
-true_key_1024.bin    master bundle XOR key (derive with ripper/harvest_key.py)
+true_key_1024.bin    master bundle XOR key (derive with tools/live/harvest_key.py)
 song_index.json      bundle-hash → song index
 ripper/ez2lib.py            shared helpers — imported by the tools, not run directly
 Dockerfile  docker-compose.yml  deploy/Caddyfile   standalone server container
 
 ripper/extract_assets.py  ripper/find_bundle.py                  bundles → assets / index
-ripper/dump_song.py  ripper/harvest_key.py                       live-game reads over the Frida Gadget
+ripper/capture.py                                                interactive chart capture (Frida-free)
 ripper/decrypt_chart.py  ripper/parse_chart.py  ripper/check_charts.py  chart ciphers, readers and audits
-ripper/chart_labels.py  ripper/harvest_metadata.py  ripper/song_meta.py naming and metadata
+ripper/chart_labels.py  ripper/song_meta.py                      naming and metadata
 ripper/render_song.py  ripper/visualize_song.py                  render and visualise a song
 server/              private server + capture automation — see server/README.md
   app.py _core.py _flowshim.py                     standalone HTTP(S)/ASGI server
   _pserver.py _relay.py _fake_client.py            game logic, client relay, test client
   _auth.py _accounts.py _store.py _sessions.py     identity, accounts, progression
   _rsa.py _build_data.py _harvest_mem.py           key hand-off, data build, fallback
-  _screen.py _sweep.py _coverage.py                guided chart capture
+  _screen.py _sweep.py _coverage.py                guided chart capture (RE-only auto macro)
 client/              Frida-free version.dll patcher — see client/README.md
 tools/               reverse-engineering toolbox — see tools/README.md
-  il2cpp/  probes/  mitm/  crypto/
+  live/  il2cpp/  probes/  mitm/  crypto/
 data/  logs/  mitm_live/  mitm_parsed/  il2cpp_code/    ignored capture artefacts
 extracted_assets/  extracted_charts/                     outputs
 ```

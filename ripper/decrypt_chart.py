@@ -19,7 +19,7 @@ Usage:
     python3 ripper/decrypt_chart.py --inspect <file>            # header summary only
     python3 ripper/decrypt_chart.py --archive [DIR ...]         # a whole capture archive
 
-`--archive` walks a tree of `ripper/dump_song.py` / sweep captures and fills in the plaintext
+`--archive` walks a tree of `ripper/capture.py` / Frida-dump captures and fills in the plaintext
 (`ez.ez`, `ezi.ezi`, `instrumentDic.json`) for every raw CDN capture that is missing it,
 so a sweep capture becomes indistinguishable from a full dump. `--check` audits without
 writing and `--force` redoes existing plaintext; the exit code gates a batch.
@@ -200,7 +200,7 @@ def find_cipher(d, kind):
 
 
 def ezi_mapping(pt: bytes):
-    """[[index, basename], ...] from a decrypted `.ezi`, the shape ripper/dump_song.py writes."""
+    """[[index, basename], ...] from a decrypted `.ezi`, the shape tools/live/dump_song.py writes."""
     rows = []
     for line in pt.decode('utf-8', 'replace').splitlines():
         parts = line.split()

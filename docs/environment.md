@@ -36,7 +36,7 @@ use `Process.getModuleByName`.
   which invokes nothing.  Reads use plain `Il2Cpp.perform`; only a call into the OS crypto
   provider (Wine/CNG thread affinity) needs the main thread.
 * **Bound every RPC.** A hijack that livelocks never returns, so a plain synchronous call
-  blocks on a futex forever with no output.  `ripper/dump_song.py` runs each call on a daemon thread
+  blocks on a futex forever with no output.  `tools/live/dump_song.py` runs each call on a daemon thread
   and treats a timeout as a wedge.
 * When the read path dies it does **not** raise a clean error: the game's main thread can
   exit while the process lingers (window frozen on its last frame, Steam still listing it as

@@ -6,7 +6,7 @@
   **offset 0x400+ is plaintext** LZ4/LZMA Unity data.
 * Master key `true_key_1024.bin` =
   `RAM_decrypted_header[0:1024] XOR disk_header[0:1024]`, harvested zero-hook with
-  `ripper/harvest_key.py`.
+  `tools/live/harvest_key.py`.
 * With that key every bundle decrypts to a valid `UnityFS` container
   (`ripper/find_bundle.py`, `ripper/extract_assets.py`).
 * **Audio / BGA extraction** (`ripper/extract_assets.py`) parses raw C++ object bytes directly —

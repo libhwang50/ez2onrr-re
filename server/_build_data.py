@@ -19,6 +19,7 @@ Outputs (server/data/):
   charts.json                            — (song, keymode, levelmode) -> CDN paths
 """
 import base64
+import hashlib
 import json
 import os
 import re
@@ -90,10 +91,33 @@ def main():
         m = re.match(r'https://game1-cdn\.ez2game\.co\.kr(/[^?]+)', url or '')
         return m.group(1) if m else None
 
+    def mint_path(local_file):
+        """A content-addressed CDN path for a body whose captured URL is unusable."""
+        h = hashlib.sha256(open(local_file, 'rb').read()).hexdigest()
+        return f'/fb_2/{h[:2]}/{h}'
+
+    def claim(p, local_file):
+        """Map a CDN path to a local file, resolving a collision by minting a new path.
+
+        A captured URL can be stale/misassociated (the Frida dumper's documented
+        URL/label race): two captures then name the same CDN path but hold different
+        bodies.  The client fetches whatever path the server returns and never verifies
+        the signature, so the second body gets a content-addressed path instead of
+        silently overwriting the first.
+        """
+        rel = os.path.relpath(local_file, ROOT)
+        if p in cdn_paths and cdn_paths[p] != rel:
+            new = mint_path(local_file)
+            cdn_paths[new] = rel
+            print(f'  CDN path collision: {p} reclaimed as {new} for {rel}')
+            return new
+        cdn_paths[p] = rel
+        return p
+
     def add_cdn(url, local_file):
         p = path_of(url)
         if p and local_file and os.path.exists(local_file):
-            cdn_paths[p] = os.path.relpath(local_file, ROOT)
+            p = claim(p, local_file)
         return p
 
     # from extracted_charts/
@@ -131,8 +155,8 @@ def main():
         shutil.copy(os.path.join(src, 'body_014_resp.bin'), b)
         ez_p, ezi_p = '/fb_2/90/bc592cbb377a044591bda10c423cfe83be8a02e4c827e2a0af1a2cdf2fef74', \
                       '/fb_2/f8/96e8a91db9f67a001a53c5ee34808846ff10e197481cd346a8e901e14aa64e'
-        cdn_paths[ez_p] = os.path.relpath(a, ROOT)
-        cdn_paths[ezi_p] = os.path.relpath(b, ROOT)
+        ez_p = claim(ez_p, a)
+        ezi_p = claim(ezi_p, b)
         charts.append({'song': 'finite', 'song_norm': norm('finite'),
                        'keymode': 2, 'levelmode': 3, 'keymode_dir': '5k', 'levelmode_dir': 'hd',
                        'ez_path': ez_p, 'ezi_path': ezi_p})
@@ -152,7 +176,7 @@ def main():
                             if f.startswith('cdn_') and p.split('/')[3][:8] in f]
                     cand = os.path.join(ROOT, 'mitm_parsed', hits[0]) if hits else None
                 if cand and os.path.exists(cand):
-                    cdn_paths[p] = os.path.relpath(cand, ROOT)
+                    claim(p, cand)
 
     # ---- real pattern responses from a keyed official capture (if present):
     #      served VERBATIM (real signed URLs + real bundleCryptKey) ----

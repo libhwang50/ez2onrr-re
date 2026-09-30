@@ -10,18 +10,18 @@ the localised titles and the composer:
     MaxEye / HiddenBga            flags
 
 It regenerates in a few seconds from a running game, so it is not worth committing; the
-file is a cache that `ripper/dump_song.py` and `ripper/render_song.py` read.
+file is a cache that `tools/live/dump_song.py` and `ripper/render_song.py` read.
 
 Usage
 -----
-    python3 ripper/harvest_metadata.py [--out music_names.json] [--gadget 127.0.0.1:27042]
+    python3 tools/live/harvest_metadata.py [--out music_names.json] [--gadget 127.0.0.1:27042]
 """
 import argparse
 import json
 import os
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

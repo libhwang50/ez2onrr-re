@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Look up song metadata (title, composer) captured by `ripper/harvest_metadata.py`.
+"""Look up song metadata (title, composer) captured by `tools/live/harvest_metadata.py`.
 
 The game's `da.MUSIC_NAME_DIC` maps a numeric music id to a `MUSIC_NAME_DATA` record. The
 chart's `musicresourcename` (e.g. "Rebind") matches those records' titles, so a song can be
 resolved by name without needing its id.
 
 `music_names.json` is a cache: regenerate it from a running game with
-`python3 ripper/harvest_metadata.py`.
+`python3 tools/live/harvest_metadata.py`.
 
-Used by `ripper/dump_song.py` (to record metadata next to a capture) and `ripper/render_song.py` (to tag
+Used by `tools/live/dump_song.py` (to record metadata next to a capture) and `ripper/render_song.py` (to tag
 the rendered FLAC).
 """
 import json

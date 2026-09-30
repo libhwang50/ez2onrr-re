@@ -87,7 +87,7 @@ selected).
   capture run records it for free). Source: NamuWiki "EZ2ON REBOOT : R/시스템" §4.1–4.2.
 * **The capture addon can also *capture*.** With `cdn` in the passthrough list (what
   `re/_exp.py harvest` sets) a CDN cache miss is forwarded to the official CDN and the body is
-  filed into `extracted_charts/<song>/<km>/<diff>/` in exactly `ripper/dump_song.py`'s layout
+  filed into `extracted_charts/<song>/<km>/<diff>/` in exactly `tools/live/dump_song.py`'s layout
   (`cdn_ez_cap.bin`, `cdn_ezi_cap.bin`, an `ident.json` with the URLs and label, and the
   decrypted `.ez`/`.ezi`, plus an `instrumentDic.json` derived from the `.ezi`, when the
   key pair validates — `ripper/decrypt_chart.py --archive` backfills any of that which is missing).
@@ -132,15 +132,20 @@ selected).
   sample from an offset derived from ticks-elapsed-since-the-note-position. A renderer that
   always restarts each keysound at 0 therefore matches a *correct* keypress, not a late one —
   worth remembering when comparing a render against a sloppy play-through.
-* **`name` at `0x06` is the chart variant, not the song name**: it is `<keys>-<difficulty>`, e.g.
-  `4-shd`, `8-ez`, `5-nm`, `5-hd`. So it decodes the key mode **and** difficulty straight
-  from the chart, which is more direct than asking the API. It is not always set — Engine
-  and Revelation leave it empty — and `#PTMAKE` marks a chart built with the in-game
-  pattern maker. Different songs genuinely share a tag: Conflict and Hyper Magic both
-  carry `4-shd` because both are 4K SHD.
-* **Key mode from the lane count**, which matches the name tag on every sample: 4 lanes →
-  4K, 5 → 5K, 6 → 6K, 8 → 8K. (7K is unobserved; it is said to be course-only.) This is
-  the fallback when the name is empty or `#PTMAKE`.
+* **`name` at `0x06` is the chart variant tag, not the song name**: `<keys>-<difficulty>`,
+  e.g. `4-shd`, `8-ez`. It is **not** reliable. Measured against the runtime request over the
+  3,101-chart reference archive, the key-mode half disagrees **47%** of the time (every 8K
+  capture is tagged `6-*`, many 4K ones `5-*`), and the difficulty half often names the
+  *base* variant an HD/SHD chart was authored from (`214/6k/hd` is tagged `6-nm`). It is not
+  always set — Engine and Revelation leave it empty, `#PTMAKE` marks a pattern-maker chart,
+  and one capture carries `old_6-nm`. Only the runtime request (or the lane span, below) is
+  authoritative.
+* **Key mode from the playable-lane span**, not the name tag. 1P player lanes are contiguous
+  from track 3: 4K = 3–6, 5K = 3–7, 6K = 3–8, 8K = 3–10 (Key1–5, Effector1–2, Scratch); 7K
+  (course-only) is unobserved. `Chart.lane_count` is the **span** to the highest player track
+  used, so an 8K chart that leaves the scratch lane empty still reads 8K (matching the game's
+  `normalLanes`), and tracks past 10 (Pedal, Effector3/4, 2P) are ignored. Over the
+  3,101-chart archive this matches the runtime request on 3,097; the name tag matches 1,631.
 * **Track 22 triggers a supplementary `MR` layer, not the full song.** Every one of the 5
   captured songs holds a single type-1 note there (positions 0, 96 or 192 ticks).
   **Do not mistake it for the song** — per listening, it contains only the instruments too
@@ -152,12 +157,11 @@ selected).
   keysound at its scheduled time, reconstructs it. Tracks 3–6 are the player's lane input
   and 23–63 are auto-played instrument layers; the split does not matter for rendering —
   all of them sound. **Verified by ear against gameplay — reported as an exact match.**
-* **Player vs auto is exactly `tracks 3 .. 3+lane_count-1`.** On all 12 captured charts the
-  tracks carrying keysounds from 3 upward are that contiguous run and nothing else: 3–6 for
-  4K, 3–8 for 6K, 3–10 for 8K. Everything from track 22 (the MR layer) and 23+ is
-  auto-played. So `Chart.lane_count` is the rule, and a fixed `range(3, 22)` is only safe
-  because no chart yet places a note in the unused 7–21 gap. `ripper/visualize_song.py` uses it to
-  dim the auto rows (see §5).
+* **Player vs auto is `tracks 3 .. 3+lane_count-1`** (the lane span above): 3–6 for 4K,
+  3–8 for 6K, 3–10 for 8K. Everything from track 22 (the MR layer) and 23+ is auto-played,
+  and a handful of charts also put a few type-1 notes on the non-player 1P tracks 11–13
+  (Pedal, Effector3/4) — which is why `Chart.lane_count` stops at track 10 and a fixed
+  `range(3, 22)` is wrong. `ripper/visualize_song.py` uses the span to dim the auto rows (see §5).
 * **One note triggers exactly one keysound.** The 13-byte record has room for a single u16
   index at `params[0:2]`; a byte census over all 32,923 type-1 notes shows `params[4]`
   non-zero exactly once and `params[7]` never, so there is no hidden second index. The pan

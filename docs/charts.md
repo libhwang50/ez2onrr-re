@@ -178,7 +178,7 @@ Mined 2026-09-24:
   `{"appid":"1477590","musicresourcename":"Rebind","keymode":"2","levelmode":"3","gamemode":"1"}`.
   So `musicresourcename` (the song name), `keymode` and `levelmode` can be read from the
   running game with no API capture — see `tools/il2cpp/_findstr.js` `patternjson`, which
-  scans `rw-` ranges for the `{"appid":"` prefix (~2 s, one hit). `ripper/dump_song.py` uses it as
+  scans `rw-` ranges for the `{"appid":"` prefix (~2 s, one hit). `tools/live/dump_song.py` uses it as
   the primary source and falls back to the chart name, then the API label cache.
 * **`keymode` is 1-based over the key modes**: `1` → 4K, `2` → 5K, `3` → 6K (all three
   confirmed against the user's own labels). `4`+ is unobserved. It agrees with the key mode

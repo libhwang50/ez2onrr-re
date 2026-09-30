@@ -15,10 +15,10 @@ game.
 
 Usage
 -----
-    .venv/bin/python ripper/harvest_key.py                    # -> true_key_1024.bin
-    .venv/bin/python ripper/harvest_key.py --gadget 127.0.0.1:27042
-    .venv/bin/python ripper/harvest_key.py --dump-only        # keep the RAM header only
-    .venv/bin/python ripper/harvest_key.py --out key.bin --header-out ram_header.bin
+    .venv/bin/python tools/live/harvest_key.py                    # -> true_key_1024.bin
+    .venv/bin/python tools/live/harvest_key.py --gadget 127.0.0.1:27042
+    .venv/bin/python tools/live/harvest_key.py --dump-only        # keep the RAM header only
+    .venv/bin/python tools/live/harvest_key.py --out key.bin --header-out ram_header.bin
 
 Run it while a song is loading or in song select. The scan looks for a `UnityFS`
 header at either bundle version this install uses (7 and 8).
@@ -28,6 +28,10 @@ import os
 import struct
 import sys
 import time
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(_HERE))
+sys.path.insert(0, os.path.join(ROOT, 'ripper'))
 
 import ez2lib
 
@@ -133,7 +137,7 @@ def main():
     try:
         import frida
     except ImportError:
-        sys.exit("[!] 'frida' is not installed; run with .venv/bin/python ripper/harvest_key.py")
+        sys.exit("[!] 'frida' is not installed; run with .venv/bin/python tools/live/harvest_key.py")
 
     print("[+] Connecting to Frida Gadget at %s..." % args.gadget)
     try:

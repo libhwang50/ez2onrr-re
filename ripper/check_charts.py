@@ -3,7 +3,7 @@
 
 Why this exists
 ---------------
-`ripper/dump_song.py` used to name the output directory from the *runtime* label and write the
+`tools/live/dump_song.py` used to name the output directory from the *runtime* label and write the
 fetched chart into it eagerly.  The game updates `ez_url`/`ezi_url` in stages, so a snapshot
 taken mid-transition paired one variant's label with another variant's chart — which is how
 Ultimatum's real 5-shd chart was overwritten by a 4K one.  The dumper now decrypts in memory
@@ -12,9 +12,12 @@ still be filed wrong, and a crash mid-capture leaves artifacts missing.
 
 Checks, per capture directory
 -----------------------------
-* **identity** — the chart's own key mode (header name, else lane count) and difficulty
-  against the `<keymode>/<difficulty>` it is filed under.  A chart that does not carry a
-  difficulty in its name (`#PTMAKE`, `1_part1`, empty) is only checked on key mode.
+* **identity** — the chart's own key mode (playable-lane span, tracks 3-10) against the
+  `<keymode>/` it is filed under, and the difficulty against the runtime request label
+  when one is recorded.  Key mode comes from the lane span, not the header name: the
+  header disagrees with the runtime request ~47% of the time (every 8K capture is tagged
+  `6-*`).  The difficulty half of the header is a *base-variant* tag (an HD capture is
+  often tagged `-nm`), so it is only a fallback when `ident.json` has no runtime label.
 * **artifacts** — which of the expected files are present.
 * **record** — `ident.json`'s label agrees with the chart on disk.
 
@@ -29,7 +32,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_chart import parse_ez, load  # noqa: E402
 
-LANE_KM = {4: '4K', 5: '5K', 6: '6K', 7: '7K', 8: '8K'}
 EXPECTED = ('ez.ez', 'ezi.ezi', 'ident.json')
 
 
@@ -58,14 +60,12 @@ def check(d, root):
             problems.append('ez.ez unreadable: %s' % e)
             return problems, info
         name = ch.header['name']
-        ckm = ch.keymode or LANE_KM.get(ch.lane_count)
+        ckm = ch.keymode
         cdiff = ch.difficulty
         info.update(name=name, ckm=ckm, diff=cdiff, lanes=ch.lane_count)
         if ckm and ckm != dir_km:
             problems.append('filed as %s but the chart is %s (%d lanes)'
                             % (dir_km, ckm, ch.lane_count))
-        if cdiff and cdiff != dir_diff:
-            problems.append('filed as %s but the chart name says %s' % (dir_diff, cdiff))
 
         ip = os.path.join(d, 'ident.json')
         if os.path.exists(ip):
@@ -78,9 +78,55 @@ def check(d, root):
                 problems.append('ident.json label says %s but the chart is %s' % (lkm, ckm))
             if label.get('labelMismatch'):
                 problems.append('ident.json records a label mismatch')
+            # Difficulty lives in the chart header too, but the header names the *base*
+            # variant the chart was authored from (an HD capture is often tagged `-nm`,
+            # a 6K one `5-`), so it is not the requested difficulty. Trust the runtime
+            # request label when there is one; only fall back to the header otherwise.
+            runtime_diff = (label.get('difficulty')
+                            if label.get('labelSource') in ('runtime', 'pattern request')
+                            else None)
+            if runtime_diff:
+                if runtime_diff.upper() != dir_diff:
+                    problems.append('filed as %s but the request was %s'
+                                    % (dir_diff, runtime_diff))
+            elif cdiff and cdiff != dir_diff:
+                problems.append('filed as %s but the chart name says %s '
+                                '(no runtime difficulty recorded)' % (dir_diff, cdiff))
             info['label'] = '%s %s' % (lkm or '?', label.get('difficulty') or '?')
 
     return problems, info
+
+
+def url_collisions(root):
+    """Captured CDN URLs shared by two captures that hold *different* bodies.
+
+    A stale/misassociated URL means the dumper's ident snapshot lagged the body
+    it wrote (the URL/label race).  The private server maps each capture's URL
+    path to its local body, so two captures on one path would serve one chart
+    for two different requests.  ``server/_build_data.py`` mints a unique path
+    when it hits a collision; this check flags the underlying captures.
+    """
+    import hashlib
+    import urllib.parse
+    seen = {}
+    for ip in glob.glob(os.path.join(root, '*', '*', '*', 'ident.json')):
+        d = os.path.dirname(ip)
+        try:
+            ident = json.load(open(ip)) or {}
+        except Exception:
+            continue
+        for field, pref in (('ez_url', 'cdn_ez_'), ('ezi_url', 'cdn_ezi_')):
+            p = urllib.parse.urlsplit(ident.get(field) or '').path
+            if not p:
+                continue
+            f = [x for x in os.listdir(d) if x.startswith(pref)]
+            if not f:
+                continue
+            fp = os.path.join(d, f[0])
+            digest = hashlib.md5(open(fp, 'rb').read()).hexdigest()
+            if p in seen and seen[p][1] != digest:
+                yield p, os.path.relpath(seen[p][0], root), os.path.relpath(fp, root)
+            seen[p] = (fp, digest)
 
 
 def main():
@@ -108,6 +154,16 @@ def main():
                      info.get('diff') or '?', 'OK' if not problems else ''))
             for p in problems:
                 print('    !! %s' % p)
+
+    collisions = list(url_collisions(a.root))
+    for p, first, second in collisions:
+        print('!! stale URL: %s captured under both %s and %s'
+              % (p, first, second))
+    if collisions:
+        bad += len(collisions)
+        print('    (the second capture recorded a URL from a different capture;'
+              ' re-capture it with the relay capture, or let _build_data.py '
+              're-key it)')
 
     print('\n%d capture(s), %d with problems' % (len(dirs), bad))
     return 1 if bad else 0

@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Drive the game through the song list so the private server records charts.
 
+**RE-only, and machine-specific.**  This macro synthesises keystrokes through the
+compositor, so it only works on the author's desktop: Niri with the game running
+in `xwayland-satellite`.  Ordinary users should capture interactively with
+`ripper/capture.py` and play the songs themselves.
+
 The *server log is the sensor*: every `c2s_get_pattern_file` request names the
 song, keymode, levelmode and gamemode, so the sweep never has to see the screen.
 It presses keys, waits for a request it has not seen before, and moves on.

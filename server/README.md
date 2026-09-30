@@ -84,8 +84,8 @@ captures).
 | `_auth.py` | identity & access policy: `auth.json` (`open`/`token` mode, guest tier), token hashing, account resolution, optional Discord OAuth |
 | `_accounts.py` | admin CLI: `issue` / `list` / `ban` / `unban` server accounts + bearer tokens (no external service needed) |
 | `_fake_client.py` | **synthetic second client** for multi-user testing — logs in as any SteamID (RSA-wrapped key), then drives `c2s_get_myinfo` / `c2s_set_game_clear` / `c2s_get_userinfo` and the rank leaderboard. Creates a fresh account and a competing score with **no second game install** |
-| `re/_capture_addon.py` | **mitmproxy capture addon (sweep/RE only)** — wraps the offline core: forwards `login`/`pattern`/uncached CDN upstream and files every returned CDN body into `extracted_charts/`. No longer the server; the standalone path never forwards upstream |
-| `re/_harvest_mem.py` | **fallback** session key: scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds at login → `session_key.json`. Handles relaunches/rotations; keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/sudo, Windows is same-user |
+| `re/_capture_addon.py` | **the mitmproxy capture relay** — wraps the offline core: forwards `login`/`pattern`/uncached CDN upstream and files every returned CDN body into `extracted_charts/`. Driven by `ripper/capture.py` (and, for RE, by `re/_sweep.py`). The standalone server never forwards upstream |
+| `re/_harvest_mem.py` | **the Frida-free session key** — scans the game's memory for the `"key":"…","iv":"…"` JSON the client builds at login → `session_key.json`. It is chart capture's key source and the standalone server's fallback for an unpatched client. Handles relaunches/rotations; keeps the last key (the JSON is transient). Linux needs `ptrace_scope=0`/sudo, Windows is same-user |
 | `re/_harvest_session.py` | Frida bridge (fallback): polls `zf.aes_key`/`aes_iv` at 1 Hz → `session_key.json`; **auto-re-attaches when the game restarts** |
 | `_build_data.py` | (re)builds `data/` from the captured artefacts in the repo |
 | `data/login.json` | `c2s_login` response template (real, captured) |
@@ -164,8 +164,8 @@ Notes:
 * Pattern lookup is **exact-match only** (song + keymode + levelmode): serving a
   different difficulty's chart would load wrong notes. Uncaptured songs fail
   with `result:0`; the client retries 5× then boots to the main screen.
-* Only songs with a captured chart are playable (see `charts.json`); add more by
-  running `ripper/dump_song.py`/captures and re-running `_build_data.py`.
+* Only songs with a captured chart are playable (see `charts.json`); add more with
+  `ripper/capture.py` (or a `mitmdump -s server/re/_capture_addon.py` capture) and re-run `_build_data.py`.
 * Score uploads (`plf…`) are logged but not persisted directly (the `plf` fields do not cleanly carry `levelmode`); the authoritative per-play write is `c2s_set_game_clear`, which feeds the store. Leaderboards are **computed from the store** (Top100 / MyRange) and fall back to the real captured CSVs (`data/rank_csv/`) only for a variant nobody here has played.
 
 ## Standalone / public deployment
@@ -500,38 +500,51 @@ python server/re/_coverage.py --queue    # write the capture queue (music-list o
 python server/re/_coverage.py --log      # what the game asked for vs what we could serve
 ```
 
-This is the one mode that forwards upstream, so it runs the **capture addon**,
-not `app.py`:
+This is the one mode that forwards upstream, so it runs the **capture relay**
+(`re/_capture_addon.py`), not `app.py`.  The interactive tool `ripper/capture.py`
+starts the relay and the harvester and sets the knobs for you:
 
 ```bash
-mitmdump -s server/re/_capture_addon.py
+# capture forwards login upstream, so the RSA-key patcher must not be live
+bash client/patcher/install.sh uninstall
+python3 ripper/capture.py
 ```
 
 The loop that adds songs, end to end:
 
-1. **`re/_exp.py harvest`** — forwards `login,pattern,cdn` upstream. The API
-   passthrough is what mints a real session and real signed URLs; **`cdn` is what
-   lets a chart we do not hold yet come from the official CDN** (without it a
-   missing chart is a local 404 and nothing can ever be captured).
-2. Walk the song list (the game, or `server/re/_sweep.py`) so it asks for each song.
+1. **`re/_exp.py harvest`** (set by `capture.py`) — forwards `login,pattern,cdn`
+   upstream. The API passthrough is what mints a real session and real signed
+   URLs; **`cdn` is what lets a chart we do not hold yet come from the official
+   CDN** (without it a missing chart is a local 404 and nothing can ever be
+   captured).
+2. Play the songs (interactively), or drive the list with the **RE-only** auto
+   macro `server/re/_sweep.py`.
 3. `re/_capture_addon.py` files every forwarded CDN body straight into
    **`extracted_charts/<song>/<km>/<diff>/`** — `cdn_ez_cap.bin`, `cdn_ezi_cap.bin`
-   and an `ident.json` with the URLs and the label — i.e. the same layout
-   `ripper/dump_song.py` writes, so the archive stays the single source of truth and no
-   side pipeline exists. It also decrypts them on the spot into `ez.ez` /
+   and an `ident.json` with the URLs and the label — i.e. the same layout the old
+   Frida dumper (`tools/live/dump_song.py`) writes, so the archive stays the single
+   source of truth and no side pipeline exists. It also decrypts them on the spot into `ez.ez` /
    `ezi.ezi` (naming the key pair in `ident.json`) and derives
    `instrumentDic.json` from the `.ezi`, so a capture ends up a complete dump.
-   `capturedBy: "sweep"` marks the ones that came this way, and
+   `capturedBy: "capture"` marks the ones that came this way, and
    **`python ripper/decrypt_chart.py --archive`** fills in any plaintext that is missing
    (the tool walks the archive and is safe to re-run; `--check` reports only).
 4. **`python server/_build_data.py`** folds the archive into
    `server/data/charts.json` + `cdn_paths.json`, then `re/_coverage.py` shows the
-   result.
+   result. Each capture's CDN path maps to its own local body; when a stale URL
+   makes two captures claim one path with different bodies (a known race of the
+   Frida dumper's ident snapshot — `ripper/check_charts.py` flags these as
+   "stale URL"), the second body is re-keyed under a content-addressed path
+   instead of overwriting the first, so both variants keep serving the chart
+   that was actually captured for them.
 
 The capture addon only lets a CDN request out when `cdn` is in the passthrough list — in
 `offline` mode nothing leaves the machine, and an uncached chart is a plain 404.
 
-`server/re/_sweep.py` automates that walk. The server log is its primary sensor — every
+`server/re/_sweep.py` automates that walk.  **It is RE-only and specific to the
+author's desktop** (Niri with the game in `xwayland-satellite`); ordinary users
+capture interactively with `ripper/capture.py`.  The server log is its primary
+sensor — every
 request names the song, keymode, levelmode and gamemode — and a screen-state classifier
 (`server/re/_screen.py`, below) is the *safety* sensor. It refuses to send keys unless the
 focused window really is the game (`niri msg focused-window`), so it cannot type into
@@ -763,7 +776,7 @@ battle server's copy. See §3.1 and §7.6.
   the alternative but is moot for the API.
 * Rank endpoints accept any signature; nothing is verified or persisted.
 * Songs without a captured chart fail at chart load (`result:0`) — extend
-  coverage with `ripper/dump_song.py` and re-run `_build_data.py`.
+  coverage with `ripper/capture.py` and re-run `_build_data.py`.
 * **Fully offline loads work** with no official contact (see above). The bCK
   constant is a value of a particular client build: after a game update, re-derive
   it by decrypting a captured token (that is `bck_payload()`'s fallback), or just
