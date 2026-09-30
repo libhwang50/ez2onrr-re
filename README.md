@@ -87,6 +87,8 @@ python3 tools/live/harvest_metadata.py   # -> music_names.json
 | `ripper/find_bundle.py <keyword> [--decrypt\|--index]` | map bundle hashes → song codenames; build/refresh `song_index.json` |
 | `ripper/find_bundle.py --decrypt-all [--limit N]` | bulk-decrypt `.unity3d` bundles → `EZ2ON REBOOT R/decrypted_bundles/` |
 | `ripper/capture.py` | **capture charts** — interactive, Frida-free: sets the relay to harvest mode (or full passthrough with `--passthrough`), runs the memory harvester, files each song you play into `extracted_charts/` |
+| `ripper/collect.py` | **collect official responses** — passive recording proxy for testers: forwards the game hosts to the official server and writes every request/response + the live session key to `collected/<ts>/` (zipped) for submission |
+| `ripper/collect_read.py <bundle>` | read/decrypt a `collect.py` bundle — list flows, filter by `--path`/`--host`, `--dump` the decrypted JSON |
 | `ripper/decrypt_chart.py <cdn_*.bin> [--keypair …]` | **decrypt CDN chart/index payloads** → `.ez` / `.ezi` plaintext |
 | `ripper/decrypt_chart.py --archive [DIR …]` | **complete chart dumps** — decrypt every raw CDN capture in a tree (default `extracted_charts/`), writing `ez.ez` / `ezi.ezi` / `instrumentDic.json`; `--check` audits without writing |
 | `ripper/parse_chart.py <file.ez>` | **read a chart** — metadata summary, `--json`, `--notes` listing, or `--dir` over a whole archive; accepts an encrypted CDN payload directly |
@@ -154,6 +156,37 @@ The captures are audited with `ripper/check_charts.py`, which flags a chart file
 under the wrong key mode or difficulty, a missing artifact, or a record that
 disagrees with the chart on disk. `ripper/decrypt_chart.py --archive` fills in any
 missing `ez.ez`/`ezi.ezi` across a whole tree (`--check` audits without writing).
+
+### Collecting official responses (for testers)
+
+Some answers cannot be produced by the private server because they are
+account-specific. The clearest case is **DLC ownership**, which the official
+`c2s_login` returns as `apps[].ownsapp` / `member.DLC` and which only Steam can
+attest. `ripper/collect.py` is a passive recording proxy for exactly that: it
+forwards every game-host request to the **official** server, records the request,
+the response and the live session key, and packages the result into a zip a
+tester can send back. Nothing is served locally, so the tester's own account
+handles the session and the recorded answers are genuine.
+
+```bash
+bash client/patcher/install.sh uninstall     # login must use the official RSA key
+sudo sysctl -w kernel.yama.ptrace_scope=0    # Linux: let the harvester read the key
+
+python3 ripper/collect.py                    # mitmdump + harvester -> collected/<ts>/
+# point the Wine proxy at 127.0.0.1:8080, launch the game, sign in, play
+# Ctrl-C packages collected/<ts>.zip — send it to the maintainer
+```
+
+* `--cdn-body` also keeps the (large) chart/keysound bodies; by default a CDN
+  body is recorded as its length only. `--max-body 2M` caps any recorded body.
+* `--no-mitm` / `--no-harvester` reuse a proxy or a key source already running.
+* Decrypt a submission with `ripper/collect_read.py collected/<ts>.zip`
+  (`--path login` to focus, `--dump DIR` to write the JSON out). A login
+  *request* is RSA-wrapped and stays opaque; the login *response* decrypts.
+
+This is deliberately separate from `ripper/capture.py`: it never touches the
+private server or `server/data/`, so it records **only** what the official
+server returned.
 
 ### Frida live reads (RE-only)
 

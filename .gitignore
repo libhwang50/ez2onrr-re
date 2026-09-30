@@ -31,6 +31,10 @@ extracted_charts/
 il2cpp_code/
 tools/**/*_out.json
 
+# official-server collection bundles (raw game traffic + the session key); see
+# ripper/collect.py — a tester zips these and sends them back
+collected/
+
 # rendered audio (derived from extracted_assets + charts)
 rendered_songs/
 

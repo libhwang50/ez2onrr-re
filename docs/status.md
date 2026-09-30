@@ -146,3 +146,11 @@ server's. In-game validation of the server itself is in progress.
    `store.db`, `auth.json`) and `extracted_charts` (ro) are mounted;
    `EZ2_LOG`/`EZ2_DATA` relocate those roots; `server/requirements.txt` is just
    `cryptography`.  Run one replica only — session keys are in memory.
+13. **DLC ownership** — the client unlocks DLC from the official login response
+   (`apps[].ownsapp`, `member.DLC`), not from a local Steam query (the IL2CPP
+   metadata has no `BIsDlcInstalled`/`GetDLCCount`).  `ripper/collect.py` captures
+   that response from a tester's own account: a passive proxy that forwards the
+   game hosts to the **official** server and records the bodies plus the live
+   session key; `ripper/collect_read.py` decrypts the submission.  Once captured,
+   mirror the ownership into `login_response` (e.g. a per-account
+   `server/data/dlc.json`) so a tester can play the songs their Steam copy owns.

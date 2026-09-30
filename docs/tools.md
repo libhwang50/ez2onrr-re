@@ -9,6 +9,8 @@ User-facing (repo root):
 | `ripper/extract_assets.py` | extract keysounds (FLAC/OGG) and `--bga` videos |
 | `ripper/find_bundle.py` | map bundles → songs (`--index`, `--decrypt`, `--decrypt-all`) |
 | `ripper/capture.py` | **capture charts** — interactive, Frida-free: harvest-mode relay + memory harvester, files each song you play into `extracted_charts/`; `--passthrough` forwards everything upstream so it needs no `server/data/` |
+| `ripper/collect.py` | **collect official responses** — passive recording proxy for testers: forwards every game-host request to the **official** server (never the private one) and writes request/response bodies + the live session key to `collected/<timestamp>/`, zipped on exit for submission. Unpatched client required; `--cdn-body`/`--max-body` control body capture |
+| `ripper/collect_read.py` | **read a submission** — list/decrypt a `collect.py` bundle (directory or zip); `--path`/`--host` filter, `--dump DIR` writes the decrypted JSON. Login responses decrypt; login requests stay RSA-wrapped |
 | `ripper/decrypt_chart.py` | **decrypt CDN payloads** → `.ez` / `.ezi` plaintext (library + CLI); `--archive` completes a whole capture tree, `--check` audits it without writing |
 | `ripper/parse_chart.py` | **read decrypted charts** — `.ez` note charts and `.ezi` keysound indexes, as a summary, JSON, or note listing |
 | `ripper/chart_labels.py` | **name charts** — decrypt captured API traffic into `chart_labels.json` (song name, key mode, difficulty) |
